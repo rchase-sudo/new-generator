@@ -36,8 +36,14 @@ def _polys(g):
     return list(g.geoms) if isinstance(g, MultiPolygon) else [g] if isinstance(g, Polygon) else [p for p in getattr(g, "geoms", []) if isinstance(p, Polygon)]
 
 
-def classify_edges(parcel, road_lines, k_ft):
-    """Label each exterior edge front / side / rear. Front = within 150 ft of a road and roughly parallel to it."""
+def road_key(r):
+    """Stable id for a road: its name (or ref); unnamed roads by class. Segments of one road share the key."""
+    return r.get("name") or r.get("ref") or f"Unnamed {r.get('class') or 'road'}"
+
+
+def classify_edges(parcel, road_lines, k_ft, keys=None):
+    """Label each exterior edge front / side / rear. Front = within 150 ft of a road and roughly parallel to it.
+    keys (parallel to road_lines): front edges get e["road"] = the key of the road they face."""
     coords = list(parcel.exterior.coords)
     if parcel.exterior.is_ccw:
         coords = coords[::-1]  # clockwise: outward normal is to the left of travel
@@ -51,7 +57,7 @@ def classify_edges(parcel, road_lines, k_ft):
         n = (-dy / L, dx / L)  # outward normal for clockwise ring
         e = {"line": seg, "normal": n, "len_ft": L * k_ft, "kind": "side"}
         mid = seg.interpolate(0.5, normalized=True)
-        for rl in road_lines:
+        for i, rl in enumerate(road_lines):
             if mid.distance(rl) * k_ft < 150:
                 p = rl.interpolate(rl.project(mid))
                 q = rl.interpolate(min(rl.length, rl.project(mid) + 1.0))
@@ -59,6 +65,8 @@ def classify_edges(parcel, road_lines, k_ft):
                 tl = math.hypot(tx, ty) or 1
                 if abs((dx * tx + dy * ty) / (L * tl)) > 0.8:
                     e["kind"] = "front"
+                    if keys:
+                        e["road"] = keys[i]
                     break
         edges.append(e)
     fronts = [e for e in edges if e["kind"] == "front"]
@@ -70,6 +78,33 @@ def classify_edges(parcel, road_lines, k_ft):
             if e["kind"] != "front" and (e["normal"][0] * fx + e["normal"][1] * fy) / fl < -0.6:
                 e["kind"] = "rear"
     return edges
+
+
+def front_roads(parcel, rds, k_ft, epsg):
+    """Roads the parcel fronts, for the driveway picker: key, name, class, frontage and the centerline (lat/lon)."""
+    from .geo import to_crs
+    rds = [r for r in (rds if isinstance(rds, list) else []) if r["class"] != "service"]
+    keys = [road_key(r) for r in rds]
+    edges = classify_edges(parcel, [r["centerline"] for r in rds], k_ft, keys)
+    out = {}
+    for e in edges:
+        if e["kind"] == "front" and e.get("road"):
+            out.setdefault(e["road"], 0.0)
+            out[e["road"]] += e["len_ft"]
+    res = []
+    near = parcel.buffer(350 / k_ft)
+    for key, ft in sorted(out.items(), key=lambda kv: -kv[1]):
+        segs = [r for r, k in zip(rds, keys) if k == key]
+        line = unary_union([r["centerline"] for r in segs]).intersection(near)
+        lines = []
+        for g in getattr(line, "geoms", [line]):
+            if g.is_empty or g.geom_type != "LineString":
+                continue
+            ll = to_crs(g, epsg, 4326)
+            lines.append([[round(y, 6), round(x, 6)] for x, y in ll.coords])
+        res.append({"key": key, "name": segs[0].get("name") or segs[0].get("ref") or key, "class": segs[0]["class"],
+                    "frontage_ft": round(ft), "lines": lines})
+    return res
 
 
 def envelope(parcel, edges, setbacks_ft, k_ft):

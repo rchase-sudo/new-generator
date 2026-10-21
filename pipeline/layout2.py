@@ -16,7 +16,7 @@ from shapely import affinity
 from shapely.geometry import LineString, Point, Polygon, box
 from shapely.ops import polylabel, unary_union
 
-from .ec_drawing import _polys, classify_edges, envelope
+from .ec_drawing import _polys, classify_edges, envelope, road_key
 from .layout import DEFAULT_PARK_SB, Frame, ada_required
 
 SW, SD, AIS, RING = 9.0, 18.0, 24.0, 24.0
@@ -506,14 +506,24 @@ def _pond(P, dev, constraints, target_sf):
 
 
 # ---------------------------------------------------------------- main
-def generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, parking_setbacks_ft=None):
+def generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, parking_setbacks_ft=None, drive_road=None):
+    """drive_road: key of the road the driveway must connect to (ec_drawing.road_key); None = longest frontage."""
     rules = rules or {}
     wet = [] if isinstance(wet, dict) else wet
     fl = [] if isinstance(fl, dict) else fl
     rds = [] if isinstance(rds, dict) else rds
-    road_lines = [r["centerline"] for r in rds if r["class"] != "service"]
-    edges = classify_edges(parcel_sp, road_lines, k_ft)
-    fr = Frame(parcel_sp, edges, k_ft)
+    named = [r for r in rds if r["class"] != "service"]
+    road_lines = [r["centerline"] for r in named]
+    keys = [road_key(r) for r in named]
+    edges = classify_edges(parcel_sp, road_lines, k_ft, keys)
+    main = None
+    if drive_road:
+        on = [e for e in edges if e["kind"] == "front" and e.get("road") == drive_road]
+        if not on:
+            raise RuntimeError(f"The parcel has no frontage on {drive_road}. Pick another road for the driveway.")
+        main = max(on, key=lambda e: e["len_ft"])
+    fr = Frame(parcel_sp, edges, k_ft, main=main)
+    main_road = (main or max([e for e in edges if e["kind"] == "front"] or edges, key=lambda e: e["len_ft"])).get("road")
     P = fr.fwd(parcel_sp)
     if parking_setbacks_ft:
         psb = {k: float(parking_setbacks_ft.get(k, DEFAULT_PARK_SB[k])) for k in ("front", "side", "rear")}
@@ -524,9 +534,10 @@ def generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, pa
     C = fr.fwd(C.intersection(parcel_sp.buffer(50 / k_ft))) if not C.is_empty else Polygon()
     bz = fr.fwd(envelope(parcel_sp, edges, setbacks_ft, k_ft)).difference(C).buffer(0)
     pz = fr.fwd(envelope(parcel_sp, edges, psb, k_ft)).difference(C).buffer(0)
-    R = unary_union([fr.fwd(r["pavement"]) for r in rds]) if rds else None
+    drive_rds = [r for r, kk in zip(named, keys) if kk == drive_road] if drive_road else rds
+    R = unary_union([fr.fwd(r["pavement"]) for r in drive_rds]) if drive_rds else None
     # frontage = every front edge lying along the main front line
-    fl_lines = [fr.fwd(e["line"]) for e in edges if e["kind"] == "front"]
+    fl_lines = [fr.fwd(e["line"]) for e in edges if e["kind"] == "front" and (not drive_road or e.get("road") == drive_road)]
     fl_lines = [g for g in fl_lines if max(abs(c[1]) for c in g.coords) < 40] or [fr.front_line]
     fx = [min(c[0] for g in fl_lines for c in g.coords), max(c[0] for g in fl_lines for c in g.coords)]
     front_ln = unary_union(fl_lines)
@@ -690,6 +701,7 @@ def generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, pa
         "concept": program.get("use"),
         "buildings": [{"name": r["b"].get("name"), "use": r["b"].get("use"), "w_ft": round(r["w"]), "d_ft": round(r["d"]),
                        "footprint_sf": round(r["fp"], -1), "stories": r["b"].get("stories", 1), "drive_thru": bool(r["b"].get("drive_thru"))} for r in row],
+        "drive_road": drive_road or main_road,
         "building_sf": round(bsf, -1), "gfa_sf": round(gfa_sf, -1), "program_scale": scale,
         "stalls": n_st, "stalls_required": req, "ada_stalls": n_ada, "template": f"ring/{best['bpos']}/{best['m']}",
         "impervious_sf": round(imperv_sf, -1), "impervious_pct": round(100 * imperv_sf / parcel_sf, 1),

@@ -25,9 +25,9 @@ DEFAULT_PARK_SB = {"front": 10.0, "side": 5.0, "rear": 5.0}
 
 # ---------------------------------------------------------------- frame
 class Frame:
-    def __init__(self, parcel, edges, k):
+    def __init__(self, parcel, edges, k, main=None):
         fronts = [e for e in edges if e["kind"] == "front"] or [max(edges, key=lambda e: e["len_ft"])]
-        e = max(fronts, key=lambda e: e["len_ft"])
+        e = main or max(fronts, key=lambda e: e["len_ft"])
         (x0, y0), (x1, y1) = e["line"].coords[0], e["line"].coords[-1]
         self.k, self.o, self.a = k, (x0, y0), math.atan2(y1 - y0, x1 - x0)
         if self.fwd(parcel).centroid.y < 0:

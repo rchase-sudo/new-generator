@@ -2,7 +2,7 @@
 // POST { action: "start" | "approve_parcel" | "approve_zoning" | "approve_layout" | "render" | "rerun" | "status" | "list" | "delete", ... }
 //   start           { listing_text, source?: "tool"|"crm", crm_ref? }            -> { job_id }
 //   approve_parcel  { job_id, index? | indexes?: number[], geometry?, setbacks? } -> { ok }  (several indexes = assemblage)
-//   approve_zoning  { job_id, setbacks?, parking_setbacks?, program?, zoning? }   -> { ok }  (runs / re-runs the layout)
+//   approve_zoning  { job_id, setbacks?, parking_setbacks?, program?, zoning?, drive_road? } -> { ok }  (runs / re-runs the layout)
 //   approve_layout  { job_id }                                                    -> { ok }  (starts the 3D model + render)
 //   render          { job_id }                                                    -> { ok }  (re-run the render)
 //   package         { job_id }                                                    -> { ok }  (due diligence package, after the render)
@@ -122,6 +122,8 @@ Deno.serve(async (req) => {
       const patch: Record<string, unknown> = { status: "zoning_approved", step: "layout", error: null };
       const zoning = { ...(job.zoning ?? {}), ...(body.zoning ?? {}) };
       // parking_setbacks = final property-line-to-pavement distances {front, side, rear} chosen at the checkpoint
+      // drive_road = key of the road the driveway connects to (summary.front_roads[].key); null / "" = automatic
+      if ("drive_road" in body) zoning.drive_road = body.drive_road || null;
       if (body.parking_setbacks) zoning.pavement_setbacks_ft = { ...body.parking_setbacks, source: { front: "user", side: "user", rear: "user" } };
       patch.zoning = zoning;
       if (body.setbacks) patch.setbacks = body.setbacks;
