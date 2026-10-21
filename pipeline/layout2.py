@@ -95,7 +95,7 @@ def _row(buildings, scale, xc, y_front, facing):
             walk = box(bx0, fy - WALK, bx1, fy) if facing < 0 else box(bx0, fy, bx1, fy + WALK)
             service = None
         else:
-            walk = rect.buffer(WALK, join_style=2).difference(rect)
+            walk = rect.buffer(WALK, join_style=1).difference(rect)
             service = box(bx0 - WALK, back, bx1 + WALK, back + SERVICE) if facing < 0 else box(bx0 - WALK, back - SERVICE, bx1 + WALK, back)
         env = unary_union([g for g in (rect, walk, lane) if g is not None])
         out.append({"b": b, "rect": rect, "lane": lane, "legs": legs, "walk": walk, "service": service, "env": env,
@@ -545,9 +545,28 @@ def generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, pa
         warn.append(f"FAR {metrics['far']} exceeds {rules['max_far']}")
     metrics["warnings"] = warn
 
-    local = {"P": P, "bz": bz, "pz": pz, "C": C, "pave": pave, "walk": walks, "grass": grass, "bldgs": bldgs,
+    # landscape pad: straight-sided outline around the development, like the reference render
+    pad = dev.buffer(14, join_style=2, mitre_limit=1.6).simplify(4).intersection(P).difference(C)
+    pad = _largest(pad) or grass
+    # roof accent blocks (entry / office mass) like the reference: an end block on long buildings, a corner block otherwise
+    roof_blocks = []
+    for r in row:
+        bx0, by0, bx1, by1 = r["rect"].bounds
+        w_, d_ = bx1 - bx0, by1 - by0
+        if r["fp"] < 2000:
+            roof_blocks.append(None)
+            continue
+        if max(w_, d_) / min(w_, d_) >= 2.2:
+            e = 0.2 * max(w_, d_)
+            roof_blocks.append(box(bx0, by0, bx0 + e, by1) if w_ >= d_ else box(bx0, by0, bx1, by0 + e))
+        else:
+            c_ = min(28.0, 0.38 * min(w_, d_))
+            fy = by0 if r["facing"] < 0 else by1 - c_
+            roof_blocks.append(box(bx0, fy, bx0 + c_, fy + c_))
+    local = {"P": P, "bz": bz, "pz": pz, "C": C, "pave": pave, "walk": walks, "grass": grass, "pad": pad, "roof_blocks": roof_blocks, "bldgs": bldgs,
              "stalls": stalls, "ada": ada, "stripes": stripes, "pond": pond, "drive": drive, "dev": dev}
-    sp = {k: ([fr.inv(g) for g in v] if isinstance(v, list) else (fr.inv(v) if v is not None else None)) for k, v in local.items()}
+    sp = {k: ([fr.inv(g) if g is not None else None for g in v] if isinstance(v, list) else (fr.inv(v) if v is not None else None))
+          for k, v in local.items()}
     labels = []
     for r in row:
         c = fr.inv(r["rect"].centroid)

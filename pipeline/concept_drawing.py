@@ -16,6 +16,7 @@ from matplotlib.patches import PathPatch  # noqa: E402
 from matplotlib.path import Path as MPath  # noqa: E402
 from PIL import Image  # noqa: E402
 from shapely import affinity  # noqa: E402
+from shapely.ops import unary_union  # noqa: E402
 
 from .ec_drawing import _polys
 
@@ -44,11 +45,16 @@ TB_DRAW = (85, 48, 2278, 1618)          # drawing frame
 TB_PROJECT = (2293, 1190, 2521, 1527)   # project name block (vertical text)
 TB_DATA = (2293, 296, 2521, 470)        # empty block under the logo -> site data
 
-C_GRASS, C_GRASS_EDGE = "#78a64b", "#5d8a36"
-C_ASPHALT, C_CURB = "#40454a", "#dcdbd6"
-C_WALK, C_WALK_EDGE = "#d3d0c8", "#aeaaa1"
-C_ROOF, C_ROOF_EDGE, C_PARAPET = "#e9eef2", "#7f8890", "#b9c1c8"
-C_WATER, C_WATER_EDGE = "#5f9cc2", "#2f6b93"
+# palette sampled from the Forma reference render (1120 Lot 6, Pocahontas Trail)
+C_GRASS = "#76924f"          # lawn
+C_GRASS_SHADE = "#5a7057"    # lawn in shadow / edge
+C_ASPHALT = "#4e5969"        # blue-grey asphalt
+C_LIGHT = "#c2c9d1"          # curbs, walks, roofs (cool light grey)
+C_ROOF_HI = "#d3d9e0"
+C_DARK = "#2f3b4b"           # parapets, walls, shadow core
+C_WATER, C_WATER_EDGE = "#6f97a8", "#3f6a7c"
+SUN = (1.0, 1.0)             # shadows fall to the north-east, like the reference
+BLDG_H = 22.0                # ft, for shadow length
 
 
 # ---------------------------------------------------------------- DXF
@@ -98,6 +104,55 @@ def _patch(ax, g, z, **kw):
             verts += cs.tolist()
             codes += [MPath.MOVETO] + [MPath.LINETO] * (len(cs) - 2) + [MPath.CLOSEPOLY]
         ax.add_patch(PathPatch(MPath(verts, codes), zorder=z, **kw))
+
+
+def _noise(shape, seed, blur):
+    from PIL import ImageFilter
+    rng = np.random.default_rng(seed)
+    n = Image.fromarray((rng.random(shape) * 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(blur))
+    a = np.asarray(n).astype(float) / 255.0
+    return (a - a.mean()) / (a.std() + 1e-6)
+
+
+def _textured(ax, g, view, color, amp, z, k_ft, edge=None, lw=0.0):
+    """Fill g with `color` plus soft fine-grain noise (render-like), clipped to g."""
+    if g is None or g.is_empty:
+        return
+    x0, y0, x1, y1 = g.bounds
+    x0, y0, x1, y1 = max(x0, view[0]), max(y0, view[1]), min(x1, view[2]), min(y1, view[3])
+    if x1 <= x0 or y1 <= y0:
+        return
+    W = int(min(2400, max(64, (x1 - x0) * k_ft * 2)))
+    H = int(min(2400, max(64, (y1 - y0) * k_ft * 2)))
+    base = np.array(matplotlib.colors.to_rgb(color))
+    n = 0.65 * _noise((H, W), int(z * 10), 1.2) + 0.35 * _noise((H, W), int(z * 10) + 1, 6)
+    img = np.clip(base[None, None, :] * (1 + amp * n[..., None]), 0, 1)
+    im = ax.imshow(img, extent=(x0, x1, y0, y1), origin="upper", zorder=z, interpolation="bilinear")
+    for p in _polys(g):
+        verts, codes = [], []
+        for r in [p.exterior, *p.interiors]:
+            cs = np.asarray(r.coords)
+            verts += cs.tolist()
+            codes += [MPath.MOVETO] + [MPath.LINETO] * (len(cs) - 2) + [MPath.CLOSEPOLY]
+        clip = PathPatch(MPath(verts, codes), transform=ax.transData, facecolor="none", edgecolor="none")
+        ax.add_patch(clip)
+        im2 = im if p is _polys(g)[0] else ax.imshow(img, extent=(x0, x1, y0, y1), origin="upper", zorder=z, interpolation="bilinear")
+        im2.set_clip_path(clip)
+    if edge:
+        _patch(ax, g, z + 0.1, facecolor="none", edgecolor=edge, lw=lw)
+
+
+def _gradient(ax, g, view, c_hi, c_lo, z):
+    """Roof fill: soft diagonal light-to-shade gradient clipped to the roof."""
+    x0, y0, x1, y1 = g.bounds
+    hi, lo = np.array(matplotlib.colors.to_rgb(c_hi)), np.array(matplotlib.colors.to_rgb(c_lo))
+    gx, gy = np.meshgrid(np.linspace(0, 1, 64), np.linspace(1, 0, 64))
+    t = np.clip((gx + gy) / 2, 0, 1)[..., None]
+    img = hi * (1 - t) + lo * t
+    im = ax.imshow(img, extent=(x0, x1, y0, y1), origin="upper", zorder=z, interpolation="bilinear")
+    clip = PathPatch(MPath(np.asarray(g.exterior.coords), closed=True), transform=ax.transData, facecolor="none", edgecolor="none")
+    ax.add_patch(clip)
+    im.set_clip_path(clip)
 
 
 def _view(sp, parcel, aerial, k_ft, aspect):
@@ -151,27 +206,36 @@ def write_sheet(pdf_path, png_path, parcel, env, wet, fl, rds, aerial, k_ft, sp,
         if f.get("sfha") == "T":
             _patch(ax, f["geom"], 2, facecolor=(0.3, 0.55, 1, 0.12), edgecolor="#4d8cff", lw=1.0 * T, ls=(0, (6, 4)))
 
-    # proposed: landscape pad, pond, pavement + curbs, walks, stripes, ADA, buildings w/ shadow
-    if sp.get("grass") is not None:
-        _patch(ax, sp["grass"], 3, facecolor=C_GRASS, edgecolor=C_GRASS_EDGE, lw=0.6)
+    # proposed, drawn like the reference render: textured lawn pad, blue-grey asphalt with light curbs, light
+    # walks, light roofs with dark parapets, NE shadows, white stripes
+    view = (vx0, vy0, vx1, vy1)
+    pad = sp.get("pad")
+    if pad is None and sp.get("grass") is not None:
+        pad = sp["grass"]
+    if pad is not None:
+        _textured(ax, pad, view, C_GRASS, 0.09, 3, k_ft, edge=C_GRASS_SHADE, lw=0.6)
     if sp.get("pond") is not None:
-        _patch(ax, sp["pond"].buffer(6 / k_ft), 3, facecolor=C_GRASS, edgecolor=C_GRASS_EDGE, lw=0.6)
+        _textured(ax, sp["pond"].buffer(6 / k_ft), view, C_GRASS, 0.09, 3.1, k_ft)
         _patch(ax, sp["pond"], 4, facecolor=C_WATER, edgecolor=C_WATER_EDGE, lw=1.0 * T)
-    _patch(ax, sp["pave"], 5, facecolor=C_ASPHALT, edgecolor=C_CURB, lw=lw_ft(1.0), joinstyle="round")
-    _patch(ax, sp["walk"], 6, facecolor=C_WALK, edgecolor=C_WALK_EDGE, lw=0.5)
-    for a in sp["ada"]:
-        _patch(ax, a, 7, facecolor="#2f6fd0", edgecolor="w", lw=0.5)
+    _textured(ax, sp["pave"], view, C_ASPHALT, 0.06, 5, k_ft)
+    _patch(ax, sp["pave"], 5.2, facecolor="none", edgecolor=C_LIGHT, lw=lw_ft(0.9), joinstyle="round")   # curb
+    _patch(ax, sp["walk"], 6, facecolor=C_LIGHT, edgecolor="none")
     for ln in sp["stripes"]:
         xs, ys = ln.xy
-        ax.plot(xs, ys, color="w", lw=lw_ft(0.45), zorder=8, solid_capstyle="butt")
-    sh = 4.0 / k_ft
+        ax.plot(xs, ys, color="#f2f4f5", lw=lw_ft(0.4), zorder=8, solid_capstyle="butt")
+    sv = (SUN[0] * BLDG_H * 0.75 / k_ft, SUN[1] * BLDG_H * 0.75 / k_ft)
     for b in sp["bldgs"]:
-        _patch(ax, affinity.translate(b, sh, -sh), 8, facecolor=(0, 0, 0, 0.38), edgecolor="none")
-    for b in sp["bldgs"]:
-        _patch(ax, b, 9, facecolor=C_ROOF, edgecolor=C_ROOF_EDGE, lw=1.0 * T)
-        inner = b.buffer(-2.0 / k_ft, join_style=2)
-        if not inner.is_empty:
-            _patch(ax, inner, 10, facecolor="none", edgecolor=C_PARAPET, lw=0.6)
+        moved = affinity.translate(b, *sv)
+        shadow = unary_union([b, moved, unary_union([b, moved]).convex_hull]).difference(b)
+        _patch(ax, shadow, 7.5, facecolor=(0.10, 0.15, 0.20, 0.42), edgecolor="none")
+        wall = affinity.translate(b, 1.6 / k_ft, -1.6 / k_ft).difference(b)          # visible wall face (SE)
+        _patch(ax, wall, 8.5, facecolor=C_DARK, edgecolor="none")
+    for b, extra in zip(sp["bldgs"], sp.get("roof_blocks") or [None] * len(sp["bldgs"])):
+        _gradient(ax, b, view, C_ROOF_HI, C_LIGHT, 9)
+        _patch(ax, b, 9.6, facecolor="none", edgecolor=C_DARK, lw=lw_ft(1.4), joinstyle="miter")
+        if extra is not None:
+            _patch(ax, extra, 9.7, facecolor="none", edgecolor=C_DARK, lw=lw_ft(1.1), joinstyle="miter")
+            _patch(ax, affinity.translate(extra, 0.8 / k_ft, -0.8 / k_ft).difference(extra).intersection(b), 9.65, facecolor=(0.18, 0.23, 0.29, 0.6), edgecolor="none")
 
     _patch(ax, parcel, 11, facecolor="none", edgecolor="#ff19ff", lw=2.6 * T)
     if env is not None:
@@ -227,27 +291,6 @@ def write_sheet(pdf_path, png_path, parcel, env, wet, fl, rds, aerial, k_ft, sp,
         bg.text(x, cyb, line, rotation=90, ha="center", va="center", fontsize=fs, family=FONT,
                 weight="bold" if i == 0 else "normal", zorder=3)
         x += 31 if i == 0 else 29
-
-    # site data under the logo
-    dx0, dy0, dx1, dy1 = TB_DATA
-    m = metrics
-    zon = rules.get("district") or "—"
-    sb = m.get("setbacks_ft") or {}
-    rows = [("ZONING", zon),
-            ("SETBACKS F/S/R", f"{sb.get('front', '—'):g}' / {sb.get('side', '—'):g}' / {sb.get('rear', '—'):g}'" if sb else "—"),
-            ("BUILDING AREA", f"{m['gfa_sf']:,.0f} SF"),
-            ("PARKING REQ / PROV", f"{m['stalls_required']} / {m['stalls']}  ({m['ada_stalls']} ADA)"),
-            ("IMPERVIOUS", f"{m['impervious_pct']}% of site"),
-            ("REMAINING LAND", f"{m['remaining_developable_acres']} AC ±")]
-    bg.text(dx0 + 8, dy0 + 4, "SITE DATA", fontsize=6.5 * T, family=FONT, weight="bold", va="top", zorder=3)
-    yy = dy0 + 24
-    for k_, v in rows:
-        bg.text(dx0 + 8, yy, k_, fontsize=5.2 * T, family=FONT, color="#555", va="top", zorder=3)
-        bg.text(dx1 - 6, yy, v, fontsize=5.6 * T, family=FONT, va="top", ha="right", zorder=3)
-        yy += 21
-    if m.get("warnings"):
-        bg.text(dx0 + 8, yy, "\n".join(textwrap.wrap("; ".join(m["warnings"]), 46)[:2]), fontsize=4.8 * T, family=FONT,
-                color="#b42318", va="top", zorder=3)
 
     fig.savefig(pdf_path)
     fig.savefig(png_path, dpi=55)
