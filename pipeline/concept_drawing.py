@@ -30,7 +30,7 @@ FONT = "Carlito"              # title block (matches the Forma template)
 LFONT = "Liberation Sans"     # plan labels (Arial metrics, like the CAD text style)
 
 SHEET_W, SHEET_H = 34.0, 22.0   # ANSI D
-TXT_H = 0.16                    # plan label cap height, inches (CAD text height)
+TXT_H = 0.08                    # plan label cap height, inches (CAD text height)
 CAP = 0.716                     # Arial cap height / em
 LFS = TXT_H * 72 / CAP          # -> font size in points
 LSPACE = (TXT_H * 72 * 5 / 3) / LFS   # AutoCAD MText line spacing 1.0 (1.667 x height)
@@ -256,41 +256,64 @@ def write_sheet(pdf_path, png_path, parcel, env, wet, fl, rds, aerial, k_ft, sp,
     if env is not None:
         _patch(ax, env, 11, facecolor="none", edgecolor="#ffe600", lw=1.8 * T, ls=(0, (9, 6)))
 
-    # labels: white boxes, regular text, centred on the building
+    # labels: white boxes with regular text, always placed OFF the buildings (the client has to see the roofs),
+    # as close as they fit, with a short leader line back to the building
+    from shapely.geometry import LineString as _LS, box as _box
+    from shapely.ops import nearest_points
     box_kw = dict(boxstyle=f"square,pad={TXT_H * 72 * 0.5 / LFS:.3f}", fc="w", ec="none")
+    bldgs = [b for b in sp["bldgs"] if b is not None]
+    hard = unary_union([b.buffer(3 / k_ft) for b in bldgs]) if bldgs else None
+    if sp.get("pond") is not None:
+        hard = sp["pond"] if hard is None else hard.union(sp["pond"])
     placed = []
+    view_box = _box(vx0, vy0, vx1, vy1).buffer(-20 / ppu)
+
+    def place(lines, anchor, target, fs):
+        bw = (max(len(x) for x in lines) * fs * 0.6 + fs) / ppu
+        bh = ((len(lines) - 1) * LSPACE * fs + TXT_H * 72 + fs) / ppu
+        ax_, ay_ = anchor
+        best = None
+        dirs = [(0, 1), (0, -1), (1, 0), (-1, 0), (0.7, 0.7), (-0.7, 0.7), (0.7, -0.7), (-0.7, -0.7)]
+        step = 3 / k_ft
+        for dx, dy in dirs:
+            for i in range(0, 120):
+                cx, cy = ax_ + dx * i * step, ay_ + dy * i * step
+                rb = _box(cx - bw / 2, cy - bh / 2, cx + bw / 2, cy + bh / 2)
+                if hard is not None and rb.intersects(hard):
+                    continue
+                if any(rb.intersects(q) for q in placed) or not view_box.contains(rb):
+                    break
+                d = i * step
+                if best is None or d < best[0]:
+                    best = (d, cx, cy, rb)
+                break
+        if best is None:
+            best = (0, ax_, ay_, _box(ax_ - bw / 2, ay_ - bh / 2, ax_ + bw / 2, ay_ + bh / 2))
+        _, cx, cy, rb = best
+        placed.append(rb.buffer(4 / ppu))
+        if target is not None and rb.distance(target) > 1.5 / k_ft:
+            p1, p2 = nearest_points(rb, target)
+            ax.plot([p1.x, p2.x], [p1.y, p2.y], color="w", lw=1.2, zorder=11.5, solid_capstyle="round")
+            ax.plot([p2.x], [p2.y], marker="o", ms=2.2, color="w", zorder=11.6)
+        ax.text(cx, cy, "\n".join(lines), ha="center", va="center", fontsize=fs, family=LFONT, zorder=12,
+                linespacing=LSPACE, bbox=box_kw)
+
+    bi = 0
     for t in labels:
         if t.get("small"):
             ax.text(t["at"][0], t["at"][1], "\n".join(t["lines"]), ha="center", va="center", fontsize=LFS, family=LFONT,
                     color="#10324a", zorder=12, linespacing=LSPACE)
             continue
-        fs = LFS
-        bw = (max(len(x) for x in t["lines"]) * fs * 0.6 + fs) / ppu
-        bh = ((len(t["lines"]) - 1) * LSPACE * fs + TXT_H * 72 + fs) / ppu
-        cx, cy = t["at"]
-        gap = 8 / ppu
-        cands = [(0, 0), (0, bh + gap), (0, -bh - gap), (bw + gap, 0), (-bw - gap, 0),
-                 (bw + gap, bh + gap), (-bw - gap, bh + gap), (bw + gap, -bh - gap), (-bw - gap, -bh - gap),
-                 (0, 2 * (bh + gap)), (0, -2 * (bh + gap))]
-        best = None
-        for dx, dy in cands:
-            r = (cx + dx - bw / 2, cy + dy - bh / 2, cx + dx + bw / 2, cy + dy + bh / 2)
-            if not any(r[0] < q[2] and q[0] < r[2] and r[1] < q[3] and q[1] < r[3] for q in placed):
-                best = (dx, dy, r)
-                break
-        dx, dy, r = best or (0, 0, (cx - bw / 2, cy - bh / 2, cx + bw / 2, cy + bh / 2))
-        placed.append(r)
-        if dx or dy:   # moved off its building: leader line
-            ax.plot([cx, cx + dx], [cy, cy + dy], color="w", lw=1.5, zorder=11.5)
-        ax.text(cx + dx, cy + dy, "\n".join(t["lines"]), ha="center", va="center", fontsize=fs, family=LFONT,
-                zorder=12, linespacing=LSPACE, bbox=box_kw)
+        target = bldgs[bi] if bi < len(bldgs) else None
+        bi += 1
+        place(t["lines"], t["at"], target, LFS)
     for w in wet:
         g = w["geom"].intersection(parcel)
         if g.is_empty or g.area < 2000 / k_ft ** 2:
             continue
         c = g.representative_point()
         if vx0 < c.x < vx1 and vy0 < c.y < vy1:
-            ax.text(c.x, c.y, "WETLANDS", ha="center", va="center", fontsize=LFS, family=LFONT, zorder=12, bbox=box_kw)
+            place(["WETLANDS"], (c.x, c.y), None, LFS)
             break
 
     # project block (vertical text, reading bottom-to-top) over the template's sample text

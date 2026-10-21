@@ -6,7 +6,8 @@
 //   approve_layout  { job_id }                                                    -> { ok }
 //   rerun           { job_id, step: "parse"|"ec"|"zoning"|"layout" }              -> { ok }
 //   status          { job_id }                                                    -> job row + signed file URLs
-//   list            { limit? }                                                    -> recent jobs
+//   list            { limit? }                                                    -> recent jobs (your own; service role: all)
+//   delete          { job_id }                                                    -> { ok }
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
 
 const cors = {
@@ -45,17 +46,37 @@ async function signOutputs(outputs: Record<string, Record<string, string>>) {
   return signed;
 }
 
+// Who is calling: the service role (CI / CRM backend) sees everything; a signed-in user only their own jobs.
+async function caller(req: Request): Promise<{ admin: boolean; uid: string | null }> {
+  const token = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
+  if (token && token === SERVICE) return { admin: true, uid: null };
+  if (!token) return { admin: false, uid: null };
+  const { data } = await db.auth.getUser(token);
+  return { admin: false, uid: data?.user?.id ?? null };
+}
+
+async function ownJob(who: { admin: boolean; uid: string | null }, id: string) {
+  if (!id) return false;
+  if (who.admin) return true;
+  const { data } = await db.from("pipeline_jobs").select("created_by").eq("id", id).maybeSingle();
+  return !!data && data.created_by === who.uid;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   try {
     const body = await req.json();
     const action = body.action;
+    const who = await caller(req);
+    if (!who.admin && !who.uid) return json({ error: "Sign in required" }, 401);
+    if (action !== "start" && action !== "list" && !(await ownJob(who, body.job_id))) return json({ error: "Job not found" }, 404);
 
     if (action === "start") {
       const text = String(body.listing_text ?? "").trim();
       if (text.length < 20) return json({ error: "Paste the full listing text" }, 400);
       const { data, error } = await db.from("pipeline_jobs")
-        .insert({ listing_text: text, source: body.source ?? "tool", crm_ref: body.crm_ref ?? null, status: "queued", step: "parse" })
+        .insert({ listing_text: text, source: body.source ?? "tool", crm_ref: body.crm_ref ?? null, status: "queued", step: "parse",
+                  created_by: who.uid })
         .select("id").single();
       if (error) throw error;
       await kickWorker(data.id, "parse");
@@ -115,6 +136,14 @@ Deno.serve(async (req) => {
       return json({ ok: true });
     }
 
+    if (action === "delete") {
+      const { error } = await db.from("pipeline_jobs").delete().eq("id", body.job_id);
+      if (error) throw error;
+      const { data: objs } = await db.storage.from("pipeline").list(body.job_id, { limit: 100 });
+      if (objs?.length) await db.storage.from("pipeline").remove(objs.map((o: { name: string }) => `${body.job_id}/${o.name}`));
+      return json({ ok: true });
+    }
+
     if (action === "status") {
       const { data: job, error } = await db.from("pipeline_jobs").select("*").eq("id", body.job_id).single();
       if (error) throw error;
@@ -122,9 +151,11 @@ Deno.serve(async (req) => {
     }
 
     if (action === "list") {
-      const { data, error } = await db.from("pipeline_jobs")
-        .select("id,created_at,updated_at,source,crm_ref,status,step,progress,error,listing->street_address,listing->city,listing->state")
-        .order("created_at", { ascending: false }).limit(Math.min(Number(body.limit ?? 20), 100));
+      let q = db.from("pipeline_jobs")
+        .select("id,created_at,updated_at,source,crm_ref,status,step,progress,error,listing->street_address,listing->lot,listing->city,listing->state,program->use")
+        .order("created_at", { ascending: false }).limit(Math.min(Number(body.limit ?? 30), 100));
+      if (!who.admin) q = q.eq("created_by", who.uid);
+      const { data, error } = await q;
       if (error) throw error;
       return json({ jobs: data });
     }
