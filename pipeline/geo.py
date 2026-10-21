@@ -27,7 +27,7 @@ def google_geocode(q):
         return None
     r = res[0]
     loc = r["geometry"]["location"]
-    return loc["lat"], loc["lng"], r.get("formatted_address", q), r["geometry"].get("location_type")
+    return loc["lat"], loc["lng"], f'{r.get("formatted_address", q)} [google {r["geometry"].get("location_type")}]', r["geometry"].get("location_type")
 
 
 def geocode(listing: dict):

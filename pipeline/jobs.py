@@ -117,7 +117,7 @@ def step_parse(job_id):
             road_ll = road_all
             lat, lon = town[0], town[1]
 
-    supa.update_job(job_id, progress="Searching parcels")
+    supa.update_job(job_id, progress="Searching parcels", geocode={"lat": lat, "lon": lon, "label": label})
     res = find_parcels(listing, lat, lon, road_geom_ll=road_ll, county_layer=job.get("county_layer"), corridor_ll=corridor)
     if not res["candidates"]:
         from .parcel import REGRID_ERRORS
