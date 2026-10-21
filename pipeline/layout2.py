@@ -453,14 +453,21 @@ def generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, pa
     req0 = (program.get("parking") or {}).get("required")
     req0 = float(req0) if isinstance(req0, (int, float)) and req0 > 0 else gfa / 1000 * 4
 
-    best, scale, req = None, 1.0, math.ceil(req0)
-    for scale in (1.0, 0.9, 0.8, 0.7, 0.6, 0.5):
-        req = math.ceil(req0 * scale)
-        best = _search(ctx, buildings, scale, req)
+    best, scale, req, dropped = None, 1.0, math.ceil(req0), []
+    # shrink the program first; if it still doesn't fit, drop buildings from the end of the list (lowest priority)
+    for keep in range(len(buildings), 0, -1):
+        sub = buildings[:keep]
+        frac = sum(b["footprint_sf"] * b.get("stories", 1) for b in sub) / gfa
+        for scale in (1.0, 0.9, 0.8, 0.7, 0.6, 0.5):
+            req = math.ceil(req0 * frac * scale)
+            best = _search(ctx, sub, scale, req)
+            if best:
+                break
         if best:
+            dropped = [b.get("name") or b.get("use") for b in buildings[keep:]]
             break
     if best is None:
-        raise RuntimeError("The program does not fit the buildable area even at 50%. Reduce the program or adjust setbacks.")
+        raise RuntimeError("Even the first building at half size does not fit the usable land. Reduce the program or adjust setbacks.")
 
     D, I, row = best["D"], best["I"], best["row"]
     drive, xd, y_r = _driveway(ctx, D)
@@ -520,6 +527,8 @@ def generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, pa
         warn.append(f"Parking short: {n_st} provided vs {req} required")
     if scale < 1:
         warn.append(f"Program scaled to {int(scale * 100)}% to fit")
+    if dropped:
+        warn.append(f"Did not fit: {', '.join(map(str, dropped))}")
     for key, val, lab in (("max_impervious_pct", metrics["impervious_pct"], "impervious"), ("max_lot_coverage_pct", metrics["lot_coverage_pct"], "lot coverage")):
         lim = rules.get(key)
         if isinstance(lim, (int, float)) and val > lim:

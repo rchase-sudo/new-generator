@@ -143,8 +143,9 @@ def write_dxf(path, parcel, env, setback_line, wet, fl, rds, aerial_img_name, ae
 # ---------------------------------------------------------------- PDF / PNG sheet
 def write_sheet(pdf_path, png_path, parcel, env, setback_line, wet, fl, rds, aerial, k_ft, title_lines, facts):
     minx, miny, maxx, maxy = aerial["extent"]
-    W_in, H_in = 17.0, 11.0
-    fig = plt.figure(figsize=(W_in, H_in), dpi=150)
+    W_in, H_in = 34.0, 22.0   # ANSI D
+    S = 2.0                    # type / line scale vs. the 17x11 layout
+    fig = plt.figure(figsize=(W_in, H_in), dpi=100)
     ax = fig.add_axes([0.02, 0.04, 0.76, 0.92])
     ax.imshow(np.asarray(aerial["image"]), extent=(minx, maxx, miny, maxy), interpolation="bilinear")
     ax.set_xlim(minx, maxx)
@@ -159,60 +160,46 @@ def write_sheet(pdf_path, png_path, parcel, env, setback_line, wet, fl, rds, aer
 
     for f in fl:
         if f.get("sfha") == "T":
-            draw(f["geom"], fill=True, facecolor=(0.2, 0.45, 1, 0.18), edgecolor=(0.3, 0.55, 1, 0.9), lw=1.0, ls="--")
+            draw(f["geom"], fill=True, facecolor=(0.2, 0.45, 1, 0.18), edgecolor=(0.3, 0.55, 1, 0.9), lw=1.0 * S, ls="--")
     for w in wet:
-        draw(w["geom"], fill=True, facecolor=(0.2, 0.9, 0.6, 0.22), edgecolor=(0.3, 1, 0.65, 0.95), lw=1.2, ls="--")
+        draw(w["geom"], fill=True, facecolor=(0.2, 0.9, 0.6, 0.22), edgecolor=(0.3, 1, 0.65, 0.95), lw=1.2 * S, ls="--")
     for r in rds:
         for ln in getattr(r["centerline"], "geoms", [r["centerline"]]):
             xs, ys = ln.xy
-            ax.plot(xs, ys, color=(1, 0.35, 0.3, 0.8), lw=0.8, ls=(0, (10, 3, 2, 3)))
+            ax.plot(xs, ys, color=(1, 0.35, 0.3, 0.8), lw=0.8 * S, ls=(0, (10, 3, 2, 3)))
     if setback_line is not None:
-        draw(setback_line, fill=False, edgecolor="#f5d33c", lw=1.4, ls=(0, (6, 4)))
-    draw(parcel, fill=False, edgecolor="#e040e8", lw=2.6)
-
-    # north arrow + scale bar
-    span_ft = (maxx - minx) * k_ft
-    bar_ft = [50, 100, 200, 250, 500, 1000][int(np.searchsorted([300, 700, 1400, 2000, 4000, 1e9], span_ft))]
-    bx, by = minx + (maxx - minx) * 0.04, miny + (maxy - miny) * 0.04
-    blen = bar_ft / k_ft
-    hh = (maxy - miny) * 0.045
-    ax.add_patch(plt.Rectangle((bx - blen * 0.08, by - hh * 0.35), blen * 1.16, hh, color=(1, 1, 1, 0.85), zorder=5))
-    ax.plot([bx, bx + blen], [by, by], color="k", lw=3, zorder=6)
-    ax.plot([bx, bx + blen / 2], [by, by], color="w", lw=1.6, zorder=7)
-    ax.text(bx + blen / 2, by + hh * 0.2, f"0 — {bar_ft} FT", ha="center", va="bottom", fontsize=8, zorder=7)
-    nx, ny = maxx - (maxx - minx) * 0.05, maxy - (maxy - miny) * 0.09
-    ax.annotate("N", xy=(nx, ny + (maxy - miny) * 0.05), xytext=(nx, ny), ha="center", fontsize=12, color="w", weight="bold",
-                arrowprops=dict(arrowstyle="-|>", color="w", lw=2))
+        draw(setback_line, fill=False, edgecolor="#f5d33c", lw=1.4 * S, ls=(0, (6, 4)))
+    draw(parcel, fill=False, edgecolor="#e040e8", lw=2.6 * S)
 
     # info panel
     ip = fig.add_axes([0.795, 0.04, 0.19, 0.92])
     ip.axis("off")
-    ip.add_patch(plt.Rectangle((0, 0), 1, 1, transform=ip.transAxes, fill=False, lw=1.0, color="#333"))
+    ip.add_patch(plt.Rectangle((0, 0), 1, 1, transform=ip.transAxes, fill=False, lw=1.0 * S, color="#333"))
     y = 0.97
-    ip.text(0.06, y, "EXISTING CONDITIONS", fontsize=11, weight="bold", va="top", transform=ip.transAxes)
+    ip.text(0.06, y, "EXISTING CONDITIONS", fontsize=11 * S, weight="bold", va="top", transform=ip.transAxes)
     y -= 0.04
     for t in title_lines:
-        ip.text(0.06, y, t, fontsize=9, va="top", transform=ip.transAxes)
+        ip.text(0.06, y, t, fontsize=9 * S, va="top", transform=ip.transAxes)
         y -= 0.028
     y -= 0.02
     import textwrap
     for k, v in facts:
-        ip.text(0.06, y, k.upper(), fontsize=6.5, color="#666", va="top", transform=ip.transAxes)
+        ip.text(0.06, y, k.upper(), fontsize=6.5 * S, color="#666", va="top", transform=ip.transAxes)
         lines = textwrap.wrap(str(v), 30) or [""]
-        ip.text(0.06, y - 0.017, "\n".join(lines[:3]), fontsize=9.5, weight="bold", va="top", transform=ip.transAxes, linespacing=1.25)
+        ip.text(0.06, y - 0.017, "\n".join(lines[:3]), fontsize=9.5 * S, weight="bold", va="top", transform=ip.transAxes, linespacing=1.25)
         y -= 0.05 + 0.02 * (min(len(lines), 3) - 1)
     y -= 0.01
     leg = [("#e040e8", "-", "Property line"), ("#f5d33c", "--", "Zoning setback"), ("#3cf0a0", "--", "Wetlands (NWI)"),
            ("#4d8cff", "--", "FEMA flood zone (SFHA)"), ("#ff5a4d", "-.", "Road centerline (OSM)")]
     for c, ls, lab in leg:
-        ip.plot([0.06, 0.18], [y, y], color=c, lw=2, ls=ls, transform=ip.transAxes)
-        ip.text(0.22, y, lab, fontsize=8, va="center", transform=ip.transAxes)
+        ip.plot([0.06, 0.18], [y, y], color=c, lw=2 * S, ls=ls, transform=ip.transAxes)
+        ip.text(0.22, y, lab, fontsize=8 * S, va="center", transform=ip.transAxes)
         y -= 0.03
     ip.text(0.06, 0.05, f"Aerial: {aerial.get('source','NAIP')} (USDA NAIP)\nWetlands: USFWS NWI (not a delineation)\n"
             "Flood: FEMA NFHL · Roads: OpenStreetMap\nPreliminary — not a survey. Not for construction.",
-            fontsize=6.5, color="#555", va="bottom", transform=ip.transAxes)
+            fontsize=6.5 * S, color="#555", va="bottom", transform=ip.transAxes)
     fig.savefig(pdf_path)
-    fig.savefig(png_path, dpi=80)
+    fig.savefig(png_path, dpi=40)
     plt.close(fig)
 
 

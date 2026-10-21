@@ -163,8 +163,14 @@ def step_zoning(job_id):
     cons = [w["geom"] for w in (ctx["wet"] if isinstance(ctx["wet"], list) else [])] + \
            [f["geom"] for f in (ctx["fl"] if isinstance(ctx["fl"], list) else []) if f.get("sfha") == "T"]
     bld = env.difference(unary_union(cons)) if cons else env
-    summary = {**summary, "setbacks_ft": setbacks, "envelope_acres": round(env.area * ctx["k"] ** 2 / 43560, 3),
-               "buildable_acres": round(bld.area * ctx["k"] ** 2 / 43560, 3)}
+    # the buildable piece that reaches the road (wetlands / streams can cut off the back of a site)
+    from .ec_drawing import _polys
+    road = unary_union([r["centerline"] for r in (ctx["rds"] if isinstance(ctx["rds"], list) else [])]) if ctx["rds"] else None
+    pieces = [g for g in _polys(bld) if g.area * ctx["k"] ** 2 > 4000]
+    front = min(pieces, key=lambda g: (round(g.distance(road) * ctx["k"] / 50), -g.area)) if pieces and road is not None and not road.is_empty else (max(pieces, key=lambda g: g.area) if pieces else bld)
+    ac = lambda g: round(g.area * ctx["k"] ** 2 / 43560, 3)  # noqa: E731
+    summary = {**summary, "setbacks_ft": setbacks, "envelope_acres": ac(env), "buildable_acres": ac(bld),
+               "frontage_buildable_acres": ac(front)}
     supa.update_job(job_id, zoning=rules, setbacks=setbacks, summary=summary, progress="Choosing the development program")
     prog = job.get("program") if (job.get("program") or {}).get("locked") else zoning_mod.program(listing, summary, rules)
     supa.update_job(job_id, status="awaiting_zoning", step="zoning", program=prog, progress="Confirm zoning, setbacks and program")

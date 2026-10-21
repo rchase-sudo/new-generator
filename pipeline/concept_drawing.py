@@ -20,12 +20,20 @@ from shapely import affinity  # noqa: E402
 from .ec_drawing import _polys
 
 ASSETS = os.environ.get("FORMA_ASSETS") or os.path.join(os.path.dirname(__file__), "assets")
-for _f in ("Carlito-Regular.ttf", "Carlito-Bold.ttf"):
+for _f in ("Carlito-Regular.ttf", "Carlito-Bold.ttf", "LiberationSans-Regular.ttf", "LiberationSans-Bold.ttf"):
     try:
         font_manager.fontManager.addfont(os.path.join(ASSETS, _f))
     except Exception:  # noqa: BLE001
         pass
-FONT = "Carlito"
+FONT = "Carlito"              # title block (matches the Forma template)
+LFONT = "Liberation Sans"     # plan labels (Arial metrics, like the CAD text style)
+
+SHEET_W, SHEET_H = 34.0, 22.0   # ANSI D
+TXT_H = 0.16                    # plan label cap height, inches (CAD text height)
+CAP = 0.716                     # Arial cap height / em
+LFS = TXT_H * 72 / CAP          # -> font size in points
+LSPACE = (TXT_H * 72 * 5 / 3) / LFS   # AutoCAD MText line spacing 1.0 (1.667 x height)
+T = SHEET_W / 17.0              # title-block type / line scale vs. the 17x11 layout
 
 P_LAYERS = {"P-BLDG": 1, "P-BLDG-HATCH": 8, "P-PAVE-EDGE": 7, "P-CURB": 9, "P-PARKING-STRIPE": 7, "P-ADA": 5,
             "P-WALK": 9, "P-LANDSCAPE": 3, "P-POND": 4, "P-TEXT": 7}
@@ -112,7 +120,7 @@ def _view(sp, parcel, aerial, k_ft, aspect):
 
 def write_sheet(pdf_path, png_path, parcel, env, wet, fl, rds, aerial, k_ft, sp, labels, title_lines, metrics, program, rules,
                 project=None):
-    fig = plt.figure(figsize=(17, 11), dpi=150)
+    fig = plt.figure(figsize=(SHEET_W, SHEET_H), dpi=100)
     bg = fig.add_axes([0, 0, 1, 1])
     bg.axis("off")
     tb = Image.open(os.path.join(ASSETS, "forma_titleblock.jpg"))
@@ -122,7 +130,7 @@ def write_sheet(pdf_path, png_path, parcel, env, wet, fl, rds, aerial, k_ft, sp,
 
     x0, y0, x1, y1 = TB_DRAW
     ax = fig.add_axes([x0 / TB_W + 0.0006, 1 - y1 / TB_H + 0.0006, (x1 - x0) / TB_W - 0.0012, (y1 - y0) / TB_H - 0.0012])
-    aspect = ((x1 - x0) * 17 / TB_W) / ((y1 - y0) * 11 / TB_H)
+    aspect = ((x1 - x0) * SHEET_W / TB_W) / ((y1 - y0) * SHEET_H / TB_H)
     vx0, vy0, vx1, vy1 = _view(sp, parcel, aerial, k_ft, aspect)
     minx, miny, maxx, maxy = aerial["extent"]
     ax.imshow(np.asarray(aerial["image"]), extent=(minx, maxx, miny, maxy), interpolation="bilinear", zorder=0)
@@ -133,22 +141,22 @@ def write_sheet(pdf_path, png_path, parcel, env, wet, fl, rds, aerial, k_ft, sp,
     ax.set_yticks([])
     for s in ax.spines.values():
         s.set_visible(False)
-    ppu = (x1 - x0) / TB_W * 17 * 72 / (vx1 - vx0)   # points per drawing unit
+    ppu = (x1 - x0) / TB_W * SHEET_W * 72 / (vx1 - vx0)   # points per drawing unit
     lw_ft = lambda ft: max(0.4, ft / k_ft * ppu)       # noqa: E731
 
     # existing: wetlands (dashed outline), parcel, setback
     for w in wet:
-        _patch(ax, w["geom"], 2, facecolor="none", edgecolor="#4fdc5a", lw=1.1, ls=(0, (6, 4)))
+        _patch(ax, w["geom"], 2, facecolor="none", edgecolor="#4fdc5a", lw=1.1 * T, ls=(0, (6, 4)))
     for f in fl:
         if f.get("sfha") == "T":
-            _patch(ax, f["geom"], 2, facecolor=(0.3, 0.55, 1, 0.12), edgecolor="#4d8cff", lw=1.0, ls=(0, (6, 4)))
+            _patch(ax, f["geom"], 2, facecolor=(0.3, 0.55, 1, 0.12), edgecolor="#4d8cff", lw=1.0 * T, ls=(0, (6, 4)))
 
     # proposed: landscape pad, pond, pavement + curbs, walks, stripes, ADA, buildings w/ shadow
     if sp.get("grass") is not None:
         _patch(ax, sp["grass"], 3, facecolor=C_GRASS, edgecolor=C_GRASS_EDGE, lw=0.6)
     if sp.get("pond") is not None:
         _patch(ax, sp["pond"].buffer(6 / k_ft), 3, facecolor=C_GRASS, edgecolor=C_GRASS_EDGE, lw=0.6)
-        _patch(ax, sp["pond"], 4, facecolor=C_WATER, edgecolor=C_WATER_EDGE, lw=1.0)
+        _patch(ax, sp["pond"], 4, facecolor=C_WATER, edgecolor=C_WATER_EDGE, lw=1.0 * T)
     _patch(ax, sp["pave"], 5, facecolor=C_ASPHALT, edgecolor=C_CURB, lw=lw_ft(1.0), joinstyle="round")
     _patch(ax, sp["walk"], 6, facecolor=C_WALK, edgecolor=C_WALK_EDGE, lw=0.5)
     for a in sp["ada"]:
@@ -160,29 +168,28 @@ def write_sheet(pdf_path, png_path, parcel, env, wet, fl, rds, aerial, k_ft, sp,
     for b in sp["bldgs"]:
         _patch(ax, affinity.translate(b, sh, -sh), 8, facecolor=(0, 0, 0, 0.38), edgecolor="none")
     for b in sp["bldgs"]:
-        _patch(ax, b, 9, facecolor=C_ROOF, edgecolor=C_ROOF_EDGE, lw=1.0)
+        _patch(ax, b, 9, facecolor=C_ROOF, edgecolor=C_ROOF_EDGE, lw=1.0 * T)
         inner = b.buffer(-2.0 / k_ft, join_style=2)
         if not inner.is_empty:
             _patch(ax, inner, 10, facecolor="none", edgecolor=C_PARAPET, lw=0.6)
 
-    _patch(ax, parcel, 11, facecolor="none", edgecolor="#ff19ff", lw=2.6)
+    _patch(ax, parcel, 11, facecolor="none", edgecolor="#ff19ff", lw=2.6 * T)
     if env is not None:
-        _patch(ax, env, 11, facecolor="none", edgecolor="#ffe600", lw=1.8, ls=(0, (9, 6)))
+        _patch(ax, env, 11, facecolor="none", edgecolor="#ffe600", lw=1.8 * T, ls=(0, (9, 6)))
 
     # labels: white boxes, regular text, centred on the building
-    box_kw = dict(boxstyle="square,pad=0.35", fc="w", ec="none")
+    box_kw = dict(boxstyle=f"square,pad={TXT_H * 72 * 0.5 / LFS:.3f}", fc="w", ec="none")
     placed = []
-    bl_union = None
     for t in labels:
         if t.get("small"):
-            ax.text(t["at"][0], t["at"][1], "\n".join(t["lines"]), ha="center", va="center", fontsize=6.5, family=FONT,
-                    color="#10324a", zorder=12)
+            ax.text(t["at"][0], t["at"][1], "\n".join(t["lines"]), ha="center", va="center", fontsize=LFS, family=LFONT,
+                    color="#10324a", zorder=12, linespacing=LSPACE)
             continue
-        fs = 9.5
-        bw = (max(len(x) for x in t["lines"]) * fs * 0.5 + fs * 0.8) / ppu
-        bh = (len(t["lines"]) * fs * 1.2 + fs * 0.8) / ppu
+        fs = LFS
+        bw = (max(len(x) for x in t["lines"]) * fs * 0.6 + fs) / ppu
+        bh = ((len(t["lines"]) - 1) * LSPACE * fs + TXT_H * 72 + fs) / ppu
         cx, cy = t["at"]
-        gap = 6 / ppu
+        gap = 8 / ppu
         cands = [(0, 0), (0, bh + gap), (0, -bh - gap), (bw + gap, 0), (-bw - gap, 0),
                  (bw + gap, bh + gap), (-bw - gap, bh + gap), (bw + gap, -bh - gap), (-bw - gap, -bh - gap),
                  (0, 2 * (bh + gap)), (0, -2 * (bh + gap))]
@@ -195,30 +202,17 @@ def write_sheet(pdf_path, png_path, parcel, env, wet, fl, rds, aerial, k_ft, sp,
         dx, dy, r = best or (0, 0, (cx - bw / 2, cy - bh / 2, cx + bw / 2, cy + bh / 2))
         placed.append(r)
         if dx or dy:   # moved off its building: leader line
-            ax.plot([cx, cx + dx], [cy, cy + dy], color="w", lw=1.0, zorder=11.5)
-        ax.text(cx + dx, cy + dy, "\n".join(t["lines"]), ha="center", va="center", fontsize=fs, family=FONT,
-                zorder=12, linespacing=1.15, bbox=box_kw)
+            ax.plot([cx, cx + dx], [cy, cy + dy], color="w", lw=1.5, zorder=11.5)
+        ax.text(cx + dx, cy + dy, "\n".join(t["lines"]), ha="center", va="center", fontsize=fs, family=LFONT,
+                zorder=12, linespacing=LSPACE, bbox=box_kw)
     for w in wet:
         g = w["geom"].intersection(parcel)
         if g.is_empty or g.area < 2000 / k_ft ** 2:
             continue
         c = g.representative_point()
         if vx0 < c.x < vx1 and vy0 < c.y < vy1:
-            ax.text(c.x, c.y, "WETLANDS", ha="center", va="center", fontsize=9, family=FONT, zorder=12, bbox=box_kw)
+            ax.text(c.x, c.y, "WETLANDS", ha="center", va="center", fontsize=LFS, family=LFONT, zorder=12, bbox=box_kw)
             break
-
-    # scale bar + north arrow (bottom left)
-    span_ft = (vx1 - vx0) * k_ft
-    bar_ft = [50, 100, 200, 250, 500][int(np.searchsorted([500, 1100, 2000, 3000, 1e9], span_ft))]
-    bx, by = vx0 + (vx1 - vx0) * 0.03, vy0 + (vy1 - vy0) * 0.04
-    blen, hh = bar_ft / k_ft, (vy1 - vy0) * 0.05
-    ax.add_patch(plt.Rectangle((bx - blen * 0.1, by - hh * 0.4), blen * 1.2 + hh * 0.9, hh * 1.25, color=(1, 1, 1, 0.88), zorder=13))
-    ax.plot([bx, bx + blen], [by, by], color="k", lw=3, zorder=14, solid_capstyle="butt")
-    ax.plot([bx, bx + blen / 2], [by, by], color="w", lw=1.4, zorder=15, solid_capstyle="butt")
-    ax.text(bx + blen / 2, by + hh * 0.18, f"0      {bar_ft // 2}      {bar_ft} FT", ha="center", va="bottom", fontsize=7, family=FONT, zorder=15)
-    ax.annotate("N", xy=(bx + blen * 1.1 + hh * 0.45, by + hh * 0.75), xytext=(bx + blen * 1.1 + hh * 0.45, by - hh * 0.15),
-                ha="center", va="bottom", fontsize=8, family=FONT, weight="bold", zorder=15,
-                arrowprops=dict(arrowstyle="-|>", color="k", lw=1.2))
 
     # project block (vertical text, reading bottom-to-top) over the template's sample text
     px0, py0, px1, py1 = TB_PROJECT
@@ -227,9 +221,9 @@ def write_sheet(pdf_path, png_path, parcel, env, wet, fl, rds, aerial, k_ft, sp,
     cyb = (py0 + py1) / 2
     x = 2346 + 6
     for i, line in enumerate(proj[:4]):
-        fs = 17 if i == 0 else 13.5
+        fs = (17 if i == 0 else 13.5) * T
         n = max(len(line), 1)
-        fs = min(fs, (py1 - py0 - 24) / (n * 0.5) * 72 / (TB_H / 11))   # keep inside the block
+        fs = min(fs, (py1 - py0 - 24) / (n * 0.5) * 72 / (TB_H / SHEET_H))   # keep inside the block
         bg.text(x, cyb, line, rotation=90, ha="center", va="center", fontsize=fs, family=FONT,
                 weight="bold" if i == 0 else "normal", zorder=3)
         x += 31 if i == 0 else 29
@@ -245,16 +239,16 @@ def write_sheet(pdf_path, png_path, parcel, env, wet, fl, rds, aerial, k_ft, sp,
             ("PARKING REQ / PROV", f"{m['stalls_required']} / {m['stalls']}  ({m['ada_stalls']} ADA)"),
             ("IMPERVIOUS", f"{m['impervious_pct']}% of site"),
             ("REMAINING LAND", f"{m['remaining_developable_acres']} AC ±")]
-    bg.text(dx0 + 8, dy0 + 4, "SITE DATA", fontsize=6.5, family=FONT, weight="bold", va="top", zorder=3)
+    bg.text(dx0 + 8, dy0 + 4, "SITE DATA", fontsize=6.5 * T, family=FONT, weight="bold", va="top", zorder=3)
     yy = dy0 + 24
     for k_, v in rows:
-        bg.text(dx0 + 8, yy, k_, fontsize=5.2, family=FONT, color="#555", va="top", zorder=3)
-        bg.text(dx1 - 6, yy, v, fontsize=5.6, family=FONT, va="top", ha="right", zorder=3)
+        bg.text(dx0 + 8, yy, k_, fontsize=5.2 * T, family=FONT, color="#555", va="top", zorder=3)
+        bg.text(dx1 - 6, yy, v, fontsize=5.6 * T, family=FONT, va="top", ha="right", zorder=3)
         yy += 21
     if m.get("warnings"):
-        bg.text(dx0 + 8, yy, "\n".join(textwrap.wrap("; ".join(m["warnings"]), 46)[:2]), fontsize=4.8, family=FONT,
+        bg.text(dx0 + 8, yy, "\n".join(textwrap.wrap("; ".join(m["warnings"]), 46)[:2]), fontsize=4.8 * T, family=FONT,
                 color="#b42318", va="top", zorder=3)
 
     fig.savefig(pdf_path)
-    fig.savefig(png_path, dpi=110)
+    fig.savefig(png_path, dpi=55)
     plt.close(fig)

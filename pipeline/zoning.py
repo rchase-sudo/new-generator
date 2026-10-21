@@ -36,6 +36,8 @@ for a vacant land listing, to be drawn as a preliminary site plan. Be realistic 
 that are permitted by right, that fit the buildable area with surface parking, and that a buyer of this listing would
 actually build. Size buildings so that building + parking + drive aisles + stormwater fit in the buildable acreage
 (surface parking needs ~350 SF per stall including aisles; stormwater ~8-10% of impervious area).
+Size the program to `frontage_buildable_acres` (the usable land reachable from the road; wetlands or streams may cut
+off the rest) and leave about 30% of it for the loop drive, landscaping and stormwater. List buildings in priority order.
 Parking: compute the MINIMUM number of stalls the ordinance requires for exactly this program, use by use, from the
 ordinance's ratios (round up per the ordinance) and report that number; do not add a cushion. Mark drive_thru true for
 any use that needs a vehicle queue lane (drive-thru restaurant/coffee/bank/pharmacy, tunnel car wash).
@@ -111,7 +113,7 @@ def setbacks_from(rules, defaults=None):
 
 def program(listing, summary, rules):
     user = (f"LISTING: {json.dumps({k: listing.get(k) for k in ('street_address','city','state','acres','price','zoning','frontage_ft','utilities','summary')})}\n"
-            f"SITE (measured): {json.dumps({k: summary.get(k) for k in ('parcel_acres','buildable_acres','envelope_acres','frontage_ft','fronting_roads','wetland_acres','flood_sfha_acres')})}\n"
+            f"SITE (measured): {json.dumps({k: summary.get(k) for k in ('parcel_acres','buildable_acres','frontage_buildable_acres','envelope_acres','frontage_ft','fronting_roads','wetland_acres','flood_sfha_acres')})}\n"
             f"ZONING: {json.dumps({k: rules.get(k) for k in ('jurisdiction','district','district_name','setbacks_ft','max_height_ft','max_lot_coverage_pct','max_impervious_pct','max_far','parking_ratios','uses','notes')})}\n"
             f"Choose the highest-and-best-use concept and return it in this JSON shape:\n{PROGRAM_SCHEMA}")
     prog, _ = ask_json(PROGRAM_SYSTEM, user, max_tokens=2500, timeout=240)
