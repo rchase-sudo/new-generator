@@ -12,7 +12,7 @@ image = (
     .apt_install("libpango-1.0-0", "libpangoft2-1.0-0", "libharfbuzz0b", "libharfbuzz-subset0", "fontconfig")
     .pip_install(
         "requests==2.32.3", "shapely==2.0.6", "pyproj==3.7.0", "numpy==1.26.4", "pillow==10.4.0",
-        "matplotlib==3.9.2", "ezdxf==1.3.4", "fastapi[standard]==0.115.0", "weasyprint==62.3",
+        "matplotlib==3.9.2", "ezdxf==1.3.4", "fastapi[standard]==0.115.0", "weasyprint==70.0", "pydyf==0.13.0",
     )
     .env({"FORMA_ASSETS": "/assets"})
     .add_local_python_source("pipeline")
