@@ -3,7 +3,7 @@ import json
 import os
 import re
 
-from .http import post
+from .http import ClientError, post
 
 MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5-5")
 
@@ -70,9 +70,15 @@ def ask_tool(system, user, name, description, max_tokens=8000, timeout=300, prop
     body = {"model": MODEL, "max_tokens": max_tokens, "system": system, "messages": [{"role": "user", "content": user}],
             "tools": [{"name": name, "description": description, "input_schema": schema}],
             "tool_choice": {"type": "tool", "name": name}}
-    r = post("https://api.anthropic.com/v1/messages",
-             headers={"x-api-key": os.environ["ANTHROPIC_API_KEY"], "anthropic-version": "2023-06-01", "content-type": "application/json"},
-             json=body, timeout=timeout, tries=2)
+    hdr = {"x-api-key": os.environ["ANTHROPIC_API_KEY"], "anthropic-version": "2023-06-01", "content-type": "application/json"}
+    try:
+        r = post("https://api.anthropic.com/v1/messages", headers=hdr, json=body, timeout=timeout, tries=2)
+    except ClientError as e:
+        if "tool_choice" not in str(e):
+            raise
+        body["tool_choice"] = {"type": "auto"}   # models that think by default refuse a forced tool; ask for it instead
+        body["messages"][0]["content"] += f"\n\nRespond only by calling the {name} tool."
+        r = post("https://api.anthropic.com/v1/messages", headers=hdr, json=body, timeout=timeout, tries=2)
     js = r.json()
     for b in js.get("content", []) or []:
         if b.get("type") == "tool_use" and b.get("name") == name:
