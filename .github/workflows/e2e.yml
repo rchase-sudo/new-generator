@@ -5,7 +5,7 @@ on:
     inputs:
       listing_file: {description: "Listing text file in repo", default: "tests/lot6_loopnet.txt"}
       candidate: {description: "Parcel candidate index to approve", default: "0"}
-      setbacks: {description: "front side rear (ft), blank for none", default: "65 20 20"}
+      setbacks: {description: "override setbacks: front side rear (ft); blank = use researched zoning", default: ""}
 
 jobs:
   e2e:

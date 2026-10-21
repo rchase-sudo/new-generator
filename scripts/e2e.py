@@ -54,13 +54,24 @@ if j["status"] == "error":
     print("ERROR:", j["error"]); print(j.get("progress")); sys.exit(1)
 print(json.dumps(json.load(open(f"{out}/candidates.json")), indent=1))
 
-api(action="approve_parcel", job_id=job_id, index=idx, **({"setbacks": sb} if sb else {}))
-j = wait(job_id, {"ec_ready"})
-json.dump({k: j.get(k) for k in ("status", "summary", "error", "progress", "outputs")}, open(f"{out}/job.json", "w"), indent=1)
+api(action="approve_parcel", job_id=job_id, index=idx)
+j = wait(job_id, {"awaiting_zoning"})
+json.dump({k: j.get(k) for k in ("status", "summary", "zoning", "program", "setbacks", "error", "progress")}, open(f"{out}/zoning.json", "w"), indent=1)
+if j["status"] == "error":
+    print("ERROR:", j["error"]); print(j.get("progress")); sys.exit(1)
+print("ZONING:", json.dumps({k: (j.get("zoning") or {}).get(k) for k in ("jurisdiction", "district", "district_name", "setbacks_ft", "parking_setbacks_ft", "confidence")}, indent=1))
+print("PROGRAM:", json.dumps(j.get("program"), indent=1)[:2500])
+
+api(action="approve_zoning", job_id=job_id, **({"setbacks": sb} if sb else {}))
+j = wait(job_id, {"awaiting_layout"})
+json.dump({k: j.get(k) for k in ("status", "summary", "layout", "zoning", "program", "setbacks", "error", "progress", "outputs")}, open(f"{out}/job.json", "w"), indent=1)
 if j["status"] == "error":
     print("ERROR:", j["error"]); print(j.get("progress")); sys.exit(1)
 for step, files in j["files"].items():
     for name, url in files.items():
+        if name.endswith((".pkl",)):
+            continue
         r = requests.get(url, timeout=120)
         open(f"{out}/{name}", "wb").write(r.content)
-print(json.dumps(j["summary"], indent=1))
+print("LAYOUT:", json.dumps(j["layout"], indent=1))
+print(api(action="approve_layout", job_id=job_id))

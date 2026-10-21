@@ -53,3 +53,9 @@ def set_config(key, value):
     r = requests.post(f"{URL}/rest/v1/pipeline_config", json={"key": key, "value": value},
                       headers=_h({"Content-Type": "application/json", "Prefer": "resolution=merge-duplicates"}), timeout=30)
     r.raise_for_status()
+
+
+def download(job_id, name):
+    r = requests.get(f"{URL}/storage/v1/object/{BUCKET}/{job_id}/{name}", headers=_h(), timeout=120)
+    r.raise_for_status()
+    return r.content

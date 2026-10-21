@@ -1,7 +1,10 @@
 // Forma concept pipeline API (Concept project).
-// POST { action: "start" | "approve_parcel" | "status" | "list", ... }
+// POST { action: "start" | "approve_parcel" | "approve_zoning" | "approve_layout" | "rerun" | "status" | "list", ... }
 //   start           { listing_text, source?: "tool"|"crm", crm_ref? }            -> { job_id }
 //   approve_parcel  { job_id, index? | indexes?: number[], geometry?, setbacks? } -> { ok }  (several indexes = assemblage)
+//   approve_zoning  { job_id, setbacks?, parking_setbacks?, program?, zoning? }   -> { ok }  (runs / re-runs the layout)
+//   approve_layout  { job_id }                                                    -> { ok }
+//   rerun           { job_id, step: "parse"|"ec"|"zoning"|"layout" }              -> { ok }
 //   status          { job_id }                                                    -> job row + signed file URLs
 //   list            { limit? }                                                    -> recent jobs
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
@@ -74,6 +77,40 @@ Deno.serve(async (req) => {
       const { error: e2 } = await db.from("pipeline_jobs").update(patch).eq("id", body.job_id);
       if (e2) throw e2;
       await kickWorker(body.job_id, "ec");
+      return json({ ok: true });
+    }
+
+    if (action === "approve_zoning") {
+      const { data: job, error } = await db.from("pipeline_jobs").select("status,zoning,program").eq("id", body.job_id).single();
+      if (error) throw error;
+      if (!["awaiting_zoning", "awaiting_layout", "layout_approved", "error"].includes(job.status))
+        return json({ error: `Job is ${job.status}; zoning can be confirmed once research finishes` }, 409);
+      const patch: Record<string, unknown> = { status: "zoning_approved", step: "layout", error: null };
+      const zoning = { ...(job.zoning ?? {}), ...(body.zoning ?? {}) };
+      if (body.parking_setbacks) zoning.parking_setbacks_ft = body.parking_setbacks;
+      patch.zoning = zoning;
+      if (body.setbacks) patch.setbacks = body.setbacks;
+      if (body.program) patch.program = { ...body.program, locked: true };
+      const { error: e2 } = await db.from("pipeline_jobs").update(patch).eq("id", body.job_id);
+      if (e2) throw e2;
+      await kickWorker(body.job_id, "layout");
+      return json({ ok: true });
+    }
+
+    if (action === "approve_layout") {
+      const { data: job, error } = await db.from("pipeline_jobs").select("status").eq("id", body.job_id).single();
+      if (error) throw error;
+      if (job.status !== "awaiting_layout") return json({ error: `Job is ${job.status}` }, 409);
+      const { error: e2 } = await db.from("pipeline_jobs")
+        .update({ status: "layout_approved", step: "deliverables", progress: "Layout approved" }).eq("id", body.job_id);
+      if (e2) throw e2;
+      return json({ ok: true });
+    }
+
+    if (action === "rerun") {
+      if (!["parse", "ec", "zoning", "layout"].includes(body.step)) return json({ error: "Unknown step" }, 400);
+      await db.from("pipeline_jobs").update({ error: null, progress: `Re-running ${body.step}` }).eq("id", body.job_id);
+      await kickWorker(body.job_id, body.step);
       return json({ ok: true });
     }
 
