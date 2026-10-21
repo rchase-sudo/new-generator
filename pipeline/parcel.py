@@ -32,6 +32,26 @@ def _norm_apn(s):
     return re.sub(r"[^0-9A-Za-z]", "", str(s or "")).upper()
 
 
+def _apns(listing):
+    a = listing.get("apn")
+    if not a:
+        return []
+    if isinstance(a, str):
+        a = re.split(r"[;,&]|\band\b", a)
+    return [x.strip() for x in a if str(x).strip()]
+
+
+def _apn_hit(c, wanted):
+    """True when any of the candidate's id-like attributes equals one of the listing's APNs/PINs."""
+    if not wanted:
+        return False
+    vals = {_norm_apn(c.get("apn"))}
+    for v in (c.get("attrs") or {}).values():
+        if isinstance(v, (str, int)) and 5 <= len(str(v)) <= 30:
+            vals.add(_norm_apn(v))
+    return bool(vals & wanted)
+
+
 # ---------------------------------------------------------------- Regrid
 def regrid_search(listing, lat, lon, epsg, radius_m=600, limit=60):
     tok = os.environ.get("REGRID_TOKEN")
@@ -39,9 +59,9 @@ def regrid_search(listing, lat, lon, epsg, radius_m=600, limit=60):
         return []
     feats = []
     try:
-        if listing.get("apn"):
-            r = get(f"{REGRID}/parcels/apn", params={"parcelnumber": listing["apn"], "token": tok, "limit": 10})
-            feats = _features(r.json())
+        for apn in _apns(listing):
+            r = get(f"{REGRID}/parcels/apn", params={"parcelnumber": apn, "token": tok, "limit": 5})
+            feats += _features(r.json())
         street = (listing.get("street_address") or "").strip()
         if not feats and street[:1].isdigit():
             q = ", ".join(x for x in [street, listing.get("city"), listing.get("state"), listing.get("zip")] if x)
@@ -49,13 +69,13 @@ def regrid_search(listing, lat, lon, epsg, radius_m=600, limit=60):
             feats = _features(r.json())
             if feats:  # also pull neighbours so the approval screen can offer alternatives (assemblages, wrong match)
                 try:
-                    r2 = get(f"{REGRID}/parcels/point", params={"lat": lat, "lon": lon, "radius": 150, "limit": 15, "token": tok})
+                    r2 = get(f"{REGRID}/parcels/point", params={"lat": lat, "lon": lon, "radius": 250, "limit": 30, "token": tok})
                     feats += _features(r2.json())
                 except Exception:  # noqa: BLE001
                     pass
-        if not feats:
+        if not feats or (_apns(listing) and len(feats) < len(_apns(listing))):
             r = get(f"{REGRID}/parcels/point", params={"lat": lat, "lon": lon, "radius": radius_m, "limit": limit, "token": tok})
-            feats = _features(r.json())
+            feats += _features(r.json())
     except Exception:  # noqa: BLE001  (no coverage / sandbox limits / quota) -> fall back
         return []
     out = []
@@ -219,7 +239,7 @@ def _addr_key(a):
 
 def rank(cands, listing, lat, lon, road_geom_ll=None):
     target = listing.get("acres")
-    apn = _norm_apn(listing.get("apn"))
+    wanted = {_norm_apn(a) for a in _apns(listing)}
     pt = Point(lon, lat)
     seen, out = set(), []
     for c in cands:
@@ -232,7 +252,8 @@ def rank(cands, listing, lat, lon, road_geom_ll=None):
         if target:
             err = abs(c["acres"] - target) / target
             score += max(0.0, 1 - err * 4) * 60      # within 25% -> some credit; exact -> 60
-        if apn and _norm_apn(c.get("apn")) and (_norm_apn(c.get("apn")) == apn or apn in _norm_apn(c.get("apn"))):
+        c["apn_match"] = _apn_hit(c, wanted)
+        if c["apn_match"]:
             score += 80
         hn, words = _addr_key(listing.get("street_address"))
         chn, cwords = _addr_key(c.get("address"))
@@ -244,6 +265,13 @@ def rank(cands, listing, lat, lon, road_geom_ll=None):
         c["score"] = round(score, 1)
         out.append(c)
     out.sort(key=lambda c: -c["score"])
+    hits = [c for c in out if c.get("apn_match")]
+    if len(hits) >= 2:  # listing is an assemblage of several tax parcels -> offer the combined site first
+        g = unary_union([shape(c["geometry"]) for c in hits]).buffer(0)
+        out.insert(0, {"source": hits[0]["source"], "geometry": mapping(g), "acres": round(sum(c["acres"] for c in hits), 3),
+                       "apn": ", ".join(str(c.get("apn")) for c in hits), "owner": "; ".join(sorted({str(c.get("owner")) for c in hits if c.get("owner")})),
+                       "address": hits[0].get("address"), "zoning": ", ".join(sorted({str(c.get("zoning")) for c in hits if c.get("zoning")})),
+                       "assemblage": True, "parts": len(hits), "score": round(max(c["score"] for c in hits) + 50, 1)})
     return out
 
 

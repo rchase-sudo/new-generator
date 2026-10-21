@@ -43,11 +43,7 @@ def step_parse(job_id):
     k = units_to_ft(epsg)
 
     # roads around the geocode point help find the parcel that fronts the listing's road
-    c = to_crs(shape({"type": "Point", "coordinates": [lon, lat]}), 4326, epsg)
-    half = 1500 / k
-    rds = context.roads((c.x - half, c.y - half, c.x + half, c.y + half), epsg)
-    road_sp = context.named_road(rds, listing.get("road_name") or listing.get("street_address"))
-    road_ll = to_crs(road_sp, epsg, 4326) if road_sp is not None else None
+    road_ll = None  # only needed (and only fetched) when the listing has no street number, below
 
     # No street number (e.g. "Pocahontas Trl, Lot 6"): the geocode is just somewhere on the road, so search the
     # whole named road near the town/ZIP and let acreage + frontage pick the parcel.

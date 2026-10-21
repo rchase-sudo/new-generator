@@ -14,3 +14,6 @@ Property type: Land
 Lot size: 4.04 AC
 Zoning: HC
 Broker: William Yeager, Pickett Sprouse Commercial Real Estate
+Address: 2839 E US 70 Hwy, Durham, NC 27703
+PINs: 0759465238, 0759466233, 0759467569
+Approximately 920 feet from Leesville Rd.

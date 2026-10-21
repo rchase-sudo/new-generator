@@ -16,7 +16,7 @@ lot              lot / unit / parcel label if given (e.g. "Lot 6")
 city, state      state as 2-letter code
 zip
 county
-apn              parcel / tax map number exactly as written
+apn              parcel / tax map / PIN number exactly as written; if several parcels, a JSON list of strings
 acres            number (gross site area)
 price            number in dollars
 zoning           code as written (e.g. "B1")
