@@ -157,7 +157,10 @@ def prepare(work, parcel_sp, k_ft, aerial, rds, lay, program=None, seed=3):
     dist = 1.75 * S + 45.0
     el = math.radians(33)
     cam_xy = -n_in * dist * math.cos(el) + t_al * dist * 0.28
+    # the lot: only this area may change in the photoreal pass (parcel + the driveway out to the road)
+    lot = unary_union([parcel_sp, sp["drive"]] if sp.get("drive") is not None else [parcel_sp]).buffer(0)
     scene = {
+        "lot": Wg(lot),
         "ground": {"corners": [W(minx, miny), W(maxx, miny), W(maxx, maxy), W(minx, maxy)]},
         "site_rect": [W(sx0, sy0), W(sx1, sy1)],
         "curbs": Wg(pave),

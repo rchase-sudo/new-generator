@@ -508,3 +508,17 @@ sc.render.image_settings.file_format = 'PNG'
 sc.render.filepath = OUT
 bpy.ops.render.render(write_still=True)
 print('DONE', OUT)
+
+# ---------------------------------------------------------------- lot mask (screen-space polygons of what may change)
+from bpy_extras.object_utils import world_to_camera_view
+def proj(x, y, z):
+    v = world_to_camera_view(sc, co, Vector((x, y, z)))
+    return [round(v.x * RW, 1), round((1 - v.y) * RH, 1)]
+polys = []
+for ring_ in D.get('lot', [])[:1]:
+    polys.append([proj(p[0], p[1], 0.0) for p in ring_])
+for B in D['buildings']:
+    top = B.get('entry_H', B['H']) + 0.3
+    polys.append([proj(p[0], p[1], 0.0) for p in B['poly']] + [proj(p[0], p[1], top) for p in B['poly']])   # hull later
+json.dump({'w': RW, 'h': RH, 'lot': polys[:1], 'buildings': polys[1:]}, open(OUT.replace('.png', '_mask.json'), 'w'))
+print('MASK', OUT.replace('.png', '_mask.json'))

@@ -41,10 +41,12 @@ def run(job_id, step):
             step_layout(job_id)
         elif step == "render":
             step_render(job_id)
+        elif step == "render_composite":
+            step_render_composite(job_id)
         else:
             raise ValueError(f"unknown step {step}")
     except Exception as e:  # noqa: BLE001
-        if step == "render":   # a failed render never invalidates an approved plan
+        if step in ("render", "render_composite"):   # a failed render never invalidates an approved plan
             supa.update_job(job_id, render_status="failed", render_error=f"{type(e).__name__}: {e}"[:1500])
         else:
             supa.update_job(job_id, status="error", error=f"{type(e).__name__}: {e}", step=step,
@@ -247,6 +249,7 @@ def step_render(job_id):
     supa.update_job(job_id, render_status="rendering")
     out = render3d.render(work, width=1600, height=1000, samples=64)
     key = supa.upload(job_id, out, "model_front.png")
+    supa.upload(job_id, out.replace(".png", "_mask.json"), "model_front_mask.json")
     outputs = supa.get_job(job_id).get("outputs") or {}
     outputs["render"] = {**(outputs.get("render") or {}), "model_front.png": key}
     supa.update_job(job_id, outputs=outputs, render_status="nanobanana")
@@ -254,3 +257,36 @@ def step_render(job_id):
                       headers=supa._h({"Content-Type": "application/json"}), timeout=60)
     if r.status_code >= 300:
         raise RuntimeError(f"Nano Banana hand-off failed: {r.status_code} {r.text[:300]}")
+
+
+def step_render_composite(job_id):
+    """Keep the Nano Banana pass inside the lot only: its output is used inside the property (and the building
+    volumes standing on it); everything outside comes from the 3D model render, i.e. the real surroundings."""
+    import json as _json
+    from PIL import Image, ImageDraw, ImageFilter
+    from shapely.geometry import MultiPoint, Polygon as _Poly
+    from shapely.ops import unary_union as _uu
+    job = supa.get_job(job_id)
+    raw_name = next((n for n in ("render_raw.png", "render_raw.jpg") if n in ((job.get("outputs") or {}).get("render") or {})), None)
+    if not raw_name:
+        raise RuntimeError("Nano Banana output missing")
+    base = Image.open(io.BytesIO(supa.download(job_id, "model_front.png"))).convert("RGB")
+    raw = Image.open(io.BytesIO(supa.download(job_id, raw_name))).convert("RGB").resize(base.size, Image.LANCZOS)
+    m = _json.loads(supa.download(job_id, "model_front_mask.json"))
+    sx, sy = base.size[0] / m["w"], base.size[1] / m["h"]
+    shapes = [_Poly([(x * sx, y * sy) for x, y in m["lot"][0]]).buffer(0)] if m.get("lot") else []
+    shapes += [MultiPoint([(x * sx, y * sy) for x, y in b]).convex_hull for b in m.get("buildings", [])]
+    region = _uu(shapes).buffer(4)
+    mask = Image.new("L", base.size, 0)
+    d = ImageDraw.Draw(mask)
+    for g in getattr(region, "geoms", [region]):
+        d.polygon(list(g.exterior.coords), fill=255)
+    mask = mask.filter(ImageFilter.GaussianBlur(3))
+    out = Image.composite(raw, base, mask)
+    path = os.path.join(tempfile.mkdtemp(), "render.jpg")
+    out.save(path, quality=93)
+    key = supa.upload(job_id, path, "render.jpg")
+    outputs = supa.get_job(job_id).get("outputs") or {}
+    outputs["render"] = {**(outputs.get("render") or {}), "render.jpg": key}
+    outputs["render"].pop("render.png", None)
+    supa.update_job(job_id, outputs=outputs, render_status="completed", render_error=None)

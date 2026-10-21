@@ -43,6 +43,10 @@ function prompt(program: Record<string, unknown> | null) {
     `parked cars in the stalls and a couple on the road, healthy mowed lawn and realistic ornamental trees in the islands, ` +
     `natural mixed woodland matching the tree line, summer midday sun with soft natural shadows and light atmospheric haze ` +
     `toward the horizon. Architectural marketing photography quality.\n\n` +
+    `IMPORTANT: change ONLY the proposed development on its own lot (the new buildings, parking lot, driveway, lawn and ` +
+    `landscaping in the middle of the image). Everything outside that lot — neighboring buildings, lots, parking areas, ` +
+    `roads, fields and woods — must stay exactly as it appears in the input: same layout, same buildings, same positions. ` +
+    `Do not redesign, rebuild, add to or remove anything on neighboring properties.\n\n` +
     `No text, no labels, no signs with words, no logos, no watermarks, no borders.`
   );
 }
@@ -79,13 +83,21 @@ async function run(jobId: string) {
       const mime = part.inlineData?.mimeType || part.inline_data?.mime_type || "image/png";
       const ext = mime.includes("jpeg") ? "jpg" : "png";
       const bytes = Uint8Array.from(atob(b), (c) => c.charCodeAt(0));
-      const key = `${jobId}/render.${ext}`;
+      const key = `${jobId}/render_raw.${ext}`;
       const up = await db.storage.from("pipeline").upload(key, bytes, { contentType: mime, upsert: true });
       if (up.error) throw new Error(`upload failed: ${up.error.message}`);
       const { data: cur } = await db.from("pipeline_jobs").select("outputs").eq("id", jobId).single();
       const outputs = { ...(cur?.outputs ?? {}) };
-      outputs.render = { ...(outputs.render ?? {}), [`render.${ext}`]: key };
-      await db.from("pipeline_jobs").update({ outputs, render_status: "completed", render_error: null }).eq("id", jobId);
+      outputs.render = { ...(outputs.render ?? {}), [`render_raw.${ext}`]: key };
+      await db.from("pipeline_jobs").update({ outputs, render_status: "compositing", render_error: null }).eq("id", jobId);
+      // the worker keeps the photoreal pass inside the lot only (outside = the real surroundings from the model)
+      const { data: cfgRows } = await db.from("pipeline_config").select("key,value").in("key", ["worker_url", "worker_token"]);
+      const cfg = Object.fromEntries((cfgRows ?? []).map((r: { key: string; value: string }) => [r.key, r.value]));
+      const k = await fetch(String(cfg.worker_url).replace(/\/$/, "") + "/", {
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${cfg.worker_token}` },
+        body: JSON.stringify({ job_id: jobId, step: "render_composite" }),
+      });
+      if (!k.ok) throw new Error(`composite hand-off failed: ${k.status}`);
       return;
     } catch (e) {
       lastErr = e instanceof Error ? e.message : String(e);
