@@ -78,7 +78,12 @@ def envelope(parcel, edges, setbacks_ft, k_ft):
     for e in edges:
         d = (setbacks_ft or {}).get(e["kind"])
         if d:
-            cuts.append(e["line"].buffer(d / k_ft, cap_style=2, join_style=2))
+            # extend each edge past its ends so neighbouring strips overlap at vertices (no slivers, sharp corners)
+            (x0, y0), (x1, y1) = e["line"].coords[0], e["line"].coords[-1]
+            L = math.hypot(x1 - x0, y1 - y0) or 1
+            ux, uy, ext = (x1 - x0) / L, (y1 - y0) / L, d / k_ft
+            seg = LineString([(x0 - ux * ext, y0 - uy * ext), (x1 + ux * ext, y1 + uy * ext)])
+            cuts.append(seg.buffer(d / k_ft, cap_style=2, join_style=2))
     env = parcel.difference(unary_union(cuts)) if cuts else parcel
     return env.buffer(0)
 

@@ -82,6 +82,39 @@ def arcgis_query_envelope(layer_url, lat, lon, half_m=700):
     return js.get("features", [])
 
 
+def arcgis_query_polygon(layer_url, poly_ll):
+    """Parcels intersecting a (simplified) lon/lat polygon, queried in ~2 km tiles to stay under record caps."""
+    from shapely.geometry import box as _box
+    poly_ll = poly_ll.simplify(0.0002)
+    minx, miny, maxx, maxy = poly_ll.bounds
+    step = 0.02
+    feats, seen = [], set()
+    y = miny
+    while y < maxy:
+        x = minx
+        while x < maxx:
+            cell = poly_ll.intersection(_box(x, y, x + step, y + step))
+            x += step
+            for part in getattr(cell, "geoms", [cell]):
+                if part.is_empty or part.geom_type != "Polygon":
+                    continue
+                rings = [list(map(list, part.exterior.coords))]
+                geom = json.dumps({"rings": rings, "spatialReference": {"wkid": 4326}})
+                r = post(f"{layer_url}/query", data={"geometry": geom, "geometryType": "esriGeometryPolygon", "inSR": 4326,
+                                                      "spatialRel": "esriSpatialRelIntersects", "outFields": "*", "returnGeometry": "true",
+                                                      "outSR": 4326, "f": "geojson"}, timeout=120)
+                js = r.json()
+                if "error" in js:
+                    raise RuntimeError(js["error"])
+                for f in js.get("features", []):
+                    key = json.dumps(f.get("geometry", {}).get("coordinates", [])[:1])[:200]
+                    if key not in seen:
+                        seen.add(key)
+                        feats.append(f)
+        y += step
+    return feats
+
+
 def find_layer(service_url):
     """Given a MapServer/FeatureServer root, return the parcel polygon layer URL."""
     js = get(service_url, params={"f": "json"}).json()
@@ -106,11 +139,11 @@ def _pick(attrs, keys):
     return None
 
 
-def arcgis_search(layer_urls, listing, lat, lon, epsg, half_m=700):
+def arcgis_search(layer_urls, listing, lat, lon, epsg, half_m=700, corridor_ll=None):
     out = []
     for url in layer_urls:
         try:
-            feats = arcgis_query_envelope(url, lat, lon, half_m)
+            feats = arcgis_query_polygon(url, corridor_ll) if corridor_ll is not None else arcgis_query_envelope(url, lat, lon, half_m)
         except Exception:  # noqa: BLE001
             continue
         for f in feats:
@@ -188,18 +221,39 @@ def rank(cands, listing, lat, lon, road_geom_ll=None):
     return out
 
 
-def find_parcels(listing, lat, lon, road_geom_ll=None, county_layer=None, max_out=6):
+def find_parcels(listing, lat, lon, road_geom_ll=None, county_layer=None, max_out=6, corridor_ll=None):
+    """corridor_ll: lon/lat polygon along the listing's road, used when the listing has no street number."""
     epsg = state_plane_epsg(lat, lon)
     cands = regrid_search(listing, lat, lon, epsg)
     source = "regrid" if cands else None
     if not cands:
         urls = ([county_layer] if county_layer else []) + STATEWIDE.get((listing.get("state") or "").upper(), [])
-        cands = arcgis_search(urls, listing, lat, lon, epsg, half_m=1500 if road_geom_ll is not None else 900)
+        cands = arcgis_search(urls, listing, lat, lon, epsg, half_m=1500 if road_geom_ll is not None else 900, corridor_ll=corridor_ll)
         source = "arcgis"
         if not cands:
             found = discover_county_layer(listing)
             if found:
                 county_layer = found
-                cands = arcgis_search([found], listing, lat, lon, epsg, half_m=1500)
+                cands = arcgis_search([found], listing, lat, lon, epsg, half_m=1500, corridor_ll=corridor_ll)
+    target = listing.get("acres")
+    if corridor_ll is not None and target:
+        near = [c for c in cands if abs(c["acres"] - target) / target <= 0.15]
+        cands = near or cands
     ranked = rank(cands, listing, lat, lon, road_geom_ll)
+    zipc = str(listing.get("zip") or "")[:5]
+    if zipc and len(ranked) > 1:
+        # Break ties between look-alike parcels on the same road: same ZIP as the listing wins.
+        for c in ranked[:8]:
+            try:
+                pt = shape(c["geometry"]).representative_point()
+                js = get("https://nominatim.openstreetmap.org/reverse",
+                         params={"lat": pt.y, "lon": pt.x, "format": "json", "zoom": 16}).json()
+                c["zip"] = (js.get("address", {}).get("postcode") or "")[:5]
+                if c["zip"] == zipc:
+                    c["score"] = round(c["score"] + 40, 1)
+                import time as _t
+                _t.sleep(1.1)  # Nominatim usage policy: 1 request / second
+            except Exception:  # noqa: BLE001
+                continue
+        ranked.sort(key=lambda c: -c["score"])
     return {"epsg": epsg, "source": source, "county_layer": county_layer, "candidates": ranked[:max_out]}

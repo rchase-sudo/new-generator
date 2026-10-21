@@ -24,9 +24,16 @@ def geocode(listing: dict):
                 return c["y"], c["x"], m[0]["matchedAddress"]
         except Exception:  # noqa: BLE001
             pass
-    for q in [f"{street or listing.get('road_name')}, {city}, {state} {zipc}",
-              f"{listing.get('road_name') or street}, {listing.get('county') or ''} County, {state}",
-              f"{city}, {state} {zipc}"]:
+    road = street or listing.get("road_name")
+    qs = []
+    if road:
+        qs.append(", ".join(x for x in [road, city, f"{state or ''} {zipc}".strip()] if x))
+        if listing.get("county"):
+            qs.append(f"{road}, {listing['county']} County, {state}")
+    qs.append(", ".join(x for x in [city, f"{state or ''} {zipc}".strip()] if x))
+    if zipc:
+        qs.append(f"{zipc}, USA")
+    for q in qs:
         try:
             r = get("https://nominatim.openstreetmap.org/search", params={"q": q, "format": "json", "limit": 1, "countrycodes": "us"})
             js = r.json()

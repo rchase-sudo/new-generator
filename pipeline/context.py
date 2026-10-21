@@ -137,3 +137,39 @@ def named_road(road_list, name):
     key = name.lower().replace("trl", "trail").replace("rd", "road").replace(" ", "")
     hits = [r["centerline"] for r in road_list if r["name"] and key[:8] in r["name"].lower().replace(" ", "")]
     return unary_union(hits) if hits else None
+
+
+SUFFIXES = {"trl", "trail", "rd", "road", "st", "street", "ave", "avenue", "hwy", "highway", "dr", "drive", "ln", "lane", "way",
+            "blvd", "boulevard", "pike", "pkwy", "parkway", "ct", "court", "cir", "circle", "tpke", "turnpike", "route", "rt", "us", "sr"}
+
+
+def road_key(name):
+    """'Pocahontas Trl' -> ('Pocahontas', None); 'US Route 60' -> (None, '60')."""
+    import re
+    if not name:
+        return None, None
+    words = [w for w in re.split(r"[^A-Za-z0-9]+", name) if w]
+    num = next((w for w in words if w.isdigit()), None)
+    core = [w for w in words if w.lower() not in SUFFIXES and not w.isdigit()]
+    return (" ".join(core) or None), num
+
+
+def named_road_near(name, lat, lon, radius_m=12000):
+    """OSM ways matching the road name (or route number) within radius of a point. Returns lon/lat geometry."""
+    core, num = road_key(name)
+    if not core and not num:
+        return None
+    conds = []
+    if core:
+        conds.append(f'way(around:{radius_m},{lat},{lon})["highway"]["name"~"{core}",i];')
+    if num:
+        conds.append(f'way(around:{radius_m},{lat},{lon})["highway"]["ref"~"(^|[^0-9]){num}($|[^0-9])"];')
+    q = f"[out:json][timeout:60];({''.join(conds)});out geom tags;"
+    for u in OVERPASS:
+        try:
+            js = post(u, data={"data": q}, timeout=120).json()
+            lines = [LineString([(p["lon"], p["lat"]) for p in el["geometry"]]) for el in js.get("elements", []) if len(el.get("geometry", [])) > 1]
+            return unary_union(lines) if lines else None
+        except Exception:  # noqa: BLE001
+            continue
+    return None

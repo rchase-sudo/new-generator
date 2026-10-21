@@ -49,8 +49,22 @@ def step_parse(job_id):
     road_sp = context.named_road(rds, listing.get("road_name") or listing.get("street_address"))
     road_ll = to_crs(road_sp, epsg, 4326) if road_sp is not None else None
 
+    # No street number (e.g. "Pocahontas Trl, Lot 6"): the geocode is just somewhere on the road, so search the
+    # whole named road near the town/ZIP and let acreage + frontage pick the parcel.
+    corridor = None
+    street = listing.get("street_address") or ""
+    if not (street and street.split()[0][:1].isdigit()):
+        supa.update_job(job_id, progress="Tracing the road named in the listing")
+        town = geocode({"city": listing.get("city"), "state": listing.get("state"), "zip": listing.get("zip"),
+                        "road_name": None, "street_address": None, "county": listing.get("county")})
+        road_all = context.named_road_near(listing.get("road_name") or street, town[0], town[1], radius_m=15000)
+        if road_all is not None:
+            corridor = road_all.buffer(0.0018)  # ~150-200 m either side
+            road_ll = road_all
+            lat, lon = town[0], town[1]
+
     supa.update_job(job_id, progress="Searching parcels")
-    res = find_parcels(listing, lat, lon, road_geom_ll=road_ll, county_layer=job.get("county_layer"))
+    res = find_parcels(listing, lat, lon, road_geom_ll=road_ll, county_layer=job.get("county_layer"), corridor_ll=corridor)
     if not res["candidates"]:
         raise RuntimeError("No parcels found near the listing location. Paste the parcel ID (APN) or adjust the address.")
     supa.update_job(job_id, status="awaiting_parcel", step="parse", progress="Confirm the parcel",
