@@ -282,6 +282,14 @@ def step_render_composite(job_id):
     for g in getattr(region, "geoms", [region]):
         d.polygon(list(g.exterior.coords), fill=255)
     mask = mask.filter(ImageFilter.GaussianBlur(3))
+    # the surroundings come from the draped aerial: grade them to the photoreal pass so the seam disappears
+    import numpy as _np
+    b = _np.asarray(base).astype(float)
+    r = _np.asarray(raw).astype(float)
+    q = _np.linspace(0, 100, 257)
+    for c in range(3):
+        b[..., c] = _np.interp(b[..., c], _np.percentile(b[..., c], q), _np.percentile(r[..., c], q))
+    base = Image.fromarray(b.clip(0, 255).astype("uint8")).filter(ImageFilter.UnsharpMask(1.6, 70, 2))
     out = Image.composite(raw, base, mask)
     path = os.path.join(tempfile.mkdtemp(), "render.jpg")
     out.save(path, quality=93)
