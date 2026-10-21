@@ -54,39 +54,56 @@ def _apn_hit(c, wanted):
 
 # ---------------------------------------------------------------- Regrid
 def regrid_search(listing, lat, lon, epsg, radius_m=600, limit=60):
+    """APN/PIN lookups, then address search, then a neighbourhood sweep around the best anchor point.
+
+    Street names in listings rarely match the county's or the map's (US 70 Hwy / New Raleigh Hwy / E US 70 HWY),
+    so the address search is only used to find an anchor; matching is done on house number + location in rank().
+    """
     tok = os.environ.get("REGRID_TOKEN")
     if not tok:
-        return []
-    feats = []
-    try:
-        for apn in _apns(listing):
-            r = get(f"{REGRID}/parcels/apn", params={"parcelnumber": apn, "token": tok, "limit": 5})
-            feats += _features(r.json())
-        street = (listing.get("street_address") or "").strip()
-        if not feats and street[:1].isdigit():
-            q = ", ".join(x for x in [street, listing.get("city"), listing.get("state"), listing.get("zip")] if x)
-            r = get(f"{REGRID}/parcels/address", params={"query": q, "token": tok, "limit": 5})
-            feats = _features(r.json())
-            if feats:  # also pull neighbours so the approval screen can offer alternatives (assemblages, wrong match)
-                try:
-                    r2 = get(f"{REGRID}/parcels/point", params={"lat": lat, "lon": lon, "radius": 250, "limit": 30, "token": tok})
-                    feats += _features(r2.json())
-                except Exception:  # noqa: BLE001
-                    pass
-        if not feats or (_apns(listing) and len(feats) < len(_apns(listing))):
-            r = get(f"{REGRID}/parcels/point", params={"lat": lat, "lon": lon, "radius": radius_m, "limit": limit, "token": tok})
-            feats += _features(r.json())
-    except Exception:  # noqa: BLE001  (no coverage / sandbox limits / quota) -> fall back
-        return []
+        return [], (lat, lon)
+    feats, anchor = [], (lat, lon)
+
+    def call(path, **params):
+        try:
+            return _features(get(f"{REGRID}/parcels/{path}", params={**params, "token": tok}).json())
+        except Exception:  # noqa: BLE001  (no coverage / quota / bad query)
+            return []
+
+    for apn in _apns(listing):
+        feats += call("apn", parcelnumber=apn, limit=5)
+    hn, _ = _addr_key(listing.get("street_address"))
+    if hn:
+        q = ", ".join(x for x in [listing.get("street_address"), listing.get("city"), listing.get("state"), listing.get("zip")] if x)
+        hits = call("address", query=q, limit=5)
+        feats += hits
+        same_no = [f for f in hits if f.get("geometry") and _house_no(_fields(f)) == hn]
+        if same_no:
+            pt = shape(same_no[0]["geometry"]).representative_point()
+            anchor = (pt.y, pt.x)
+    sweep_r = 350 if (hn or feats) else radius_m
+    feats += call("point", lat=anchor[0], lon=anchor[1], radius=sweep_r, limit=limit)
     out = []
     for f in feats:
         if not f.get("geometry"):
             continue
-        p = f.get("properties", {})
-        fields = p.get("fields", p)
+        fields = _fields(f)
         out.append(_candidate("regrid", f["geometry"], epsg, apn=fields.get("parcelnumb"), owner=fields.get("owner"),
-                              address=fields.get("address"), zoning=fields.get("zoning"), attrs=fields))
-    return out
+                              address=fields.get("address"), zoning=fields.get("zoning"), house_no=_house_no(fields), attrs=fields))
+    return out, anchor
+
+
+def _fields(f):
+    p = f.get("properties", {})
+    return p.get("fields", p)
+
+
+def _house_no(fields):
+    v = fields.get("saddno") or fields.get("address_number")
+    if v:
+        return str(v).strip().split()[0].lstrip("0") or None
+    hn, _ = _addr_key(fields.get("address"))
+    return hn
 
 
 def _features(js):
@@ -226,6 +243,15 @@ def _candidate(source, geojson, epsg, **kw):
     return {"source": source, "geometry": mapping(g), "acres": round(_acres(sp, epsg), 3), **kw}
 
 
+ROAD_WORDS = {"E", "W", "N", "S", "EAST", "WEST", "NORTH", "SOUTH", "US", "HWY", "HIGHWAY", "RD", "ROAD", "ST", "STREET", "AVE",
+              "AVENUE", "DR", "DRIVE", "LN", "LANE", "TRL", "TRAIL", "BLVD", "BOULEVARD", "SR", "ROUTE", "RT", "RTE", "STATE", "PIKE",
+              "PKWY", "PARKWAY", "WAY", "CT", "COURT", "CIR", "TPKE", "BYP", "BYPASS", "BUS", "BUSINESS", "OLD", "THE", "I", "INTERSTATE"}
+
+
+def road_tokens(s):
+    return {t for t in re.findall(r"[A-Za-z0-9]+", str(s or "").upper()) if t not in ROAD_WORDS}
+
+
 def _addr_key(a):
     """'2839 US 70 Hwy' -> ('2839', {'70'}) ; '2839 E US 70 HWY' -> ('2839', {'70'})"""
     if not a:
@@ -233,11 +259,11 @@ def _addr_key(a):
     toks = re.findall(r"[A-Za-z0-9]+", str(a).upper())
     if not toks or not toks[0].isdigit():
         return None, set()
-    skip = {"E", "W", "N", "S", "US", "HWY", "HIGHWAY", "RD", "ROAD", "ST", "STREET", "AVE", "DR", "LN", "TRL", "BLVD", "SR", "NC", "VA", "ROUTE", "RT"}
+    skip = ROAD_WORDS
     return toks[0], {t for t in toks[1:] if t not in skip}
 
 
-def rank(cands, listing, lat, lon, road_geom_ll=None):
+def rank(cands, listing, lat, lon, road_geom_ll=None, aliases=None):
     target = listing.get("acres")
     wanted = {_norm_apn(a) for a in _apns(listing)}
     pt = Point(lon, lat)
@@ -257,8 +283,12 @@ def rank(cands, listing, lat, lon, road_geom_ll=None):
             score += 80
         hn, words = _addr_key(listing.get("street_address"))
         chn, cwords = _addr_key(c.get("address"))
-        if hn and chn == hn and (words & cwords):
-            score += 100                              # same house number on the same street
+        chn = c.get("house_no") or chn
+        if hn and chn and chn.lstrip("0") == hn.lstrip("0") and g.distance(pt) * 111320 < 600:
+            c["address_match"] = True
+            score += 90                               # same house number, nearby (street name may be an alias)
+            if (words & cwords) or any((grp & words) and (grp & cwords) for grp in (aliases or [])):
+                score += 20                           # and the street is the same road under any of its names
         if road_geom_ll is not None:
             score += max(0.0, 25 - g.distance(road_geom_ll) * 111320 / 8)  # fronting the named road
         score += max(0.0, 10 - g.distance(pt) * 111320 / 100)
@@ -278,7 +308,9 @@ def rank(cands, listing, lat, lon, road_geom_ll=None):
 def find_parcels(listing, lat, lon, road_geom_ll=None, county_layer=None, max_out=6, corridor_ll=None):
     """corridor_ll: lon/lat polygon along the listing's road, used when the listing has no street number."""
     epsg = state_plane_epsg(lat, lon)
-    cands = regrid_search(listing, lat, lon, epsg)
+    cands, anchor = regrid_search(listing, lat, lon, epsg)
+    if cands:
+        lat, lon = anchor
     source = "regrid" if cands else None
     if not cands:
         urls = ([county_layer] if county_layer else []) + STATEWIDE.get((listing.get("state") or "").upper(), [])
@@ -293,9 +325,14 @@ def find_parcels(listing, lat, lon, road_geom_ll=None, county_layer=None, max_ou
     if corridor_ll is not None and target:
         near = [c for c in cands if abs(c["acres"] - target) / target <= 0.15]
         cands = near or cands
-    ranked = rank(cands, listing, lat, lon, road_geom_ll)
+    aliases = None
+    if _addr_key(listing.get("street_address"))[0]:
+        from .context import road_aliases
+        aliases = road_aliases(lat, lon)
+    ranked = rank(cands, listing, lat, lon, road_geom_ll, aliases)
     zipc = str(listing.get("zip") or "")[:5]
-    if zipc and len(ranked) > 1:
+    decided = ranked and (ranked[0].get("apn_match") or ranked[0].get("address_match") or ranked[0].get("assemblage"))
+    if zipc and len(ranked) > 1 and not decided:
         # Break ties between look-alike parcels on the same road: same ZIP as the listing wins.
         for c in ranked[:8]:
             try:

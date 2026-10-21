@@ -1,7 +1,7 @@
 // Forma concept pipeline API (Concept project).
 // POST { action: "start" | "approve_parcel" | "status" | "list", ... }
 //   start           { listing_text, source?: "tool"|"crm", crm_ref? }            -> { job_id }
-//   approve_parcel  { job_id, index?: number, geometry?: GeoJSON, setbacks? }   -> { ok }
+//   approve_parcel  { job_id, index? | indexes?: number[], geometry?, setbacks? } -> { ok }  (several indexes = assemblage)
 //   status          { job_id }                                                    -> job row + signed file URLs
 //   list            { limit? }                                                    -> recent jobs
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
@@ -63,8 +63,11 @@ Deno.serve(async (req) => {
       const { data: job, error } = await db.from("pipeline_jobs").select("candidates,status").eq("id", body.job_id).single();
       if (error) throw error;
       let parcel = null;
+      const idx: number[] = Array.isArray(body.indexes) ? body.indexes : Number.isInteger(body.index) ? [body.index] : [];
+      const picked = idx.map((i) => job.candidates?.[i]).filter(Boolean);
       if (body.geometry) parcel = { source: "manual", geometry: body.geometry };
-      else if (Number.isInteger(body.index) && job.candidates?.[body.index]) parcel = job.candidates[body.index];
+      else if (picked.length === 1) parcel = picked[0];
+      else if (picked.length > 1) parcel = { source: picked[0].source, parts: picked, combine: true };  // worker unions them
       if (!parcel) return json({ error: "Pick a candidate index or send a geometry" }, 400);
       const patch: Record<string, unknown> = { parcel, status: "parcel_approved", step: "ec", error: null };
       if (body.setbacks) patch.setbacks = body.setbacks;

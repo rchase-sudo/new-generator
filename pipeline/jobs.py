@@ -90,6 +90,12 @@ def step_ec(job_id):
     epsg = job.get("epsg") or state_plane_epsg(job["geocode"]["lat"], job["geocode"]["lon"])
     k = units_to_ft(epsg)
     supa.update_job(job_id, status="building_ec", step="ec", progress="Pulling aerial and site data", error=None)
+    if parcel.get("combine"):  # several tax parcels picked on the approval screen -> one site
+        from shapely.ops import unary_union
+        geom = unary_union([shape(p["geometry"]) for p in parcel["parts"]]).buffer(0)
+        parcel = {"source": parcel["source"], "geometry": mapping(geom), "assemblage": True,
+                  "apn": ", ".join(str(p.get("apn")) for p in parcel["parts"]), "acres": sum(p.get("acres") or 0 for p in parcel["parts"])}
+        supa.update_job(job_id, parcel=parcel)
     parcel_sp = to_crs(shape(parcel["geometry"]), 4326, epsg)
     ext = _extent_around(parcel_sp, k)
     aerial = context.aerial(ext, epsg, k)

@@ -173,3 +173,27 @@ def named_road_near(name, lat, lon, radius_m=12000):
         except Exception:  # noqa: BLE001
             continue
     return None
+
+
+def road_aliases(lat, lon, radius_m=500):
+    """Groups of names one road goes by near a point, from OSM tags (name, ref, alt/old/official names).
+    e.g. {"NEW", "RALEIGH", "70"} for a way tagged name=New Raleigh Highway, ref=US 70."""
+    from .parcel import road_tokens
+    q = f'[out:json][timeout:25];way(around:{radius_m},{lat},{lon})["highway"];out tags;'
+    for u in OVERPASS:
+        try:
+            js = post(u, data={"data": q}, timeout=40, tries=2).json()
+        except Exception:  # noqa: BLE001
+            continue
+        groups = []
+        for el in js.get("elements", []):
+            t = el.get("tags", {})
+            names = [t.get(k) for k in ("name", "ref", "alt_name", "old_name", "official_name", "old_ref", "nat_ref", "loc_name") if t.get(k)]
+            toks = set()
+            for n in names:
+                for part in str(n).split(";"):
+                    toks |= road_tokens(part)
+            if toks:
+                groups.append(toks)
+        return groups
+    return []
