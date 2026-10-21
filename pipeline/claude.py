@@ -11,7 +11,7 @@ MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5-5")
 PRICES = {"claude-sonnet-5": (2.0, 10.0), "claude-opus-5-5": (4.0, 20.0), "claude-opus-5": (5.0, 25.0),
           "claude-haiku-5-5": (0.10, 0.50), "claude-sonnet-4": (3.0, 15.0), "claude-haiku-4": (1.0, 5.0)}
 SEARCH_USD = 0.01
-USAGE = []   # calls made during the current worker step; jobs.run flushes this onto the job row
+from .usage import USAGE  # noqa: E402  -- calls made during the current worker step; jobs.run flushes it onto the job row
 
 
 def record(js, label, model=None):
@@ -25,7 +25,7 @@ def record(js, label, model=None):
     cw, cr = int(u.get("cache_creation_input_tokens") or 0), int(u.get("cache_read_input_tokens") or 0)
     searches = int(((u.get("server_tool_use") or {}).get("web_search_requests")) or 0)
     cost = (inp * pin + cw * pin * 1.25 + cr * pin * 0.1 + out * pout) / 1e6 + searches * SEARCH_USD
-    USAGE.append({"call": label, "model": model, "input_tokens": inp + cw + cr, "output_tokens": out,
+    USAGE.append({"call": label, "provider": "Anthropic", "model": model, "input_tokens": inp + cw + cr, "output_tokens": out,
                   "searches": searches, "cost_usd": round(cost, 4)})
 
 

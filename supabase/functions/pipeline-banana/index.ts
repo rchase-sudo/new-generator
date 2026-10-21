@@ -51,6 +51,28 @@ function prompt(program: Record<string, unknown> | null) {
   );
 }
 
+// Gemini 3 Pro Image list prices (ai.google.dev/gemini-api/docs/pricing, Oct 2026): $2/M input,
+// $12/M text+thinking output, $120/M image output (~$0.134 per 1K/2K image).
+function geminiCost(u: Record<string, any> | undefined) {
+  if (!u) return { usd: 0.134, input_tokens: 0, output_tokens: 0 };
+  const inp = Number(u.promptTokenCount || 0);
+  const det: { modality?: string; tokenCount?: number }[] = u.candidatesTokensDetails || [];
+  const img = det.filter((d) => d.modality === "IMAGE").reduce((a, d) => a + Number(d.tokenCount || 0), 0);
+  const cand = Number(u.candidatesTokenCount || 0);
+  const text = Math.max(0, cand - img) + Number(u.thoughtsTokenCount || 0);
+  const imgTok = img || (det.length ? 0 : cand);
+  return { usd: inp * 2e-6 + text * 12e-6 + imgTok * 120e-6, input_tokens: inp, output_tokens: cand + Number(u.thoughtsTokenCount || 0) };
+}
+
+async function logUsage(jobId: string, entry: Record<string, unknown>) {
+  try {
+    const { data } = await db.from("pipeline_jobs").select("usage").eq("id", jobId).single();
+    const usage = Array.isArray(data?.usage) ? data.usage : [];
+    usage.push({ ...entry, step: "render", at: new Date().toISOString().slice(0, 19) + "+00:00" });
+    await db.from("pipeline_jobs").update({ usage }).eq("id", jobId);
+  } catch (_) { /* cost logging never breaks the render */ }
+}
+
 function b64(bytes: Uint8Array) {
   let s = "";
   for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
@@ -76,6 +98,9 @@ async function run(jobId: string) {
       });
       if (!r.ok) { lastErr = `Gemini ${r.status}: ${(await r.text()).slice(0, 400)}`; continue; }
       const data = await r.json();
+      const gc = geminiCost(data?.usageMetadata);
+      await logUsage(jobId, { call: "Nano Banana render", provider: "Google", model: MODEL, input_tokens: gc.input_tokens,
+                              output_tokens: gc.output_tokens, searches: 0, cost_usd: Math.round(gc.usd * 10000) / 10000 });
       const parts = data?.candidates?.[0]?.content?.parts ?? [];
       const part = parts.find((p: Record<string, any>) => (p.inlineData?.mimeType || p.inline_data?.mime_type || "").startsWith("image/"));
       const b = part?.inlineData?.data || part?.inline_data?.data;

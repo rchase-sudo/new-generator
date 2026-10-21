@@ -30,9 +30,9 @@ from .ec_drawing import classify_edges, envelope
 
 
 def _flush_usage(job_id, step):
-    """Append this step's Claude calls (tokens, searches, USD) to pipeline_jobs.usage."""
-    from . import claude
-    calls, claude.USAGE[:] = list(claude.USAGE), []
+    """Append this step's billable calls (Claude, Google geocoding, Modal compute) to pipeline_jobs.usage."""
+    from . import usage
+    calls, usage.USAGE[:] = list(usage.USAGE), []
     if not calls:
         return
     import datetime as _dt
@@ -44,12 +44,20 @@ def _flush_usage(job_id, step):
         print("usage log failed:", e)
 
 
+# container size per step (must match modal_app.py): run_render = 8 cores / 12 GiB, run_step = 2 cores / 4 GiB
+STEP_RESOURCES = {"render": (8.0, 12.0)}
+
+
 def run(job_id, step):
-    from . import claude
-    claude.USAGE[:] = []
+    import time as _t
+    from . import usage
+    usage.USAGE[:] = []
+    t0 = _t.time()
     try:
         _run(job_id, step)
     finally:
+        cores, gib = STEP_RESOURCES.get(step, (2.0, 4.0))
+        usage.modal_compute(step, _t.time() - t0, cores, gib)
         _flush_usage(job_id, step)
 
 

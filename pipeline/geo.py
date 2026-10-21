@@ -18,6 +18,8 @@ def google_geocode(q):
         return None
     try:
         js = get("https://maps.googleapis.com/maps/api/geocode/json", params={"address": q, "key": key, "region": "us"}).json()
+        from .usage import GEOCODE_USD, add
+        add("Geocode address", "Google", GEOCODE_USD)
     except Exception:  # noqa: BLE001
         return None
     res = js.get("results") or []
