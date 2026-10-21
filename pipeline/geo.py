@@ -10,10 +10,36 @@ from shapely.ops import transform as shp_transform
 from .http import get
 
 
+def google_geocode(q):
+    """Google Geocoding API (same engine as Google Maps). Returns (lat, lon, label, location_type) or None."""
+    import os
+    key = os.environ.get("GOOGLE_MAPS_API_KEY")
+    if not key:
+        return None
+    try:
+        js = get("https://maps.googleapis.com/maps/api/geocode/json", params={"address": q, "key": key, "region": "us"}).json()
+    except Exception:  # noqa: BLE001
+        return None
+    res = js.get("results") or []
+    if js.get("status") != "OK" or not res:
+        return None
+    r = res[0]
+    loc = r["geometry"]["location"]
+    return loc["lat"], loc["lng"], r.get("formatted_address", q), r["geometry"].get("location_type")
+
+
 def geocode(listing: dict):
-    """Return (lat, lon, label) for the listing. Tries Census (numbered addresses) then Nominatim."""
+    """Return (lat, lon, label) for the listing.
+    Google first (what Google Maps shows for the address), then Census (numbered addresses), then Nominatim.
+    This point is authoritative: parcels are looked up AT it, never re-anchored by a parcel vendor's address search."""
     street, city, state = listing.get("street_address"), listing.get("city"), listing.get("state")
     zipc = listing.get("zip") or ""
+    if street or listing.get("road_name"):
+        q = ", ".join(x for x in [street or listing.get("road_name"), city, f"{state or ''} {zipc}".strip()] if x)
+        g = google_geocode(q)
+        # an approximate (city / ZIP centroid) answer is worse than Census for a numbered address
+        if g and (g[3] in ("ROOFTOP", "RANGE_INTERPOLATED") or not (street and street.split()[0][:1].isdigit())):
+            return g[0], g[1], g[2]
     if street and any(ch.isdigit() for ch in street.split()[0]):
         try:
             r = get("https://geocoding.geo.census.gov/geocoder/locations/onelineaddress",

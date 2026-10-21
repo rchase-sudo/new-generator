@@ -53,16 +53,14 @@ def _apn_hit(c, wanted):
 
 
 # ---------------------------------------------------------------- Regrid
-def regrid_search(listing, lat, lon, epsg, radius_m=600, limit=60):
-    """APN/PIN lookups, then address search, then a neighbourhood sweep around the best anchor point.
-
-    Street names in listings rarely match the county's or the map's (US 70 Hwy / New Raleigh Hwy / E US 70 HWY),
-    so the address search is only used to find an anchor; matching is done on house number + location in rank().
-    """
+def regrid_search(listing, lat, lon, epsg, radius_m=300, limit=80):
+    """Parcels from Regrid AT the geocoded point (plus any APN/PIN the listing gives).
+    Regrid's address search is not used: it matches the wrong road too often. The geocode decides where; Regrid
+    only supplies the parcel data around that point."""
     tok = os.environ.get("REGRID_TOKEN")
     if not tok:
         return [], (lat, lon)
-    feats, anchor = [], (lat, lon)
+    feats = []
 
     def call(path, **params):
         try:
@@ -72,22 +70,7 @@ def regrid_search(listing, lat, lon, epsg, radius_m=600, limit=60):
 
     for apn in _apns(listing):
         feats += call("apn", parcelnumber=apn, limit=5)
-    hn, _ = _addr_key(listing.get("street_address"))
-    if hn:
-        q = ", ".join(x for x in [listing.get("street_address"), listing.get("city"), listing.get("state"), listing.get("zip")] if x)
-        hits = call("address", query=q, limit=5)
-        feats += hits
-        # Fuzzy address search can return the same number on a different street across town
-        # ("2839 US 70" -> "2839 Herring Blvd"); only trust a hit near the geocoded point.
-        here = Point(lon, lat)
-        same_no = [f for f in hits if f.get("geometry") and _house_no(_fields(f)) == hn
-                   and shape(f["geometry"]).distance(here) * 111320 < 800]
-        if same_no:
-            pt = shape(same_no[0]["geometry"]).representative_point()
-            anchor = (pt.y, pt.x)
-        feats = [f for f in feats if f not in hits or f in same_no]
-    sweep_r = 350 if (hn or feats) else radius_m
-    feats += call("point", lat=anchor[0], lon=anchor[1], radius=sweep_r, limit=limit)
+    feats += call("point", lat=lat, lon=lon, radius=radius_m, limit=limit)
     out = []
     for f in feats:
         if not f.get("geometry"):
@@ -95,7 +78,26 @@ def regrid_search(listing, lat, lon, epsg, radius_m=600, limit=60):
         fields = _fields(f)
         out.append(_candidate("regrid", f["geometry"], epsg, apn=fields.get("parcelnumb"), owner=fields.get("owner"),
                               address=fields.get("address"), zoning=fields.get("zoning"), house_no=_house_no(fields), attrs=fields))
-    return out, anchor
+    return dedupe_stacked(out), (lat, lon)
+
+
+def dedupe_stacked(cands):
+    """Counties often stack several records on one footprint (condo units, personal-property accounts, splits in
+    progress). Keep one candidate per footprint and list all its parcel numbers."""
+    groups = {}
+    for c in cands:
+        g = shape(c["geometry"])
+        key = (round(g.area, 9), round(g.centroid.x, 6), round(g.centroid.y, 6))
+        if key in groups:
+            k = groups[key]
+            apns = [a for a in str(k.get("apn") or "").split(", ") if a]
+            if c.get("apn") and str(c["apn"]) not in apns:
+                apns.append(str(c["apn"]))
+            k["apn"] = ", ".join(apns)
+            k["stacked"] = k.get("stacked", 1) + 1
+        else:
+            groups[key] = dict(c)
+    return list(groups.values())
 
 
 def _fields(f):
@@ -275,7 +277,7 @@ def rank(cands, listing, lat, lon, road_geom_ll=None, aliases=None, geocode_pt=N
     pt = Point(lon, lat)
     seen, out = set(), []
     for c in cands:
-        key = round(c["acres"], 3), _norm_apn(c.get("apn"))
+        key = round(c["acres"], 3), round(shape(c["geometry"]).centroid.x, 6), round(shape(c["geometry"]).centroid.y, 6)
         if key in seen:
             continue
         seen.add(key)
@@ -298,7 +300,13 @@ def rank(cands, listing, lat, lon, road_geom_ll=None, aliases=None, geocode_pt=N
                 score += 20                           # and the street is the same road under any of its names
         if road_geom_ll is not None:
             score += max(0.0, 25 - g.distance(road_geom_ll) * 111320 / 8)  # fronting the named road
-        score += max(0.0, 10 - g.distance(pt) * 111320 / 100)
+        # where the address actually is (Google / Census point): inside the parcel, or right next to it
+        d_geo = g.distance(geo_pt) * 111320
+        c["dist_m"] = round(d_geo)
+        if d_geo == 0:
+            score += 110
+        else:
+            score += max(0.0, 70 - d_geo / 2.5)          # e.g. 25 m (street centreline) -> 60, 175 m -> 0
         c["score"] = round(score, 1)
         out.append(c)
     out.sort(key=lambda c: -c["score"])
