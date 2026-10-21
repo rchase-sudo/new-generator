@@ -13,6 +13,7 @@ from .http import get, post
 NAIP_SERVICES = [
     "https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPPlus/ImageServer",
     "https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPImagery/ImageServer",
+    "https://gis.apfo.usda.gov/arcgis/rest/services/NAIP/USDA_CONUS_PRIME/ImageServer",   # USDA's own NAIP service
 ]
 NWI_LAYER = "https://fwspublicservices.wim.usgs.gov/wetlandsmapservice/rest/services/Wetlands/MapServer/0"
 FEMA_LAYER = "https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer/28"
@@ -32,17 +33,23 @@ def aerial(extent_sp, epsg, ft_per_unit, ft_per_px=1.0, max_px=4000):
     fpp = max(ft_per_px, scale)
     W, H = int(round(w_ft / fpp)), int(round(h_ft / fpp))
     last = None
-    for svc in NAIP_SERVICES:
-        try:
-            r = get(f"{svc}/exportImage", params={
-                "bbox": f"{minx},{miny},{maxx},{maxy}", "bboxSR": epsg, "imageSR": epsg, "size": f"{W},{H}",
-                "format": "jpgpng", "interpolation": "RSP_BilinearInterpolation", "f": "image"}, timeout=180)
-            if r.headers.get("content-type", "").startswith("image"):
-                img = Image.open(io.BytesIO(r.content)).convert("RGB")
-                return {"image": img, "extent": extent_sp, "source": svc.split("/")[-2]}
-            last = RuntimeError(r.text[:300])
-        except Exception as e:  # noqa: BLE001
-            last = e
+    import time
+    for attempt in range(3):                 # the USGS server throws intermittent 502s; retry the set a few times
+        for svc in NAIP_SERVICES:
+            try:
+                r = get(f"{svc}/exportImage", params={
+                    "bbox": f"{minx},{miny},{maxx},{maxy}", "bboxSR": epsg, "imageSR": epsg, "size": f"{W},{H}",
+                    "format": "jpgpng", "interpolation": "RSP_BilinearInterpolation", "f": "image"}, timeout=180)
+                if r.headers.get("content-type", "").startswith("image"):
+                    img = Image.open(io.BytesIO(r.content)).convert("RGB")
+                    if np.asarray(img).std() > 3:   # not a blank tile
+                        return {"image": img, "extent": extent_sp, "source": svc.split("/")[-2]}
+                    last = RuntimeError("blank image")
+                else:
+                    last = RuntimeError(r.text[:300])
+            except Exception as e:  # noqa: BLE001
+                last = e
+        time.sleep(8 * (attempt + 1))
     raise RuntimeError(f"NAIP imagery unavailable: {last}")
 
 
