@@ -12,6 +12,10 @@ ZONING_SYSTEM = """You are a land-use planner researching a zoning ordinance for
 Use web search to find the CURRENT official ordinance text (municode, amlegal, ecode360, county/city site).
 Report numbers exactly as the ordinance states them; if a value depends on conditions, give the value that applies
 to a typical commercial pad site and explain in notes. Never invent values: use null when you cannot find one.
+Parking setbacks matter as much as building setbacks: find the minimum distance from each property line to parking
+and drive-aisle pavement (parking-area setbacks, street-yard / perimeter landscape strips, buffer yards). Many
+ordinances let parking encroach into the building setback by some amount; report the resulting minimum distance
+in parking_setbacks_ft. Driveway crossings of the street yard are allowed and are not a parking setback.
 Return ONLY one JSON object, no prose before or after."""
 
 ZONING_SCHEMA = """{
@@ -20,6 +24,8 @@ ZONING_SCHEMA = """{
   "ordinance": "code citation for the district (e.g. 'UDO Sec. 6.2')",
   "setbacks_ft": {"front": n, "side": n, "rear": n, "corner_side": n},
   "parking_setbacks_ft": {"front": n, "side": n, "rear": n},
+  "landscape_buffers_ft": {"front": n, "side": n, "rear": n},
+  "parking_setback_note": "how close parking/drive pavement may come to each property line, and whether parking may sit inside the building setback (and by how much)",
   "landscape_buffer_front_ft": n,
   "buffer_notes": "required buffers/yards adjoining residential, etc.",
   "max_height_ft": n, "max_stories": n,
@@ -56,7 +62,7 @@ PROGRAM_SCHEMA = """{
 
 
 def _cache_key(state, jurisdiction_hint, district):
-    return re.sub(r"[^a-z0-9|]", "", f"{state}|{jurisdiction_hint}|{district}".lower())
+    return "v2|" + re.sub(r"[^a-z0-9|]", "", f"{state}|{jurisdiction_hint}|{district}".lower())
 
 
 def _cache_get(key):
@@ -122,3 +128,29 @@ def program(listing, summary, rules):
         b["stories"] = int(b.get("stories") or 1)
         b["depth_ft"] = float(b.get("depth_ft") or (60 if b["footprint_sf"] < 8000 else 100))
     return prog
+
+
+PAVE_MIN_DEFAULT = {"front": 15.0, "side": 10.0, "rear": 10.0}
+PAVE_FLOOR = 5.0   # never draw pavement closer than this to a property line
+
+
+def pavement_setbacks(rules, building_sb):
+    """Minimum property-line-to-pavement distance per yard.
+    Ordinance value = the larger of the parking setback and the landscape strip for that yard. When the ordinance
+    research found neither, assume parking may encroach into the building setback by up to half of it, but stay at
+    least 15 ft off the street line and 10 ft off side/rear lines (and never beyond the building setback itself)."""
+    rules = rules or {}
+    ps = rules.get("parking_setbacks_ft") or {}
+    lb = rules.get("landscape_buffers_ft") or {}
+    out, src = {}, {}
+    for k in ("front", "side", "rear"):
+        vals = [v for v in (ps.get(k), lb.get(k)) if isinstance(v, (int, float))]
+        if k == "front" and isinstance(rules.get("landscape_buffer_front_ft"), (int, float)):
+            vals.append(rules["landscape_buffer_front_ft"])
+        bsb = float((building_sb or {}).get(k) or PAVE_MIN_DEFAULT[k])
+        if vals:
+            out[k], src[k] = max(PAVE_FLOOR, float(max(vals))), "ordinance"
+        else:
+            out[k], src[k] = min(bsb, max(PAVE_MIN_DEFAULT[k], 0.5 * bsb)), "assumed"
+    out["source"] = src
+    return out

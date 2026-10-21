@@ -428,12 +428,11 @@ def generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, pa
     edges = classify_edges(parcel_sp, road_lines, k_ft)
     fr = Frame(parcel_sp, edges, k_ft)
     P = fr.fwd(parcel_sp)
-    psb = dict(DEFAULT_PARK_SB)
-    for kk, v in (parking_setbacks_ft or rules.get("parking_setbacks_ft") or {}).items():
-        if isinstance(v, (int, float)) and kk in psb:
-            psb[kk] = float(v)
-    if isinstance(rules.get("landscape_buffer_front_ft"), (int, float)):
-        psb["front"] = max(psb["front"], float(rules["landscape_buffer_front_ft"]))
+    if parking_setbacks_ft:
+        psb = {k: float(parking_setbacks_ft.get(k, DEFAULT_PARK_SB[k])) for k in ("front", "side", "rear")}
+    else:
+        from .zoning import pavement_setbacks
+        psb = {k: v for k, v in pavement_setbacks(rules, setbacks_ft).items() if k != "source"}
     C = unary_union([w["geom"] for w in wet] + [f["geom"] for f in fl if f.get("sfha") == "T"])
     C = fr.fwd(C.intersection(parcel_sp.buffer(50 / k_ft))) if not C.is_empty else Polygon()
     bz = fr.fwd(envelope(parcel_sp, edges, setbacks_ft, k_ft)).difference(C).buffer(0)
@@ -496,6 +495,8 @@ def generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, pa
     pave = unary_union([circ, *stalls])
     pave = _close(pave, 3.0)  # rounded island noses
     pave = pave.difference(unary_union([r["rect"] for r in row]))
+    # rounding must never push pavement into the parking setback (only the driveway may cross it)
+    pave = pave.intersection(pz.union(drive.buffer(R_JOIN + 2))).buffer(0)
     walks = unary_union([r["walk"] for r in row]).difference(pave)
     bldgs = [r["rect"] for r in row]
     dev = unary_union([pave, walks, *bldgs])

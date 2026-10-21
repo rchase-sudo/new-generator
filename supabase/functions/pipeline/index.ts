@@ -87,7 +87,8 @@ Deno.serve(async (req) => {
         return json({ error: `Job is ${job.status}; zoning can be confirmed once research finishes` }, 409);
       const patch: Record<string, unknown> = { status: "zoning_approved", step: "layout", error: null };
       const zoning = { ...(job.zoning ?? {}), ...(body.zoning ?? {}) };
-      if (body.parking_setbacks) zoning.parking_setbacks_ft = body.parking_setbacks;
+      // parking_setbacks = final property-line-to-pavement distances {front, side, rear} chosen at the checkpoint
+      if (body.parking_setbacks) zoning.pavement_setbacks_ft = { ...body.parking_setbacks, source: { front: "user", side: "user", rear: "user" } };
       patch.zoning = zoning;
       if (body.setbacks) patch.setbacks = body.setbacks;
       if (body.program) patch.program = { ...body.program, locked: true };

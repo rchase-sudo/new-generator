@@ -171,6 +171,7 @@ def step_zoning(job_id):
     ac = lambda g: round(g.area * ctx["k"] ** 2 / 43560, 3)  # noqa: E731
     summary = {**summary, "setbacks_ft": setbacks, "envelope_acres": ac(env), "buildable_acres": ac(bld),
                "frontage_buildable_acres": ac(front)}
+    rules = {**rules, "pavement_setbacks_ft": zoning_mod.pavement_setbacks(rules, setbacks)}
     supa.update_job(job_id, zoning=rules, setbacks=setbacks, summary=summary, progress="Choosing the development program")
     prog = job.get("program") if (job.get("program") or {}).get("locked") else zoning_mod.program(listing, summary, rules)
     supa.update_job(job_id, status="awaiting_zoning", step="zoning", program=prog, progress="Confirm zoning, setbacks and program")
@@ -186,7 +187,10 @@ def step_layout(job_id):
     summary = build_ec(out, ctx["parcel_sp"], ctx["epsg"], ctx["k"], ctx["aerial"], ctx["wet"], ctx["fl"], ctx["rds"],
                        setbacks_ft=setbacks, listing=job.get("listing"))
     summary["warnings"] = ctx.get("warnings", [])
-    res = generate_layout(ctx["parcel_sp"], ctx["k"], ctx["rds"], ctx["wet"], ctx["fl"], setbacks, prog, rules=rules)
+    psb = rules.get("pavement_setbacks_ft") or zoning_mod.pavement_setbacks(rules, setbacks)
+    psb = {k: float(psb[k]) for k in ("front", "side", "rear") if isinstance(psb.get(k), (int, float))}
+    res = generate_layout(ctx["parcel_sp"], ctx["k"], ctx["rds"], ctx["wet"], ctx["fl"], setbacks, prog, rules=rules,
+                          parking_setbacks_ft=psb)
     supa.update_job(job_id, progress="Drawing the concept plan")
     L = job.get("listing") or {}
     title = [x for x in [L.get("street_address") and f"{L.get('lot') + ', ' if L.get('lot') else ''}{L.get('street_address')}",
