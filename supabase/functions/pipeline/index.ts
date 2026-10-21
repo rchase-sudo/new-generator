@@ -47,10 +47,21 @@ async function signOutputs(outputs: Record<string, Record<string, string>>) {
   return signed;
 }
 
+// The gateway (verify_jwt) has already checked the signature, so the role claim can be trusted.
+function isServiceRole(token: string): boolean {
+  if (!token) return false;
+  if (token === SERVICE) return true;
+  try {
+    const part = token.split(".")[1];
+    const payload = JSON.parse(atob(part.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((part.length + 3) % 4)));
+    return payload?.role === "service_role";
+  } catch (_) { return false; }
+}
+
 // Who is calling: the service role (CI / CRM backend) sees everything; a signed-in user only their own jobs.
 async function caller(req: Request): Promise<{ admin: boolean; uid: string | null }> {
   const token = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
-  if (token && token === SERVICE) return { admin: true, uid: null };
+  if (isServiceRole(token)) return { admin: true, uid: null };
   if (!token) return { admin: false, uid: null };
   const { data } = await db.auth.getUser(token);
   return { admin: false, uid: data?.user?.id ?? null };

@@ -12,6 +12,17 @@ const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY")!;
 const MODEL = Deno.env.get("GEMINI_IMAGE_MODEL") ?? "gemini-3-pro-image-preview";
 const db = createClient(SB_URL, SERVICE, { auth: { persistSession: false } });
 
+// The gateway (verify_jwt) has already checked the signature, so the role claim can be trusted.
+function isServiceRole(token: string): boolean {
+  if (!token) return false;
+  if (token === SERVICE) return true;
+  try {
+    const part = token.split(".")[1];
+    const payload = JSON.parse(atob(part.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((part.length + 3) % 4)));
+    return payload?.role === "service_role";
+  } catch (_) { return false; }
+}
+
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { "Content-Type": "application/json" } });
 
 function prompt(program: Record<string, unknown> | null) {
@@ -87,7 +98,7 @@ async function run(jobId: string) {
 
 Deno.serve(async (req) => {
   const token = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
-  if (token !== SERVICE) return json({ error: "service role only" }, 401);
+  if (!isServiceRole(token)) return json({ error: "service role only" }, 401);
   const { job_id } = await req.json().catch(() => ({}));
   if (!job_id) return json({ error: "job_id required" }, 400);
   await db.from("pipeline_jobs").update({ render_status: "nanobanana", render_error: null }).eq("id", job_id);
