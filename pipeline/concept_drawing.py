@@ -85,6 +85,11 @@ def write_dxf(ec_dxf, out_path, sp, labels, k_ft):
         msp.add_line(ln.coords[0], ln.coords[1], dxfattribs={"layer": "P-PARKING-STRIPE"})
     for a in sp["ada"]:
         ring(a, "P-ADA")
+    if "P-TREE" not in doc.layers:
+        doc.layers.add("P-TREE", color=3)
+    for t in sp.get("trees") or []:
+        c = t.centroid
+        msp.add_circle((c.x, c.y), math.sqrt(t.area / math.pi), dxfattribs={"layer": "P-TREE"})
     if sp.get("pond") is not None:
         ring(sp["pond"], "P-POND", width=0.3 / k_ft)
     for t in labels:
@@ -236,6 +241,16 @@ def write_sheet(pdf_path, png_path, parcel, env, wet, fl, rds, aerial, k_ft, sp,
         if extra is not None:
             _patch(ax, extra, 9.7, facecolor="none", edgecolor=C_DARK, lw=lw_ft(1.1), joinstyle="miter")
             _patch(ax, affinity.translate(extra, 0.8 / k_ft, -0.8 / k_ft).difference(extra).intersection(b), 9.65, facecolor=(0.18, 0.23, 0.29, 0.6), edgecolor="none")
+
+    # ornamental trees: NE shadow, canopy with a lit south-west side
+    from matplotlib.patches import Circle
+    for t in sp.get("trees") or []:
+        c = t.centroid
+        r = math.sqrt(t.area / math.pi)
+        ax.add_patch(Circle((c.x + 0.45 * r, c.y + 0.45 * r), r * 0.98, facecolor=(0.08, 0.12, 0.10, 0.38), edgecolor="none", zorder=9.75))
+        ax.add_patch(Circle((c.x, c.y), r, facecolor="#4a6630", edgecolor="#34481f", lw=0.6, zorder=9.8))
+        ax.add_patch(Circle((c.x - 0.22 * r, c.y - 0.22 * r), r * 0.62, facecolor="#6a8a42", edgecolor="none", alpha=0.9, zorder=9.81))
+        ax.add_patch(Circle((c.x - 0.35 * r, c.y - 0.35 * r), r * 0.28, facecolor="#86a457", edgecolor="none", alpha=0.85, zorder=9.82))
 
     _patch(ax, parcel, 11, facecolor="none", edgecolor="#ff19ff", lw=2.6 * T)
     if env is not None:

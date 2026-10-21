@@ -39,6 +39,18 @@ def _short(b):
     return (t[:24].rsplit(" ", 1)[0] if len(t) > 24 else t).upper()
 
 
+def _polys_lines(g):
+    """LineStrings out of whatever a union of shared edges returns."""
+    from shapely.ops import linemerge
+    if g.is_empty:
+        return []
+    if g.geom_type in ("LineString", "LinearRing"):
+        return [g]
+    lines = [x for x in getattr(g, "geoms", []) if x.geom_type == "LineString"]
+    m = linemerge(lines) if lines else None
+    return list(getattr(m, "geoms", [m])) if m is not None and not m.is_empty else []
+
+
 def _largest(g):
     ps = _polys(g) if g is not None and not g.is_empty else []
     return max(ps, key=lambda p: p.area) if ps else None
@@ -104,37 +116,51 @@ def _row(buildings, scale, xc, y_front, facing):
     return out, total
 
 
-def _band_plan(m, mode, back_row, dA, dB=0.0):
-    """Offsets (from the island front) of interior stall rows, interior aisles and building fronts, plus island depth.
+def _band_plan(m, mode, back_row, dA, dB=0.0, med=5.0):
+    """Offsets (from the island front) of stall rows, aisles and building fronts, plus island depth.
+    Rows that sit head-to-head form a pair separated by a median `med` (5 ft landscape strip, or 0 = painted line).
+    Returns rows [(y, pair_id or None)], aisles [y], fronts [(y, facing)], depth.
     mode back : parking toward the road, one building row behind it facing the road
     mode front: one building row near the road, facing back into the site, parking behind
     mode split: two building rows back to back, the first facing the road, the second facing the rear"""
     rows, aisles, fronts = [], [], []
+    pid = 0
     if mode in ("back", "split"):
-        y = SD                                   # front perimeter row (edge-following)
+        y = 0.0
+        prev = (y, None)                         # front perimeter row (faces the ring)
+        y += SD
         for _ in range(m):
-            rows.append(y); y += SD               # back-to-back row
+            rows.append((prev[0], pid)); y += med
+            rows.append((y, pid)); y += SD; pid += 1
             aisles.append(y); y += AIS
-            rows.append(y); y += SD
+            prev = (y, None); y += SD
+        rows.append(prev)                        # row facing the building walk (or the lone perimeter row)
         y += WALK
         fronts.append((y, -1))
         if mode == "back":
-            y += dA + SERVICE + (SD if back_row else 0)
+            y += dA + SERVICE
+            if back_row:
+                rows.append((y, None)); y += SD
             return rows, aisles, fronts, y
         y += dA + 2 * SERVICE + dB              # backs apart: grass strip / service between the two rows
         fronts.append((y, 1))
-        y += WALK + SD                            # rear perimeter row (edge-following)
+        y += WALK
+        rows.append((y, None)); y += SD          # rear perimeter row
         return rows, aisles, fronts, y
     y = SERVICE + dA
     fronts.append((y, 1))
     y += WALK
-    rows.append(y); y += SD
-    for i in range(m):
+    cur = (y, None); y += SD                     # row facing the building walk
+    for _ in range(m):
+        if cur is not None:
+            rows.append(cur)
         aisles.append(y); y += AIS
-        rows.append(y); y += SD
-        if i < m - 1:
-            rows.append(y); y += SD
-    y += SD if m else 0                           # back perimeter row (edge-following)
+        a_ = y; y += SD + med
+        rows.append((a_, pid)); rows.append((y, pid)); pid += 1
+        cur = None
+        y += SD
+    if m == 0:
+        rows.append(cur)
     return rows, aisles, fronts, y
 
 
@@ -146,21 +172,107 @@ def _gdims(group, scale):
 
 
 # ---------------------------------------------------------------- stalls
-def _grid_row(I, y, x0, x1, blockers):
-    xs = np.arange(x0, x1 - SW + 0.01, SW)
-    if not len(xs):
+class Stalls:
+    """Stall polygons with run / unit bookkeeping. A unit is what gets removed together (a column of a matched
+    pair = 2 stalls, or a single stall); a run is an ordered list of units between islands."""
+    def __init__(self):
+        self.polys, self.unit_of, self.units, self.runs, self.clines = [], [], {}, {}, []
+
+    def add_run(self, columns):
+        """columns: list of lists of polygons (one list per unit, in order along the run)."""
+        rid = len(self.runs)
+        self.runs[rid] = []
+        for col in columns:
+            uid = len(self.units)
+            self.units[uid] = []
+            for p in col:
+                self.units[uid].append(len(self.polys))
+                self.polys.append(p)
+                self.unit_of.append(uid)
+            self.runs[rid].append(uid)
+        return rid
+
+    @property
+    def n(self):
+        return sum(len(self.units[u]) for r in self.runs.values() for u in r)
+
+    def live(self):
+        return [self.polys[i] for r in self.runs.values() for u in r for i in self.units[u]]
+
+    def transform(self, fn):
+        self.polys = [fn(p) for p in self.polys]
+        self.clines = [(fn(l), rid) for l, rid in self.clines]
+
+
+def _runs(valid):
+    """Contiguous index runs of a boolean array."""
+    out, cur = [], []
+    for i, v in enumerate(valid):
+        if v:
+            cur.append(i)
+        elif cur:
+            out.append(cur); cur = []
+    if cur:
+        out.append(cur)
+    return out
+
+
+def _chunk(run):
+    """End islands + an island every ISLAND_EVERY stalls: drop the first/last slot of longer runs and split."""
+    if len(run) >= 5:
+        run = run[1:-1]
+    if len(run) < MIN_RUN:
         return []
-    boxes = shapely.box(xs, y, xs + SW, y + SD)
-    ok = shapely.contains(I, boxes)
-    if blockers is not None:
-        ok &= ~shapely.intersects(blockers, shapely.buffer(boxes, -0.3))
-    return list(boxes[ok])
+    k = ISLAND_EVERY
+    n_ch = math.ceil((len(run) + 1) / (k + 1))
+    size = (len(run) - (n_ch - 1)) / n_ch      # even chunks with one island slot between
+    out, i = [], 0
+    for c in range(n_ch):
+        L = int(round(size * (c + 1))) - int(round(size * c))
+        out.append(run[i:i + L])
+        i += L + 1
+    return [ch for ch in out if len(ch) >= MIN_RUN]
 
 
-def _edge_stalls(I, blockers, taken):
-    """Stalls perpendicular to the island edge, all the way round, with islands at ends and every ISLAND_EVERY."""
-    out = []
-    taken_u = unary_union(taken) if taken else None
+def _grid_rows(S, I, rows, iy0, xg0, xg1, blk, med):
+    """Grid rows on one shared x grid. Paired rows use the same columns (matched start/end, islands aligned)."""
+    xs = np.arange(xg0, xg1 - SW + 0.01, SW)
+    if not len(xs):
+        return
+    def ok_row(y):
+        bx = shapely.box(xs, y, xs + SW, y + SD)
+        ok = shapely.contains(I, bx)
+        if blk is not None:
+            ok &= ~shapely.intersects(blk, shapely.buffer(bx, -0.3))
+        return bx, ok
+    pairs = {}
+    singles = []
+    for y, pid in rows:
+        if pid is None:
+            singles.append(y)
+        else:
+            pairs.setdefault(pid, []).append(y)
+    for pid, ys in pairs.items():
+        ya, yb = sorted(ys)
+        bxa, oka = ok_row(iy0 + ya)
+        bxb, okb = ok_row(iy0 + yb)
+        for run in _runs(oka & okb):
+            for ch in _chunk(run):
+                rid = S.add_run([[bxa[i], bxb[i]] for i in ch])
+                if med <= 0.01:   # head-to-head without a median: painted divider through the matched stalls
+                    yl = iy0 + ya + SD
+                    S.clines.append((LineString([(xs[ch[0]], yl), (xs[ch[-1]] + SW, yl)]), rid))
+    for y in singles:
+        bx, ok = ok_row(iy0 + y)
+        for run in _runs(ok):
+            for ch in _chunk(run):
+                S.add_run([[bx[i]] for i in ch])
+
+
+def _edge_stalls(S, I, blockers, taken):
+    """Stalls square to the island edge on edges that are NOT parallel to the bays (sides, skewed edges)."""
+    taken_u = unary_union(taken).buffer(1.0) if taken else None
+    placed = []
     for poly in _polys(I):
         ring = poly.exterior.simplify(1.0)
         ccw = ring.is_ccw
@@ -168,21 +280,18 @@ def _edge_stalls(I, blockers, taken):
         for a, b in zip(cs, cs[1:]):
             L = math.hypot(b[0] - a[0], b[1] - a[1])
             k = int((L - 2 * END_GAP) // SW)
-            if k < 2:
+            if k < MIN_RUN:
                 continue
             tx, ty = (b[0] - a[0]) / L, (b[1] - a[1]) / L
+            if abs(ty) < 0.34:      # parallel to the bays: the grid rows handle it
+                continue
             nx, ny = (-ty, tx) if ccw else (ty, -tx)   # inward normal
             s0 = (L - k * SW) / 2
-            cand, idx = [], []
+            cand = []
             for i in range(k):
-                if ISLAND_EVERY and i and i % (ISLAND_EVERY + 1) == ISLAND_EVERY:
-                    continue
                 px, py = a[0] + tx * (s0 + i * SW), a[1] + ty * (s0 + i * SW)
-                idx.append(i)
                 cand.append(Polygon([(px, py), (px + tx * SW, py + ty * SW), (px + tx * SW + nx * SD, py + ty * SW + ny * SD),
                                      (px + nx * SD, py + ny * SD)]))
-            if not cand:
-                continue
             arr = np.array(cand, dtype=object)
             shrunk = shapely.buffer(arr, -0.3, join_style=2)
             ok = shapely.contains(I, shrunk)
@@ -190,27 +299,19 @@ def _edge_stalls(I, blockers, taken):
                 ok &= ~shapely.intersects(blockers, shrunk)
             if taken_u is not None:
                 ok &= ~shapely.intersects(taken_u, shrunk)
-            if out:
-                ok &= ~shapely.intersects(unary_union(out), shrunk)
-            # keep only runs of 3+ stalls (no orphan stalls); an island break joins two runs
-            run = []
-            for j, i in enumerate(idx):
-                if ok[j] and run and i - idx[run[-1]] <= 2:
-                    run.append(j)
-                    continue
-                if len(run) >= MIN_RUN:
-                    out += [arr[q] for q in run]
-                run = [j] if ok[j] else []
-            if len(run) >= MIN_RUN:
-                out += [arr[q] for q in run]
-    return out
+            if placed:
+                ok &= ~shapely.intersects(unary_union(placed), shrunk)
+            for run in _runs(ok):
+                for ch in _chunk(run):
+                    S.add_run([[arr[i]] for i in ch])
+                    placed += [arr[i] for i in ch]
 
 
 # ---------------------------------------------------------------- one candidate
-def _build(ctx, groups, scale, m, mode, back_row, x0, W, req, Y0=None):
+def _build(ctx, groups, scale, m, mode, back_row, x0, W, req, Y0=None, med=5.0):
     pz, bz = ctx["pz"], ctx["bz"]
     gd = [_gdims(g, scale) for g in groups]
-    rows, aisles_y, fronts, depth = _band_plan(m, mode, back_row, gd[0][1], gd[1][1] if len(gd) > 1 else 0.0)
+    rows, aisles_y, fronts, depth = _band_plan(m, mode, back_row, gd[0][1], gd[1][1] if len(gd) > 1 else 0.0, med)
     Y0 = ctx["y0"] if Y0 is None else Y0
     Hd = depth + 2 * RING
     D = _largest(pz.intersection(box(x0, Y0, x0 + W, Y0 + Hd)))
@@ -249,39 +350,12 @@ def _build(ctx, groups, scale, m, mode, back_row, x0, W, req, Y0=None):
     # interior aisles (span the island, joining the ring both sides) and their stall rows
     aisles = [_largest(box(x0 - 50, iy0 + ya, x0 + W + 50, iy0 + ya + AIS).intersection(D)) for ya in aisles_y]
     aisles = [a for a in aisles if a is not None]
-    grid = []
-    ix0, _, ix1, _ = I.bounds
-    for ry in rows:
-        grid += _grid_row(I, iy0 + ry, ix0, ix1, blk)
-    grid = _island_breaks(grid)
-    edge = _edge_stalls(I.difference(unary_union(aisles)) if aisles else I, blk, grid)
-    stalls = grid + edge
-    return {"D": D, "I": I, "row": row, "aisles": aisles, "stalls": stalls, "n": len(stalls), "blk": blk,
+    S = Stalls()
+    _grid_rows(S, I, rows, iy0, x0 - 400, x0 + W + 400, blk, med)
+    grid = S.live()
+    _edge_stalls(S, I.difference(unary_union(aisles)) if aisles else I, blk, grid + [a for a in aisles])
+    return {"D": D, "I": I, "row": row, "aisles": aisles, "S": S, "n": S.n, "blk": blk, "med": med,
             "m": m, "bpos": mode, "scale": scale, "x0": x0, "W": W, "Hd": Hd}
-
-
-def _island_breaks(grid):
-    """Every ISLAND_EVERY stalls in a straight grid row, leave one stall space as a landscape island."""
-    if not grid:
-        return grid
-    by_row = {}
-    for s in grid:
-        x0, y0, _, _ = s.bounds
-        by_row.setdefault(round(y0, 1), []).append((x0, s))
-    out = []
-    for _, lst in by_row.items():
-        lst.sort(key=lambda t: t[0])
-        run, prev = 0, None
-        for x0, s in lst:
-            if prev is not None and x0 - prev > SW + 0.5:
-                run = 0
-            prev = x0
-            run += 1
-            if run == ISLAND_EVERY + 1:
-                run = 0
-                continue
-            out.append(s)
-    return out
 
 
 # ---------------------------------------------------------------- search
@@ -294,7 +368,11 @@ def _rot_cand(c, sign):
     for k in ("D", "I", "blk"):
         out[k] = _rot(c[k], sign)
     out["aisles"] = [_rot(a, sign) for a in c["aisles"]]
-    out["stalls"] = [_rot(a, sign) for a in c["stalls"]]
+    import copy
+    out["S"] = copy.copy(c["S"])
+    out["S"].polys = list(c["S"].polys)
+    out["S"].clines = list(c["S"].clines)
+    out["S"].transform(lambda g: _rot(g, sign))
     out["row"] = [{**r, **{k: _rot(r[k], sign) for k in ("rect", "lane", "legs", "walk", "service", "env")}} for r in c["row"]]
     return out
 
@@ -320,6 +398,15 @@ def _layouts(buildings, scale):
 
 
 def _search(ctx, buildings, scale, req):
+    """Prefer 5 ft landscaped medians between head-to-head rows; fall back to a painted divider if space is tight."""
+    for med in (5.0, 0.0):
+        best = _search_med(ctx, buildings, scale, req, med)
+        if best:
+            return best
+    return None
+
+
+def _search_med(ctx, buildings, scale, req, med):
     """Two orientations: building rows along the frontage (bands stacked into the site), or along the depth
     (bands stacked across the site; for deep, narrow lots). The rotated case runs in a frame turned 90 deg."""
     lo, hi, y0 = ctx["drive_lo"], ctx["drive_hi"], ctx["y0"]
@@ -351,7 +438,7 @@ def _search(ctx, buildings, scale, req):
             Wmin = max(w for w, d in gd) + 2 * (RING + WALK) + 10
             for m in range(0, 5):
                 for back_row in ((True, False) if mode == "back" else (True,)):
-                    depth = _band_plan(m, mode, back_row, gd[0][1], gd[1][1] if len(gd) > 1 else 0.0)[3] + 2 * RING
+                    depth = _band_plan(m, mode, back_row, gd[0][1], gd[1][1] if len(gd) > 1 else 0.0, med)[3] + 2 * RING
                     if orient == "along":
                         if y0 + depth > pmaxy + 1 or Wmin > pmaxx - pminx + 2:
                             continue
@@ -363,7 +450,7 @@ def _search(ctx, buildings, scale, req):
                     for bx0, by0 in starts:
                         W = Wmin
                         while bx0 + W <= pmaxx + 40:
-                            c = _build(cx, groups, scale, m, mode, back_row, bx0, W, req, Y0=by0)
+                            c = _build(cx, groups, scale, m, mode, back_row, bx0, W, req, Y0=by0, med=med)
                             if c is not None and c["n"] >= req:
                                 consider(c, 1 if orient == "deep" else 0)
                                 break
@@ -480,20 +567,53 @@ def generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, pa
     drive, xd, y_r = _driveway(ctx, D)
     ring = D.difference(I)
     lanes = [unary_union([g for g in (r["lane"], r["legs"]) if g is not None]) for r in row if r["lane"] is not None]
-    circ = _close(unary_union([ring, drive, *best["aisles"], *lanes]), R_JOIN)
+    # fillets: generous where the driveway meets the loop, tight (curb-return size) where aisles meet it, so the
+    # landscape islands at row ends stay open instead of being paved over
+    circ = unary_union([_close(unary_union([ring, drive]), R_JOIN), _close(unary_union([ring, *best["aisles"], *lanes]), 5.0)])
     circ = circ.difference(unary_union([r["rect"] for r in row] + [r["walk"] for r in row]))
 
-    # just enough parking: drop surplus stalls farthest from the building fronts (they become landscaping)
-    stalls = [s for s in best["stalls"] if not s.intersects(unary_union(lanes).buffer(-0.3) if lanes else Polygon())]
+    # just enough parking: trim whole columns from the ends of runs (farthest from the building fronts first),
+    # so paired rows stay matched and every run still ends at an island; trimmed space becomes landscaping
+    S = best["S"]
     fronts = unary_union([r["walk"] for r in row])
-    stalls.sort(key=lambda s: s.centroid.distance(fronts))
-    stalls = stalls[:req] if len(stalls) > req else stalls
+    lane_u = unary_union(lanes).buffer(-0.3) if lanes else None
+    if lane_u is not None:
+        for rid, units in S.runs.items():
+            S.runs[rid] = [u for u in units if not any(S.polys[i].intersects(lane_u) for i in S.units[u])]
+    ucen = {u: unary_union([S.polys[i] for i in idx]).centroid for u, idx in S.units.items()}
+    while S.n > req:
+        cands = []
+        for rid, units in S.runs.items():
+            if not units:
+                continue
+            for u in {units[0], units[-1]}:
+                size = len(S.units[u])
+                if S.n - size >= req:
+                    cands.append((ucen[u].distance(fronts), rid, u))
+        if not cands:
+            break
+        _, rid, u = max(cands)
+        S.runs[rid].remove(u)
+    for rid, units in list(S.runs.items()):   # no orphans: drop runs left shorter than MIN_RUN if parking allows
+        if 0 < len(units) < MIN_RUN and S.n - sum(len(S.units[u]) for u in units) >= req:
+            S.runs[rid] = []
+    stalls = S.live()
     n_st = len(stalls)
     n_ada = ada_required(n_st) if n_st else 0
-    ada = stalls[:n_ada]
+    ada = sorted(stalls, key=lambda s_: s_.centroid.distance(fronts))[:n_ada]
+    # painted divider through matched head-to-head stalls (rows with no median)
+    clines = []
+    cl_runs = {rid for _, rid in S.clines}
+    for rid in cl_runs:
+        for u in S.runs.get(rid, []):
+            a_, b_ = (S.polys[i] for i in S.units[u])
+            shared = a_.boundary.intersection(b_.boundary)
+            if not shared.is_empty and shared.length > 1:
+                clines.append(shared)
+    clines = [g for g in _polys_lines(unary_union(clines))] if clines else []
 
     pave = unary_union([circ, *stalls])
-    pave = _close(pave, 3.0)  # rounded island noses
+    pave = _close(pave, 2.2)  # rounded island noses (radius small enough to keep 5 ft medians open)
     pave = pave.difference(unary_union([r["rect"] for r in row]))
     # rounding must never push pavement into the parking setback (only the driveway may cross it)
     pave = pave.intersection(pz.union(drive.buffer(R_JOIN + 2))).buffer(0)
@@ -507,11 +627,59 @@ def generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, pa
     land = unary_union(land) if land else P
     pond = _pond(land, dev.union(grass), C, max(3000.0, imperv_sf * 0.08))
 
+    # landscape pad: straight-sided outline around the development, like the reference render
+    pad = dev.buffer(14, join_style=2, mitre_limit=1.6).simplify(4).intersection(P).difference(C)
+    pad = _largest(pad) or grass
     stripes = []
-    for s in stalls:
-        cs = list(s.exterior.coords)
+    for st in stalls:
+        cs = list(st.exterior.coords)
         es = sorted(((math.hypot(b[0] - a[0], b[1] - a[1]), a, b) for a, b in zip(cs, cs[1:])), key=lambda t: -t[0])[:2]
         stripes += [LineString([a, b]) for _, a, b in es]
+    stripes += clines
+
+    # ornamental trees: one per parking island, along landscaped medians, in larger lawn areas, and around the pad edge
+    trees = []
+    lawn_in = I.difference(unary_union([pave, walks, *bldgs]).buffer(1.5))
+    for g in _polys(lawn_in):
+        if g.area < 90:
+            continue
+        mrr = g.minimum_rotated_rectangle
+        cs = list(mrr.exterior.coords)
+        e1, e2 = math.dist(cs[0], cs[1]), math.dist(cs[1], cs[2])
+        long_, short_ = max(e1, e2), min(e1, e2)
+        if g.area < 2500 or short_ < 14:
+            if short_ >= 4.5:
+                # islands: one tree in the middle; long medians: one every ~40 ft
+                if long_ > 60:
+                    axis = LineString(cs[0:2] if e1 >= e2 else cs[1:3])
+                    off = (Point(cs[1 if e1 >= e2 else 2]).x - Point(cs[2 if e1 >= e2 else 3]).x) / 2, (Point(cs[1 if e1 >= e2 else 2]).y - Point(cs[2 if e1 >= e2 else 3]).y) / 2
+                    nt = max(1, int(long_ // 40))
+                    for i in range(nt):
+                        p_ = axis.interpolate((i + 0.5) / nt, normalized=True)
+                        q = Point(p_.x - off[0], p_.y - off[1])
+                        if g.buffer(0.5).contains(q):
+                            trees.append((q, 6.5))
+                else:
+                    q = polylabel(g, 0.5)
+                    trees.append((q, min(7.5, max(5.0, short_ * 0.9))))
+            continue
+        # larger lawns inside the loop: loose grid, kept off the edges
+        core = g.buffer(-9)
+        x0_, y0_, x1_, y1_ = g.bounds
+        for xx in np.arange(x0_ + 10, x1_, 34.0):
+            for yy in np.arange(y0_ + 10, y1_, 34.0):
+                q = Point(xx, yy)
+                if core.contains(q):
+                    trees.append((q, 8.0))
+    edge_line = dev.buffer(8, join_style=1).exterior
+    pad_ok = pad.buffer(-4) if pad is not None and not pad.is_empty else None
+    drive_keep = drive.buffer(30)
+    nt = int(edge_line.length // 45)
+    for i in range(nt):
+        q = edge_line.interpolate(i / max(nt, 1), normalized=True)
+        if pad_ok is not None and pad_ok.contains(q) and not drive_keep.contains(q) and q.distance(dev) > 5:
+            trees.append((q, 8.5))
+    trees = [(q, r) for q, r in trees if all(q.distance(q2) > (r + r2) * 0.8 for q2, r2 in trees if q2 is not q)] if trees else []
 
     parcel_sf = P.area
     bsf = sum(r["fp"] for r in row)
@@ -546,9 +714,6 @@ def generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, pa
         warn.append(f"FAR {metrics['far']} exceeds {rules['max_far']}")
     metrics["warnings"] = warn
 
-    # landscape pad: straight-sided outline around the development, like the reference render
-    pad = dev.buffer(14, join_style=2, mitre_limit=1.6).simplify(4).intersection(P).difference(C)
-    pad = _largest(pad) or grass
     # roof accent blocks (entry / office mass) like the reference: an end block on long buildings, a corner block otherwise
     roof_blocks = []
     for r in row:
@@ -565,7 +730,8 @@ def generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, pa
             fy = by0 if r["facing"] < 0 else by1 - c_
             roof_blocks.append(box(bx0, fy, bx0 + c_, fy + c_))
     local = {"P": P, "bz": bz, "pz": pz, "C": C, "pave": pave, "walk": walks, "grass": grass, "pad": pad, "roof_blocks": roof_blocks, "bldgs": bldgs,
-             "stalls": stalls, "ada": ada, "stripes": stripes, "pond": pond, "drive": drive, "dev": dev}
+             "stalls": stalls, "ada": ada, "stripes": stripes, "pond": pond, "drive": drive, "dev": dev,
+             "trees": [q.buffer(r, 24) for q, r in trees]}
     sp = {k: ([fr.inv(g) if g is not None else None for g in v] if isinstance(v, list) else (fr.inv(v) if v is not None else None))
           for k, v in local.items()}
     labels = []
