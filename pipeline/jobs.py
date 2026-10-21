@@ -9,6 +9,7 @@ Status flow:
 Any failure -> error (message in `error`, step in `step`).
 """
 import io
+import json
 import math
 import os
 import pickle
@@ -43,11 +44,15 @@ def run(job_id, step):
             step_render(job_id)
         elif step == "render_composite":
             step_render_composite(job_id)
+        elif step == "package":
+            step_package(job_id)
         else:
             raise ValueError(f"unknown step {step}")
     except Exception as e:  # noqa: BLE001
         if step in ("render", "render_composite"):   # a failed render never invalidates an approved plan
             supa.update_job(job_id, render_status="failed", render_error=f"{type(e).__name__}: {e}"[:1500])
+        elif step == "package":
+            supa.update_job(job_id, package_status="failed", package_error=f"{type(e).__name__}: {e}"[:1500])
         else:
             supa.update_job(job_id, status="error", error=f"{type(e).__name__}: {e}", step=step,
                             progress=traceback.format_exc()[-1500:])
@@ -298,3 +303,39 @@ def step_render_composite(job_id):
     outputs["render"] = {**(outputs.get("render") or {}), "render.jpg": key}
     outputs["render"].pop("render.png", None)
     supa.update_job(job_id, outputs=outputs, render_status="completed", render_error=None)
+
+
+def step_package(job_id):
+    """Due diligence package (FORMA style): plan sheet as Exhibit A, the Nano Banana render as Exhibit B1."""
+    from . import package as pkg
+    job = supa.get_job(job_id)
+    files = job.get("outputs") or {}
+    rend = files.get("render") or {}
+    if "render.jpg" not in rend and "render.png" not in rend:
+        raise RuntimeError("Render the project first")
+    out = tempfile.mkdtemp()
+    plan = os.path.join(out, "concept_plan.png")
+    with open(plan, "wb") as fh:
+        fh.write(supa.download(job_id, "concept_plan.png"))
+    rname = "render.jpg" if "render.jpg" in rend else "render.png"
+    render = os.path.join(out, rname)
+    with open(render, "wb") as fh:
+        fh.write(supa.download(job_id, rname))
+    supa.update_job(job_id, package_status="researching", package_error=None)
+    F = pkg.facts(job)
+    I = pkg.research_inputs(F)
+    supa.update_job(job_id, package_status="writing")
+    PF = pkg.proforma(F, I)
+    T = pkg.write_text(F, I, PF)
+    name = pkg.package_name(F)
+    pdf = os.path.join(out, "package.pdf")
+    supa.update_job(job_id, package_status="typesetting")
+    pkg.build(job, plan, render, pdf, inputs=I, text=T)
+    with open(os.path.join(out, "package_inputs.json"), "w") as fh:
+        json.dump({"inputs": I, "text": T}, fh, default=str)
+    supa.upload(job_id, os.path.join(out, "package_inputs.json"))
+    key = supa.upload(job_id, pdf, "package.pdf")
+    outputs = supa.get_job(job_id).get("outputs") or {}
+    outputs["package"] = {"package.pdf": key}
+    summary = {**(supa.get_job(job_id).get("summary") or {}), "package_name": name}
+    supa.update_job(job_id, outputs=outputs, summary=summary, package_status="completed", package_error=None)

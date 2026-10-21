@@ -5,6 +5,7 @@
 //   approve_zoning  { job_id, setbacks?, parking_setbacks?, program?, zoning? }   -> { ok }  (runs / re-runs the layout)
 //   approve_layout  { job_id }                                                    -> { ok }  (starts the 3D model + render)
 //   render          { job_id }                                                    -> { ok }  (re-run the render)
+//   package         { job_id }                                                    -> { ok }  (due diligence package, after the render)
 //   rerun           { job_id, step: "parse"|"ec"|"zoning"|"layout" }              -> { ok }
 //   status          { job_id }                                                    -> job row + signed file URLs
 //   list            { limit? }                                                    -> recent jobs (your own; service role: all)
@@ -149,6 +150,16 @@ Deno.serve(async (req) => {
       if (job.status !== "layout_approved") return json({ error: "Approve the layout first" }, 409);
       await db.from("pipeline_jobs").update({ render_status: "queued", render_error: null }).eq("id", body.job_id);
       await kickWorker(body.job_id, "render");
+      return json({ ok: true });
+    }
+
+    if (action === "package") {   // due diligence package: plan sheet + Nano Banana render + researched proforma
+      const { data: job, error } = await db.from("pipeline_jobs").select("status,render_status,package_status").eq("id", body.job_id).single();
+      if (error) throw error;
+      if (job.status !== "layout_approved" || job.render_status !== "completed") return json({ error: "Finish the render first" }, 409);
+      if (["queued", "researching", "writing", "typesetting"].includes(job.package_status)) return json({ error: "The package is already being built" }, 409);
+      await db.from("pipeline_jobs").update({ package_status: "queued", package_error: null }).eq("id", body.job_id);
+      await kickWorker(body.job_id, "package");
       return json({ ok: true });
     }
 

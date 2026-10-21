@@ -37,6 +37,25 @@ def wait(job_id, until, timeout=1500):
     raise SystemExit("timed out")
 
 
+if sys.argv[1].startswith("package:"):   # build the due diligence package for an existing rendered job
+    job_id = sys.argv[1].split(":", 1)[1]
+    out = os.path.join("test_runs", job_id)
+    os.makedirs(out, exist_ok=True)
+    api(action="package", job_id=job_id)
+    t0, last = time.time(), None
+    while time.time() - t0 < 1500:
+        j = api(action="status", job_id=job_id)
+        if j.get("package_status") != last:
+            last = j.get("package_status")
+            print(f"[{int(time.time()-t0):4d}s] package {last} {j.get('package_error') or ''}", flush=True)
+        if last in ("completed", "failed"):
+            break
+        time.sleep(8)
+    for step in ("package",):
+        for name, url in ((j.get("files") or {}).get(step) or {}).items():
+            open(f"{out}/{name}", "wb").write(requests.get(url, timeout=120).content)
+    sys.exit(0 if last == "completed" else 1)
+
 text = open(sys.argv[1]).read()
 idx = int(sys.argv[2]) if len(sys.argv) > 2 else 0
 sb = dict(zip(("front", "side", "rear"), map(float, sys.argv[3:6]))) if len(sys.argv) > 5 else None
