@@ -120,7 +120,7 @@ def research_inputs(F):
     user = (f"Property and approved concept plan:\n{json.dumps(F, default=str)}\n\nRESEARCH NOTES:\n{notes}\n\n"
             f"Call submit_inputs with an object in exactly this shape (comments describe the fields):\n{INPUTS_SCHEMA}\n"
             "If the asking price is null, estimate a land price from comparable land sales or the assessment and say so in land.basis.")
-    data = claude.ask_tool(FILL_SYS, user, "submit_inputs", "Submit the proforma inputs.", max_tokens=8000, timeout=600)
+    data = claude.ask_tool(FILL_SYS, user, "submit_inputs", "Submit the proforma inputs.", max_tokens=16000, timeout=900)
     data["sources"] = list(dict.fromkeys((data.get("sources") or []) + src))[:20]
     data["research_notes"] = notes[:6000]
     return data
@@ -236,7 +236,7 @@ def write_text(F, I, PF):
             f"COMPUTED PROFORMA (authoritative numbers):\n{json.dumps(nums, default=str)}\n\n"
             f"Write the package text. Return JSON in exactly this shape:\n{TEXT_SCHEMA}")
     return claude.ask_tool(TEXT_SYS, user.replace("Return JSON in exactly this shape", "Call submit_text with an object in exactly this shape"),
-                           "submit_text", "Submit the package text.", max_tokens=8000, timeout=600)
+                           "submit_text", "Submit the package text.", max_tokens=16000, timeout=900)
 
 
 # ------------------------------------------------------------------------------------------------ html
