@@ -44,9 +44,9 @@ any use that needs a vehicle queue lane (drive-thru restaurant/coffee/bank/pharm
 Return ONLY one JSON object."""
 
 PROGRAM_SCHEMA = """{
-  "use": "short name of the concept (e.g. 'Retail / QSR outparcels', 'Flex industrial')",
+  "use": "short title of the concept, max 24 chars (e.g. 'Retail / QSR', 'Car Wash / Laundry', 'Flex Industrial')",
   "rationale": "2-3 sentences: why this use for this site",
-  "buildings": [{"name": "Building A", "use": "retail", "footprint_sf": n, "stories": n, "depth_ft": n,
+  "buildings": [{"name": "Building A", "use": "retail", "label": "plan label, 1-3 words, max 20 chars (e.g. 'RETAIL', 'QSR', 'CAR WASH')", "footprint_sf": n, "stories": n, "depth_ft": n,
                  "drive_thru": true|false, "notes": "..."}],
   "parking": {"calc": "per-use calculation from the ordinance ratios, e.g. 'Laundromat 4,225 SF @ 1/200 = 22; Car wash: 2 + stacking = 2'",
               "required": n},

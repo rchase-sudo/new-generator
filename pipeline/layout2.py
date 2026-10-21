@@ -31,6 +31,14 @@ END_GAP = 5.0      # keep stalls off the ends of each edge (corner islands)
 MIN_RUN = 3        # shortest row of stalls worth drawing
 
 
+def _short(b):
+    """Short plan label for a building: the program's label, else its use without parentheticals."""
+    import re
+    t = b.get("label") or b.get("use") or b.get("name") or "BUILDING"
+    t = re.sub(r"\(.*?\)", "", str(t)).split(" with ")[0].split(",")[0].strip()
+    return (t[:24].rsplit(" ", 1)[0] if len(t) > 24 else t).upper()
+
+
 def _largest(g):
     ps = _polys(g) if g is not None and not g.is_empty else []
     return max(ps, key=lambda p: p.area) if ps else None
@@ -544,7 +552,7 @@ def generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, pa
     for r in row:
         c = fr.inv(r["rect"].centroid)
         labels.append({"at": (c.x, c.y), "rot": math.degrees(fr.a), "w_ft": r["w"], "d_ft": r["d"],
-                       "lines": [f"PROPOSED {str(r['b'].get('use') or r['b'].get('name')).upper()}",
+                       "lines": [f"PROPOSED {_short(r['b'])}",
                                  f"{r['w']:.0f}' X {r['d']:.0f}'", f"{r['fp']:,.0f} SF"]})
     if pond is not None:
         c = fr.inv(polylabel(pond, 2))
