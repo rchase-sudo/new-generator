@@ -15,7 +15,7 @@ to a typical commercial pad site and explain in notes. Never invent values: use 
 Return ONLY one JSON object, no prose before or after."""
 
 ZONING_SCHEMA = """{
-  "jurisdiction": "who administers zoning here (e.g. 'Durham City-County', 'New Kent County')",
+  "jurisdiction": "short name of who administers zoning here, max 40 characters (e.g. 'Durham City-County', 'New Kent County')",
   "district": "code", "district_name": "full name",
   "ordinance": "code citation for the district (e.g. 'UDO Sec. 6.2')",
   "setbacks_ft": {"front": n, "side": n, "rear": n, "corner_side": n},
@@ -36,6 +36,9 @@ for a vacant land listing, to be drawn as a preliminary site plan. Be realistic 
 that are permitted by right, that fit the buildable area with surface parking, and that a buyer of this listing would
 actually build. Size buildings so that building + parking + drive aisles + stormwater fit in the buildable acreage
 (surface parking needs ~350 SF per stall including aisles; stormwater ~8-10% of impervious area).
+Parking: compute the MINIMUM number of stalls the ordinance requires for exactly this program, use by use, from the
+ordinance's ratios (round up per the ordinance) and report that number; do not add a cushion. Mark drive_thru true for
+any use that needs a vehicle queue lane (drive-thru restaurant/coffee/bank/pharmacy, tunnel car wash).
 Return ONLY one JSON object."""
 
 PROGRAM_SCHEMA = """{
@@ -43,7 +46,8 @@ PROGRAM_SCHEMA = """{
   "rationale": "2-3 sentences: why this use for this site",
   "buildings": [{"name": "Building A", "use": "retail", "footprint_sf": n, "stories": n, "depth_ft": n,
                  "drive_thru": true|false, "notes": "..."}],
-  "parking": {"ratio_text": "4 per 1,000 SF", "required": n},
+  "parking": {"calc": "per-use calculation from the ordinance ratios, e.g. 'Laundromat 4,225 SF @ 1/200 = 22; Car wash: 2 + stacking = 2'",
+              "required": n},
   "layout_hint": "front_parking" | "side_parking" | "rear_parking",
   "alternatives": [{"use": "...", "why_not": "..."}]
 }"""

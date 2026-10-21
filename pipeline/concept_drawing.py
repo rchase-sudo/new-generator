@@ -1,5 +1,8 @@
-"""Concept plan outputs: DXF (existing-conditions DXF + proposed layers) and a 17x11 colour plan sheet."""
+"""Concept plan outputs: DXF (existing-conditions DXF + proposed layers) and the Forma preliminary development plan
+sheet (17x11, Forma title block) styled like the client renders: aerial, landscaped pad, curbed asphalt, walks,
+roofs with shadows, white label boxes."""
 import math
+import os
 import textwrap
 
 import ezdxf
@@ -8,14 +11,39 @@ import numpy as np
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
-from matplotlib.patches import Polygon as MplPoly  # noqa: E402
+from matplotlib import font_manager  # noqa: E402
+from matplotlib.patches import PathPatch  # noqa: E402
+from matplotlib.path import Path as MPath  # noqa: E402
+from PIL import Image  # noqa: E402
+from shapely import affinity  # noqa: E402
 
 from .ec_drawing import _polys
 
-P_LAYERS = {"P-BLDG": 1, "P-BLDG-HATCH": 8, "P-PAVE-EDGE": 7, "P-PARKING-STRIPE": 7, "P-ADA": 5, "P-WALK": 9,
-            "P-POND": 4, "P-TEXT": 7}
+ASSETS = os.environ.get("FORMA_ASSETS") or os.path.join(os.path.dirname(__file__), "assets")
+for _f in ("Carlito-Regular.ttf", "Carlito-Bold.ttf"):
+    try:
+        font_manager.fontManager.addfont(os.path.join(ASSETS, _f))
+    except Exception:  # noqa: BLE001
+        pass
+FONT = "Carlito"
+
+P_LAYERS = {"P-BLDG": 1, "P-BLDG-HATCH": 8, "P-PAVE-EDGE": 7, "P-CURB": 9, "P-PARKING-STRIPE": 7, "P-ADA": 5,
+            "P-WALK": 9, "P-LANDSCAPE": 3, "P-POND": 4, "P-TEXT": 7}
+
+# title block geometry (pixels of forma_titleblock.jpg, 2576 x 1667)
+TB_W, TB_H = 2576, 1667
+TB_DRAW = (85, 48, 2278, 1618)          # drawing frame
+TB_PROJECT = (2293, 1190, 2521, 1527)   # project name block (vertical text)
+TB_DATA = (2293, 296, 2521, 470)        # empty block under the logo -> site data
+
+C_GRASS, C_GRASS_EDGE = "#78a64b", "#5d8a36"
+C_ASPHALT, C_CURB = "#40454a", "#dcdbd6"
+C_WALK, C_WALK_EDGE = "#d3d0c8", "#aeaaa1"
+C_ROOF, C_ROOF_EDGE, C_PARAPET = "#e9eef2", "#7f8890", "#b9c1c8"
+C_WATER, C_WATER_EDGE = "#5f9cc2", "#2f6b93"
 
 
+# ---------------------------------------------------------------- DXF
 def write_dxf(ec_dxf, out_path, sp, labels, k_ft):
     doc = ezdxf.readfile(ec_dxf)
     for n, c in P_LAYERS.items():
@@ -29,7 +57,10 @@ def write_dxf(ec_dxf, out_path, sp, labels, k_ft):
                 msp.add_lwpolyline(list(r.coords)[:-1], close=True, dxfattribs={"layer": layer, "const_width": width})
 
     ring(sp["pave"], "P-PAVE-EDGE")
+    ring(sp["pave"].buffer(0.5 / k_ft, join_style=2), "P-CURB")
     ring(sp["walk"], "P-WALK")
+    if sp.get("grass") is not None:
+        ring(sp["grass"], "P-LANDSCAPE")
     for b in sp["bldgs"]:
         ring(b, "P-BLDG", width=0.5 / k_ft)
         for p in _polys(b):
@@ -45,142 +76,185 @@ def write_dxf(ec_dxf, out_path, sp, labels, k_ft):
     for t in labels:
         h = (2.0 if t.get("small") else 3.0) / k_ft
         msp.add_mtext("\\P".join(t["lines"]), dxfattribs={"layer": "P-TEXT", "char_height": h, "insert": t["at"],
-                                                          "attachment_point": 5, "rotation": _upright(t["rot"]), "bg_fill": 1})
+                                                          "attachment_point": 5, "rotation": 0, "bg_fill": 1})
     doc.saveas(out_path)
 
 
-def _upright(rot):
-    rot = (rot + 180) % 360 - 180
-    return rot - 180 if rot > 90 else rot + 180 if rot < -90 else rot
+# ---------------------------------------------------------------- sheet
+def _patch(ax, g, z, **kw):
+    """Polygon(s) with holes as one path each, so islands inside pavement stay open."""
+    for p in _polys(g):
+        verts, codes = [], []
+        for r in [p.exterior, *p.interiors]:
+            cs = np.asarray(r.coords)
+            verts += cs.tolist()
+            codes += [MPath.MOVETO] + [MPath.LINETO] * (len(cs) - 2) + [MPath.CLOSEPOLY]
+        ax.add_patch(PathPatch(MPath(verts, codes), zorder=z, **kw))
 
 
-def write_sheet(pdf_path, png_path, parcel, env, wet, fl, rds, aerial, k_ft, sp, labels, title_lines, metrics, program, rules):
+def _view(sp, parcel, aerial, k_ft, aspect):
     minx, miny, maxx, maxy = aerial["extent"]
-    fig = plt.figure(figsize=(17, 11), dpi=150)
-    ax = fig.add_axes([0.02, 0.04, 0.76, 0.92])
-    ax.imshow(np.asarray(aerial["image"]), extent=(minx, maxx, miny, maxy), interpolation="bilinear")
-    ax.add_patch(plt.Rectangle((minx, miny), maxx - minx, maxy - miny, color=(1, 1, 1, 0.32), zorder=1))
-    # zoom to the parcel (+ ~120 ft) at the sheet's aspect, inside the aerial's extent
-    aspect = (0.76 * 17) / (0.92 * 11)
+    dev = sp["dev"]
+    dx0, dy0, dx1, dy1 = dev.bounds
+    size = max(dx1 - dx0, dy1 - dy0)
+    pad = max(size * 0.75, 160 / k_ft)
+    vx0, vy0, vx1, vy1 = dx0 - pad, dy0 - pad, dx1 + pad, dy1 + pad
     px0, py0, px1, py1 = parcel.bounds
-    pad = 120 / k_ft
-    cx, cy = (px0 + px1) / 2, (py0 + py1) / 2
-    w, h = px1 - px0 + 2 * pad, py1 - py0 + 2 * pad
+    if (px1 - px0) < (vx1 - vx0) * 1.6 and (py1 - py0) < (vy1 - vy0) * 1.6:   # small parcel: show all of it
+        vx0, vy0, vx1, vy1 = min(vx0, px0 - 60 / k_ft), min(vy0, py0 - 60 / k_ft), max(vx1, px1 + 60 / k_ft), max(vy1, py1 + 60 / k_ft)
+    cx, cy = (vx0 + vx1) / 2, (vy0 + vy1) / 2
+    w, h = vx1 - vx0, vy1 - vy0
     w, h = (h * aspect, h) if w / h < aspect else (w, w / aspect)
     w, h = min(w, maxx - minx), min(h, maxy - miny)
     cx, cy = min(max(cx, minx + w / 2), maxx - w / 2), min(max(cy, miny + h / 2), maxy - h / 2)
-    minx, maxx, miny, maxy = cx - w / 2, cx + w / 2, cy - h / 2, cy + h / 2
-    ax.set_xlim(minx, maxx)
-    ax.set_ylim(miny, maxy)
+    return cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2
+
+
+def write_sheet(pdf_path, png_path, parcel, env, wet, fl, rds, aerial, k_ft, sp, labels, title_lines, metrics, program, rules,
+                project=None):
+    fig = plt.figure(figsize=(17, 11), dpi=150)
+    bg = fig.add_axes([0, 0, 1, 1])
+    bg.axis("off")
+    tb = Image.open(os.path.join(ASSETS, "forma_titleblock.jpg"))
+    bg.imshow(np.asarray(tb), extent=(0, TB_W, TB_H, 0), interpolation="lanczos")
+    bg.set_xlim(0, TB_W)
+    bg.set_ylim(TB_H, 0)
+
+    x0, y0, x1, y1 = TB_DRAW
+    ax = fig.add_axes([x0 / TB_W + 0.0006, 1 - y1 / TB_H + 0.0006, (x1 - x0) / TB_W - 0.0012, (y1 - y0) / TB_H - 0.0012])
+    aspect = ((x1 - x0) * 17 / TB_W) / ((y1 - y0) * 11 / TB_H)
+    vx0, vy0, vx1, vy1 = _view(sp, parcel, aerial, k_ft, aspect)
+    minx, miny, maxx, maxy = aerial["extent"]
+    ax.imshow(np.asarray(aerial["image"]), extent=(minx, maxx, miny, maxy), interpolation="bilinear", zorder=0)
+    ax.set_xlim(vx0, vx1)
+    ax.set_ylim(vy0, vy1)
     ax.set_aspect("equal")
     ax.set_xticks([])
     ax.set_yticks([])
+    for s in ax.spines.values():
+        s.set_visible(False)
+    ppu = (x1 - x0) / TB_W * 17 * 72 / (vx1 - vx0)   # points per drawing unit
+    lw_ft = lambda ft: max(0.4, ft / k_ft * ppu)       # noqa: E731
 
-    def draw(g, z=2, **kw):
-        for p in _polys(g):
-            ax.add_patch(MplPoly(np.asarray(p.exterior.coords), closed=True, zorder=z, **kw))
-            for h in p.interiors:
-                ax.add_patch(MplPoly(np.asarray(h.coords), closed=True, zorder=z, facecolor=(1, 1, 1, 0), edgecolor=kw.get("edgecolor", "k"), lw=kw.get("lw", 1)))
-
+    # existing: wetlands (dashed outline), parcel, setback
     for w in wet:
-        draw(w["geom"], facecolor=(0.25, 0.75, 0.5, 0.35), edgecolor="#1f8a55", lw=1.0, ls="--")
+        _patch(ax, w["geom"], 2, facecolor="none", edgecolor="#4fdc5a", lw=1.1, ls=(0, (6, 4)))
     for f in fl:
         if f.get("sfha") == "T":
-            draw(f["geom"], facecolor=(0.2, 0.45, 1, 0.15), edgecolor="#3a6fe0", lw=1.0, ls="--")
-    if env is not None:
-        draw(env, fill=False, edgecolor="#c9a400", lw=1.0, ls=(0, (6, 4)), z=3)
-    draw(parcel, fill=False, edgecolor="#d020d8", lw=2.4, z=6)
-    draw(sp["pave"], facecolor="#5d6166", edgecolor="#2a2c2f", lw=0.8, z=4)
-    draw(sp["walk"], facecolor="#d9d4c7", edgecolor="#8c877a", lw=0.5, z=4)
+            _patch(ax, f["geom"], 2, facecolor=(0.3, 0.55, 1, 0.12), edgecolor="#4d8cff", lw=1.0, ls=(0, (6, 4)))
+
+    # proposed: landscape pad, pond, pavement + curbs, walks, stripes, ADA, buildings w/ shadow
+    if sp.get("grass") is not None:
+        _patch(ax, sp["grass"], 3, facecolor=C_GRASS, edgecolor=C_GRASS_EDGE, lw=0.6)
+    if sp.get("pond") is not None:
+        _patch(ax, sp["pond"].buffer(6 / k_ft), 3, facecolor=C_GRASS, edgecolor=C_GRASS_EDGE, lw=0.6)
+        _patch(ax, sp["pond"], 4, facecolor=C_WATER, edgecolor=C_WATER_EDGE, lw=1.0)
+    _patch(ax, sp["pave"], 5, facecolor=C_ASPHALT, edgecolor=C_CURB, lw=lw_ft(1.0), joinstyle="round")
+    _patch(ax, sp["walk"], 6, facecolor=C_WALK, edgecolor=C_WALK_EDGE, lw=0.5)
     for a in sp["ada"]:
-        draw(a, facecolor="#2f6fd0", edgecolor="w", lw=0.4, z=5)
+        _patch(ax, a, 7, facecolor="#2f6fd0", edgecolor="w", lw=0.5)
     for ln in sp["stripes"]:
         xs, ys = ln.xy
-        ax.plot(xs, ys, color="w", lw=0.45, zorder=5)
-    if sp.get("pond") is not None:
-        draw(sp["pond"], facecolor="#7fb7d9", edgecolor="#2d6f99", lw=1.2, z=4)
+        ax.plot(xs, ys, color="w", lw=lw_ft(0.45), zorder=8, solid_capstyle="butt")
+    sh = 4.0 / k_ft
     for b in sp["bldgs"]:
-        draw(b, facecolor="#f2c49b", edgecolor="#7a3e12", lw=1.4, z=6)
+        _patch(ax, affinity.translate(b, sh, -sh), 8, facecolor=(0, 0, 0, 0.38), edgecolor="none")
+    for b in sp["bldgs"]:
+        _patch(ax, b, 9, facecolor=C_ROOF, edgecolor=C_ROOF_EDGE, lw=1.0)
+        inner = b.buffer(-2.0 / k_ft, join_style=2)
+        if not inner.is_empty:
+            _patch(ax, inner, 10, facecolor="none", edgecolor=C_PARAPET, lw=0.6)
 
-    span = maxx - minx
-    ppu = 0.76 * 17 * 72 / span  # points per drawing unit
-    dev = sp["pave"].centroid
+    _patch(ax, parcel, 11, facecolor="none", edgecolor="#ff19ff", lw=2.6)
+    if env is not None:
+        _patch(ax, env, 11, facecolor="none", edgecolor="#ffe600", lw=1.8, ls=(0, (9, 6)))
+
+    # labels: white boxes, regular text, centred on the building
+    box_kw = dict(boxstyle="square,pad=0.35", fc="w", ec="none")
     placed = []
+    bl_union = None
     for t in labels:
-        txt = "\n".join(t["lines"])
-        chars = max(len(x) for x in t["lines"])
         if t.get("small"):
-            ax.text(t["at"][0], t["at"][1], txt, ha="center", va="center", fontsize=5.5, weight="bold", color="#14445f", zorder=8)
+            ax.text(t["at"][0], t["at"][1], "\n".join(t["lines"]), ha="center", va="center", fontsize=6.5, family=FONT,
+                    color="#10324a", zorder=12)
             continue
-        w_pt, d_pt = t["w_ft"] / k_ft * ppu, t["d_ft"] / k_ft * ppu
-        long_pt, short_pt = max(w_pt, d_pt), min(w_pt, d_pt)
-        fs = min(8.0, long_pt / (chars * 0.62), short_pt / (len(t["lines"]) * 1.35))
-        if fs >= 5.0:
-            rot = _upright(t["rot"] if w_pt >= d_pt else t["rot"] + 90)
-            ax.text(t["at"][0], t["at"][1], txt, ha="center", va="center", fontsize=fs, weight="bold", rotation=rot,
-                    rotation_mode="anchor", zorder=8, linespacing=1.15)
-        else:  # too small to hold its label: callout with a leader, pushed away from the development
-            dx, dy = t["at"][0] - dev.x, t["at"][1] - dev.y
-            L = math.hypot(dx, dy) or 1
-            off = span * 0.09
-            tx, ty = t["at"][0] + dx / L * off, t["at"][1] + dy / L * off
-            for px, py in placed:
-                if math.hypot(tx - px, ty - py) < span * 0.06:
-                    ty += span * 0.06
-            placed.append((tx, ty))
-            ax.annotate(txt, xy=t["at"], xytext=(tx, ty), ha="center", va="center", fontsize=7, weight="bold", zorder=9,
-                        arrowprops=dict(arrowstyle="-", color="k", lw=0.8, shrinkA=0, shrinkB=2),
-                        bbox=dict(boxstyle="square,pad=0.3", fc="w", ec="k", lw=0.6))
+        fs = 9.5
+        bw = (max(len(x) for x in t["lines"]) * fs * 0.5 + fs * 0.8) / ppu
+        bh = (len(t["lines"]) * fs * 1.2 + fs * 0.8) / ppu
+        cx, cy = t["at"]
+        gap = 6 / ppu
+        cands = [(0, 0), (0, bh + gap), (0, -bh - gap), (bw + gap, 0), (-bw - gap, 0),
+                 (bw + gap, bh + gap), (-bw - gap, bh + gap), (bw + gap, -bh - gap), (-bw - gap, -bh - gap),
+                 (0, 2 * (bh + gap)), (0, -2 * (bh + gap))]
+        best = None
+        for dx, dy in cands:
+            r = (cx + dx - bw / 2, cy + dy - bh / 2, cx + dx + bw / 2, cy + dy + bh / 2)
+            if not any(r[0] < q[2] and q[0] < r[2] and r[1] < q[3] and q[1] < r[3] for q in placed):
+                best = (dx, dy, r)
+                break
+        dx, dy, r = best or (0, 0, (cx - bw / 2, cy - bh / 2, cx + bw / 2, cy + bh / 2))
+        placed.append(r)
+        if dx or dy:   # moved off its building: leader line
+            ax.plot([cx, cx + dx], [cy, cy + dy], color="w", lw=1.0, zorder=11.5)
+        ax.text(cx + dx, cy + dy, "\n".join(t["lines"]), ha="center", va="center", fontsize=fs, family=FONT,
+                zorder=12, linespacing=1.15, bbox=box_kw)
+    for w in wet:
+        g = w["geom"].intersection(parcel)
+        if g.is_empty or g.area < 2000 / k_ft ** 2:
+            continue
+        c = g.representative_point()
+        if vx0 < c.x < vx1 and vy0 < c.y < vy1:
+            ax.text(c.x, c.y, "WETLANDS", ha="center", va="center", fontsize=9, family=FONT, zorder=12, bbox=box_kw)
+            break
 
-    # north arrow + scale bar
-    span_ft = span * k_ft
-    bar_ft = [50, 100, 200, 250, 500, 1000][int(np.searchsorted([300, 700, 1400, 2000, 4000, 1e9], span_ft))]
-    bx, by = minx + span * 0.04, miny + (maxy - miny) * 0.04
-    blen, hh = bar_ft / k_ft, (maxy - miny) * 0.045
-    ax.add_patch(plt.Rectangle((bx - blen * 0.08, by - hh * 0.35), blen * 1.16, hh, color=(1, 1, 1, 0.9), zorder=9))
-    ax.plot([bx, bx + blen], [by, by], color="k", lw=3, zorder=10)
-    ax.plot([bx, bx + blen / 2], [by, by], color="w", lw=1.6, zorder=11)
-    ax.text(bx + blen / 2, by + hh * 0.2, f"0 — {bar_ft} FT", ha="center", va="bottom", fontsize=8, zorder=11)
-    nx, ny = maxx - span * 0.05, maxy - (maxy - miny) * 0.09
-    ax.annotate("N", xy=(nx, ny + (maxy - miny) * 0.05), xytext=(nx, ny), ha="center", fontsize=12, color="k", weight="bold",
-                arrowprops=dict(arrowstyle="-|>", color="k", lw=2), zorder=11)
+    # scale bar + north arrow (bottom left)
+    span_ft = (vx1 - vx0) * k_ft
+    bar_ft = [50, 100, 200, 250, 500][int(np.searchsorted([500, 1100, 2000, 3000, 1e9], span_ft))]
+    bx, by = vx0 + (vx1 - vx0) * 0.03, vy0 + (vy1 - vy0) * 0.04
+    blen, hh = bar_ft / k_ft, (vy1 - vy0) * 0.05
+    ax.add_patch(plt.Rectangle((bx - blen * 0.1, by - hh * 0.4), blen * 1.2 + hh * 0.9, hh * 1.25, color=(1, 1, 1, 0.88), zorder=13))
+    ax.plot([bx, bx + blen], [by, by], color="k", lw=3, zorder=14, solid_capstyle="butt")
+    ax.plot([bx, bx + blen / 2], [by, by], color="w", lw=1.4, zorder=15, solid_capstyle="butt")
+    ax.text(bx + blen / 2, by + hh * 0.18, f"0      {bar_ft // 2}      {bar_ft} FT", ha="center", va="bottom", fontsize=7, family=FONT, zorder=15)
+    ax.annotate("N", xy=(bx + blen * 1.1 + hh * 0.45, by + hh * 0.75), xytext=(bx + blen * 1.1 + hh * 0.45, by - hh * 0.15),
+                ha="center", va="bottom", fontsize=8, family=FONT, weight="bold", zorder=15,
+                arrowprops=dict(arrowstyle="-|>", color="k", lw=1.2))
 
-    # info panel
-    ip = fig.add_axes([0.795, 0.04, 0.19, 0.92])
-    ip.axis("off")
-    ip.add_patch(plt.Rectangle((0, 0), 1, 1, transform=ip.transAxes, fill=False, lw=1.0, color="#333"))
-    y = 0.97
-    ip.text(0.06, y, "CONCEPT SITE PLAN", fontsize=11, weight="bold", va="top", transform=ip.transAxes)
-    y -= 0.04
-    for t in title_lines:
-        ip.text(0.06, y, t, fontsize=9, va="top", transform=ip.transAxes)
-        y -= 0.026
-    y -= 0.015
+    # project block (vertical text, reading bottom-to-top) over the template's sample text
+    px0, py0, px1, py1 = TB_PROJECT
+    bg.add_patch(plt.Rectangle((px0, py0), px1 - px0, py1 - py0, color="w", zorder=2))
+    proj = project or [program.get("use") or "Development"] + list(title_lines)
+    cyb = (py0 + py1) / 2
+    x = 2346 + 6
+    for i, line in enumerate(proj[:4]):
+        fs = 17 if i == 0 else 13.5
+        n = max(len(line), 1)
+        fs = min(fs, (py1 - py0 - 24) / (n * 0.5) * 72 / (TB_H / 11))   # keep inside the block
+        bg.text(x, cyb, line, rotation=90, ha="center", va="center", fontsize=fs, family=FONT,
+                weight="bold" if i == 0 else "normal", zorder=3)
+        x += 31 if i == 0 else 29
+
+    # site data under the logo
+    dx0, dy0, dx1, dy1 = TB_DATA
     m = metrics
-    rows = [("Concept", program.get("use") or "—")]
-    for b in m["buildings"]:
-        rows.append((b["name"] or "Building", f"{b['use']} · {b['w_ft']}' x {b['d_ft']}' · {b['footprint_sf']:,.0f} SF"
-                     + (" · drive-thru" if b["drive_thru"] else "")))
-    zon = " ".join(x for x in [rules.get("district"), rules.get("jurisdiction") and f"({rules['jurisdiction']})"] if x) or "—"
+    zon = rules.get("district") or "—"
     sb = m.get("setbacks_ft") or {}
-    rows += [("Zoning", zon), ("Building setbacks F / S / R", f"{sb.get('front', '—')}' / {sb.get('side', '—')}' / {sb.get('rear', '—')}'"),
-             ("Parking provided / required", f"{m['stalls']} / {m['stalls_required']} (incl. {m['ada_stalls']} ADA)"),
-             ("Total building area", f"{m['gfa_sf']:,.0f} SF"),
-             ("Impervious", f"{m['impervious_sf']:,.0f} SF ({m['impervious_pct']}%)"),
-             ("Lot coverage · FAR", f"{m['lot_coverage_pct']}% · {m['far']}"),
-             ("Stormwater (approx.)", f"{m['pond_sf']:,.0f} SF"),
-             ("Remaining developable land", f"{m['remaining_developable_acres']} ac")]
-    for k, v in rows:
-        ip.text(0.06, y, k.upper(), fontsize=6.3, color="#666", va="top", transform=ip.transAxes)
-        lines = textwrap.wrap(str(v), 32) or [""]
-        ip.text(0.06, y - 0.016, "\n".join(lines[:3]), fontsize=8.8, weight="bold", va="top", transform=ip.transAxes, linespacing=1.2)
-        y -= 0.045 + 0.018 * (min(len(lines), 3) - 1)
+    rows = [("ZONING", zon),
+            ("SETBACKS F/S/R", f"{sb.get('front', '—'):g}' / {sb.get('side', '—'):g}' / {sb.get('rear', '—'):g}'" if sb else "—"),
+            ("BUILDING AREA", f"{m['gfa_sf']:,.0f} SF"),
+            ("PARKING REQ / PROV", f"{m['stalls_required']} / {m['stalls']}  ({m['ada_stalls']} ADA)"),
+            ("IMPERVIOUS", f"{m['impervious_pct']}% of site"),
+            ("REMAINING LAND", f"{m['remaining_developable_acres']} AC ±")]
+    bg.text(dx0 + 8, dy0 + 4, "SITE DATA", fontsize=6.5, family=FONT, weight="bold", va="top", zorder=3)
+    yy = dy0 + 24
+    for k_, v in rows:
+        bg.text(dx0 + 8, yy, k_, fontsize=5.2, family=FONT, color="#555", va="top", zorder=3)
+        bg.text(dx1 - 6, yy, v, fontsize=5.6, family=FONT, va="top", ha="right", zorder=3)
+        yy += 21
     if m.get("warnings"):
-        ip.text(0.06, y, "\n".join(textwrap.wrap("NOTE: " + "; ".join(m["warnings"]), 40)), fontsize=7, color="#b03000",
-                va="top", transform=ip.transAxes)
-    ip.text(0.06, 0.04, "Concept only — not a survey or engineered plan.\nParcel: county GIS · Aerial: USDA NAIP\nWetlands: USFWS NWI · Flood: FEMA NFHL\n"
-            "Zoning per ordinance research; verify with\nthe jurisdiction before relying on it.",
-            fontsize=6.3, color="#555", va="bottom", transform=ip.transAxes)
+        bg.text(dx0 + 8, yy, "\n".join(textwrap.wrap("; ".join(m["warnings"]), 46)[:2]), fontsize=4.8, family=FONT,
+                color="#b42318", va="top", zorder=3)
+
     fig.savefig(pdf_path)
-    fig.savefig(png_path, dpi=90)
+    fig.savefig(png_path, dpi=110)
     plt.close(fig)

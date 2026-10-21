@@ -23,7 +23,7 @@ from .geo import geocode, state_plane_epsg, to_crs, units_to_ft
 from .listing import parse_listing
 from .parcel import find_parcels
 from . import zoning as zoning_mod
-from .layout import generate as generate_layout
+from .layout2 import generate as generate_layout
 from .concept_drawing import write_dxf as write_concept_dxf, write_sheet as write_concept_sheet
 from .ec_drawing import classify_edges, envelope
 
@@ -184,14 +184,16 @@ def step_layout(job_id):
     supa.update_job(job_id, progress="Drawing the concept plan")
     L = job.get("listing") or {}
     title = [x for x in [L.get("street_address") and f"{L.get('lot') + ', ' if L.get('lot') else ''}{L.get('street_address')}",
-                         ", ".join(x for x in [L.get("city"), L.get("state")] if x)] if x]
+                         ", ".join(x for x in [L.get("city"), L.get("state")] if x),
+                         L.get("county") and (L["county"] if "county" in L["county"].lower() else f"{L['county']} County")] if x]
+    project = [prog.get("use") or "Development"] + title
     edges = classify_edges(ctx["parcel_sp"], [r["centerline"] for r in (ctx["rds"] if isinstance(ctx["rds"], list) else []) if r["class"] != "service"], ctx["k"])
     env = envelope(ctx["parcel_sp"], edges, setbacks, ctx["k"])
     wet = ctx["wet"] if isinstance(ctx["wet"], list) else []
     fl = ctx["fl"] if isinstance(ctx["fl"], list) else []
     rds = ctx["rds"] if isinstance(ctx["rds"], list) else []
     write_concept_sheet(os.path.join(out, "concept_plan.pdf"), os.path.join(out, "concept_plan.png"), ctx["parcel_sp"], env, wet, fl, rds,
-                        ctx["aerial"], ctx["k"], res["sp"], res["labels"], title, res["metrics"], prog, rules)
+                        ctx["aerial"], ctx["k"], res["sp"], res["labels"], title, res["metrics"], prog, rules, project=project)
     write_concept_dxf(os.path.join(out, "existing_conditions.dxf"), os.path.join(out, "concept_layout.dxf"), res["sp"], res["labels"], ctx["k"])
     files = {n: supa.upload(job_id, os.path.join(out, n)) for n in ("existing_conditions.dxf", "existing_conditions.pdf", "existing_conditions.png")}
     lay = {n: supa.upload(job_id, os.path.join(out, n)) for n in ("concept_plan.pdf", "concept_plan.png", "concept_layout.dxf")}
