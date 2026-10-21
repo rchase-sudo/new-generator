@@ -1,0 +1,23 @@
+name: Probe parcel at point
+on:
+  workflow_dispatch:
+    inputs:
+      lat: {required: true}
+      lon: {required: true}
+      state: {default: "VA"}
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    permissions: {contents: write}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - run: pip install -r requirements.txt
+      - run: set -o pipefail; python scripts/probe_point.py ${{ inputs.lat }} ${{ inputs.lon }} ${{ inputs.state }} 2>&1 | tee probe.log
+      - if: always()
+        run: |
+          git config user.name "forma-ci"; git config user.email "forma-ci@users.noreply.github.com"
+          git fetch origin test-runs && git checkout -B test-runs origin/test-runs || git checkout -B test-runs
+          mkdir -p test_runs && cp probe.log test_runs/probe.log
+          git add -f test_runs/probe.log && git commit -m "probe ${{ github.run_id }}" && git push -f origin test-runs || true
