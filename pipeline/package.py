@@ -224,6 +224,20 @@ TEXT_SCHEMA = """{
 }"""
 
 
+_S = {"type": "string"}
+_L = {"type": "array", "items": {"type": "string"}}
+_B = {"type": "array", "items": {"type": "array", "items": {"type": "string"}, "minItems": 3, "maxItems": 3}, "minItems": 3, "maxItems": 3}
+TEXT_PROPS = {
+    **{k: _S for k in ("cover_use", "hbu_title", "overview", "exec_summary", "zoning_h3", "zoning_text", "site_h3", "site_text",
+                       "parking_note", "access_note", "permits_intro", "scenario_a", "noi_note", "returns_note",
+                       "disclaimer_agencies", "disclaimer_sources")},
+    "cover_meta": {**_L, "maxItems": 2}, "highlights": {**_L, "maxItems": 6}, "plan_text": {**_L, "maxItems": 2},
+    "uses": {"type": "array", "items": {"type": "array", "items": {"type": "string"}, "minItems": 4, "maxItems": 4}, "maxItems": 8},
+    "env_boxes": _B, "permit_boxes": _B, "returns_boxes": _B, "residual_boxes": _B,
+    "program_notes": {"type": "object", "additionalProperties": {"type": "string"}},
+}
+
+
 def write_text(F, I, PF):
     o = PF["out"]
     nums = {"scenarios": {k: {kk: (round(v, 4) if isinstance(v, float) else v) for kk, v in o[k].items()} for k in o},
@@ -232,11 +246,13 @@ def write_text(F, I, PF):
             "break_even_rent_land_zero": round(PF["be_zero"], 2), "hard_cost_B": PF["B"]["hard"],
             "all_in_cost_per_sf": round(PF["B"]["tdc"] / PF["tsf"]), "phase1_buildings": PF["phase1"],
             "rents": {n: r[0] for n, r in PF["rent"].items()}, "utility_fee": I.get("utility_fee")}
+    I = {k: v for k, v in I.items() if k != "research_notes"}
     user = (f"FACTS:\n{json.dumps(F, default=str)}\n\nRESEARCH INPUTS:\n{json.dumps(I, default=str)}\n\n"
             f"COMPUTED PROFORMA (authoritative numbers):\n{json.dumps(nums, default=str)}\n\n"
             f"Write the package text. Return JSON in exactly this shape:\n{TEXT_SCHEMA}")
     return claude.ask_tool(TEXT_SYS, user.replace("Return JSON in exactly this shape", "Call submit_text with an object in exactly this shape"),
-                           "submit_text", "Submit the package text.", max_tokens=16000, timeout=900)
+                           "submit_text", "Submit the package text. Each field once, within its word limit.", max_tokens=16000,
+                           timeout=900, properties=TEXT_PROPS)
 
 
 # ------------------------------------------------------------------------------------------------ html

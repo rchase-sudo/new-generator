@@ -66,7 +66,7 @@ def ask_json(system, user, **kw):
 
 def ask_tool(system, user, name, description, max_tokens=8000, timeout=300, properties=None):
     """Structured output via a forced tool call: the API returns the tool input as parsed JSON (never malformed)."""
-    schema = {"type": "object", "properties": properties or {}, "additionalProperties": True}
+    schema = {"type": "object", "properties": properties or {}, "additionalProperties": not properties}
     body = {"model": MODEL, "max_tokens": max_tokens, "system": system, "messages": [{"role": "user", "content": user}],
             "tools": [{"name": name, "description": description, "input_schema": schema}],
             "tool_choice": {"type": "tool", "name": name}}

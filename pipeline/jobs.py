@@ -323,7 +323,17 @@ def step_package(job_id):
         fh.write(supa.download(job_id, rname))
     supa.update_job(job_id, package_status="researching", package_error=None)
     F = pkg.facts(job)
-    I = pkg.research_inputs(F)
+    I = None
+    try:   # rebuilds reuse the research when the plan has not changed (saves the web-search pass)
+        prev = json.loads(supa.download(job_id, "package_inputs.json"))
+        if prev.get("plan") == json.loads(json.dumps(F["plan"], default=str)) and prev.get("inputs"):
+            I = prev["inputs"]
+    except Exception:  # noqa: BLE001
+        pass
+    I = I or pkg.research_inputs(F)
+    with open(os.path.join(out, "package_inputs.json"), "w") as fh:
+        json.dump({"plan": F["plan"], "inputs": I}, fh, default=str)
+    supa.upload(job_id, os.path.join(out, "package_inputs.json"))
     supa.update_job(job_id, package_status="writing")
     PF = pkg.proforma(F, I)
     T = pkg.write_text(F, I, PF)
@@ -331,9 +341,6 @@ def step_package(job_id):
     pdf = os.path.join(out, "package.pdf")
     supa.update_job(job_id, package_status="typesetting")
     pkg.build(job, plan, render, pdf, inputs=I, text=T)
-    with open(os.path.join(out, "package_inputs.json"), "w") as fh:
-        json.dump({"inputs": I, "text": T}, fh, default=str)
-    supa.upload(job_id, os.path.join(out, "package_inputs.json"))
     key = supa.upload(job_id, pdf, "package.pdf")
     outputs = supa.get_job(job_id).get("outputs") or {}
     outputs["package"] = {"package.pdf": key}
