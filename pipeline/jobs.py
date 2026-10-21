@@ -163,6 +163,17 @@ def step_ec(job_id):
     wet = context.wetlands(ext, epsg)
     fl = context.flood(ext, epsg)
     rds = context.roads(ext, epsg)
+    import time as _t
+    for _ in range(2):   # public GIS services drop connections; one more pass before giving up on any of them
+        if not any(isinstance(v, dict) for v in (wet, fl, rds)):
+            break
+        _t.sleep(6)
+        wet = context.wetlands(ext, epsg) if isinstance(wet, dict) else wet
+        fl = context.flood(ext, epsg) if isinstance(fl, dict) else fl
+        rds = context.roads(ext, epsg) if isinstance(rds, dict) else rds
+    if isinstance(rds, dict):
+        # without roads there is no front, no setbacks by edge and nothing for the driveway to meet: stop, don't guess
+        raise RuntimeError("Road data is unavailable right now (OpenStreetMap and Census both failed). Retry in a few minutes.")
     warnings = [f"{n}: {v['error']}" for n, v in (("wetlands", wet), ("flood", fl), ("roads", rds)) if isinstance(v, dict)]
 
     supa.update_job(job_id, progress="Drawing")

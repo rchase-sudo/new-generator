@@ -1,4 +1,5 @@
 """Site context from free public sources: NAIP aerial, NWI wetlands, FEMA flood zones, OSM roads."""
+import time
 import io
 import math
 
@@ -17,7 +18,11 @@ NAIP_SERVICES = [
 ]
 NWI_LAYER = "https://fwspublicservices.wim.usgs.gov/wetlandsmapservice/rest/services/Wetlands/MapServer/0"
 FEMA_LAYER = "https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer/28"
-OVERPASS = ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"]
+OVERPASS = ["https://overpass-api.de/api/interpreter", "https://overpass.private.coffee/api/interpreter",
+            "https://maps.mail.ru/osm/tools/overpass/api/interpreter", "https://overpass.kumi.systems/api/interpreter"]
+TIGERWEB = "https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/Transportation/MapServer"
+# Census MAF/TIGER feature class -> OSM-like class (S1730 alleys, S1740 private, S1780 parking lots are skipped)
+MTFCC = {"S1100": "trunk", "S1200": "primary", "S1400": "residential", "S1630": "service", "S1640": "service"}
 
 # Typical lane / pavement widths (ft) by OSM class when `width`/`lanes` are missing.
 LANE_FT = 12.0
@@ -93,13 +98,23 @@ def roads(extent_sp, epsg):
 way["highway"~"motorway|trunk|primary|secondary|tertiary|unclassified|residential|service|motorway_link|trunk_link|primary_link"]
 ({bb_ll[1]},{bb_ll[0]},{bb_ll[3]},{bb_ll[2]});out geom tags;"""
     js = None
-    for u in OVERPASS:
-        try:
-            js = post(u, data={"data": q}, timeout=120).json()
+    for attempt in range(2):                      # public Overpass mirrors go down / rate-limit often
+        for u in OVERPASS:
+            try:
+                js = post(u, data={"data": q}, timeout=120, tries=1).json()
+                break
+            except Exception:  # noqa: BLE001
+                continue
+        if js is not None:
             break
-        except Exception:  # noqa: BLE001
-            continue
+        time.sleep(8)
     if js is None:
+        try:
+            out = _tiger_roads(bb_ll, epsg)       # Census TIGER roads: names + classes, no lane data
+            if out:
+                return out
+        except Exception:  # noqa: BLE001
+            pass
         return {"error": "Overpass unavailable"}
     from .geo import units_to_ft
     k = units_to_ft(epsg)
@@ -121,6 +136,40 @@ way["highway"~"motorway|trunk|primary|secondary|tertiary|unclassified|residentia
                     "lanes": lanes, "oneway": t.get("oneway") == "yes", "width_ft": width_ft,
                     "pavement": cl.buffer(width_ft / 2 / k, cap_style=2, join_style=2),
                     "shoulder_ft": SHOULDER_FT.get(hw, 0)})
+    return out
+
+
+def _road(cl, name, ref, hw, lanes, oneway, k, width_ft=None):
+    width_ft = width_ft or lanes * LANE_FT
+    return {"centerline": cl, "name": name, "ref": ref, "class": hw, "lanes": lanes, "oneway": oneway, "width_ft": width_ft,
+            "pavement": cl.buffer(width_ft / 2 / k, cap_style=2, join_style=2), "shoulder_ft": SHOULDER_FT.get(hw, 0)}
+
+
+def _tiger_roads(bb_ll, epsg):
+    """Fallback road source: Census TIGERweb (finds its road layers at runtime; ids change between vintages)."""
+    from .geo import units_to_ft
+    k = units_to_ft(epsg)
+    svc = get(TIGERWEB, params={"f": "json"}, timeout=60).json()
+    layers = [l for l in svc.get("layers", []) if "road" in l.get("name", "").lower() and "label" not in l.get("name", "").lower()]
+    out, seen = [], set()
+    for l in layers:
+        js = get(f"{TIGERWEB}/{l['id']}/query", timeout=90, params={
+            "geometry": f"{bb_ll[0]},{bb_ll[1]},{bb_ll[2]},{bb_ll[3]}", "geometryType": "esriGeometryEnvelope", "inSR": 4326,
+            "spatialRel": "esriSpatialRelIntersects", "outFields": "*", "outSR": 4326, "f": "geojson"}).json()
+        for f in js.get("features", []):
+            pr = {kk.upper(): v for kk, v in (f.get("properties") or {}).items()}
+            hw = MTFCC.get(str(pr.get("MTFCC") or ""))
+            g = f.get("geometry") or {}
+            if not hw or g.get("type") not in ("LineString", "MultiLineString"):
+                continue
+            parts = [g["coordinates"]] if g["type"] == "LineString" else g["coordinates"]
+            for pts in parts:
+                key = (pr.get("NAME"), round(pts[0][0], 6), round(pts[0][1], 6))
+                if len(pts) < 2 or key in seen:
+                    continue
+                seen.add(key)
+                cl = to_crs(LineString([(x, y) for x, y, *_ in pts]), 4326, epsg)
+                out.append(_road(cl, pr.get("NAME") or pr.get("BASENAME"), None, hw, DEFAULT_LANES.get(hw, 2), False, k))
     return out
 
 
