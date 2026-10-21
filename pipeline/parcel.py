@@ -77,10 +77,15 @@ def regrid_search(listing, lat, lon, epsg, radius_m=600, limit=60):
         q = ", ".join(x for x in [listing.get("street_address"), listing.get("city"), listing.get("state"), listing.get("zip")] if x)
         hits = call("address", query=q, limit=5)
         feats += hits
-        same_no = [f for f in hits if f.get("geometry") and _house_no(_fields(f)) == hn]
+        # Fuzzy address search can return the same number on a different street across town
+        # ("2839 US 70" -> "2839 Herring Blvd"); only trust a hit near the geocoded point.
+        here = Point(lon, lat)
+        same_no = [f for f in hits if f.get("geometry") and _house_no(_fields(f)) == hn
+                   and shape(f["geometry"]).distance(here) * 111320 < 800]
         if same_no:
             pt = shape(same_no[0]["geometry"]).representative_point()
             anchor = (pt.y, pt.x)
+        feats = [f for f in feats if f not in hits or f in same_no]
     sweep_r = 350 if (hn or feats) else radius_m
     feats += call("point", lat=anchor[0], lon=anchor[1], radius=sweep_r, limit=limit)
     out = []
@@ -263,8 +268,9 @@ def _addr_key(a):
     return toks[0], {t for t in toks[1:] if t not in skip}
 
 
-def rank(cands, listing, lat, lon, road_geom_ll=None, aliases=None):
+def rank(cands, listing, lat, lon, road_geom_ll=None, aliases=None, geocode_pt=None):
     target = listing.get("acres")
+    geo_pt = Point(geocode_pt[1], geocode_pt[0]) if geocode_pt else Point(lon, lat)
     wanted = {_norm_apn(a) for a in _apns(listing)}
     pt = Point(lon, lat)
     seen, out = set(), []
@@ -284,9 +290,10 @@ def rank(cands, listing, lat, lon, road_geom_ll=None, aliases=None):
         hn, words = _addr_key(listing.get("street_address"))
         chn, cwords = _addr_key(c.get("address"))
         chn = c.get("house_no") or chn
-        if hn and chn and chn.lstrip("0") == hn.lstrip("0") and g.distance(pt) * 111320 < 600:
+        big_enough = not target or c["acres"] >= 0.2 * target   # a 0.07-ac lot can't be a 4-ac listing
+        if hn and chn and chn.lstrip("0") == hn.lstrip("0") and g.distance(geo_pt) * 111320 < 600 and big_enough:
             c["address_match"] = True
-            score += 90                               # same house number, nearby (street name may be an alias)
+            score += 90                               # same house number, near the geocode (street name may be an alias)
             if (words & cwords) or any((grp & words) and (grp & cwords) for grp in (aliases or [])):
                 score += 20                           # and the street is the same road under any of its names
         if road_geom_ll is not None:
@@ -308,6 +315,7 @@ def rank(cands, listing, lat, lon, road_geom_ll=None, aliases=None):
 def find_parcels(listing, lat, lon, road_geom_ll=None, county_layer=None, max_out=6, corridor_ll=None):
     """corridor_ll: lon/lat polygon along the listing's road, used when the listing has no street number."""
     epsg = state_plane_epsg(lat, lon)
+    geocode_pt = (lat, lon)
     cands, anchor = regrid_search(listing, lat, lon, epsg)
     if cands:
         lat, lon = anchor
@@ -329,7 +337,7 @@ def find_parcels(listing, lat, lon, road_geom_ll=None, county_layer=None, max_ou
     if _addr_key(listing.get("street_address"))[0]:
         from .context import road_aliases
         aliases = road_aliases(lat, lon)
-    ranked = rank(cands, listing, lat, lon, road_geom_ll, aliases)
+    ranked = rank(cands, listing, lat, lon, road_geom_ll, aliases, geocode_pt)
     zipc = str(listing.get("zip") or "")[:5]
     decided = ranked and (ranked[0].get("apn_match") or ranked[0].get("address_match") or ranked[0].get("assemblage"))
     if zipc and len(ranked) > 1 and not decided:
