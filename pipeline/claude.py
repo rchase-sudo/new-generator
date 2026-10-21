@@ -83,6 +83,8 @@ def ask_tool(system, user, name, description, max_tokens=8000, timeout=300, prop
     for b in js.get("content", []) or []:
         if b.get("type") == "tool_use" and b.get("name") == name:
             if js.get("stop_reason") == "max_tokens":
-                raise RuntimeError(f"{name}: output hit max_tokens")
+                tail = json.dumps(b.get("input"))[-500:]
+                kinds = [x.get("type") for x in js.get("content", [])]
+                raise RuntimeError(f"{name}: output hit max_tokens usage={js.get('usage')} blocks={kinds} tail={tail}")
             return b.get("input") or {}
     raise RuntimeError(f"{name}: no tool call (stop_reason={js.get('stop_reason')}, error={js.get('error')})")
