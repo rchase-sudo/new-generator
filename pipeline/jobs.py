@@ -120,7 +120,9 @@ def step_parse(job_id):
     supa.update_job(job_id, progress="Searching parcels")
     res = find_parcels(listing, lat, lon, road_geom_ll=road_ll, county_layer=job.get("county_layer"), corridor_ll=corridor)
     if not res["candidates"]:
-        raise RuntimeError("No parcels found near the listing location. Paste the parcel ID (APN) or adjust the address.")
+        from .parcel import REGRID_ERRORS
+        why = f" (Regrid: {'; '.join(REGRID_ERRORS)[:300]})" if REGRID_ERRORS else ""
+        raise RuntimeError("No parcels found near the listing location. Paste the parcel ID (APN) or adjust the address." + why)
     supa.update_job(job_id, status="awaiting_parcel", step="parse", progress="Confirm the parcel",
                     geocode={"lat": lat, "lon": lon, "label": label}, epsg=epsg,
                     candidates=res["candidates"], parcel_source=res["source"], county_layer=res["county_layer"], debug=res.get("debug"))

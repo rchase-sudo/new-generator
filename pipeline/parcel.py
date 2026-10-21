@@ -5,6 +5,8 @@ Every candidate carries its own acreage computed from geometry in state-plane fe
 acreage can be checked independently of whatever the source reports.
 """
 import json
+
+import requests
 import os
 import re
 
@@ -53,19 +55,29 @@ def _apn_hit(c, wanted):
 
 
 # ---------------------------------------------------------------- Regrid
+REGRID_ERRORS = []   # last search's Regrid failures (quota, auth, coverage) so the job error can say why
+
+
 def regrid_search(listing, lat, lon, epsg, radius_m=300, limit=80):
     """Parcels from Regrid AT the geocoded point (plus any APN/PIN the listing gives).
     Regrid's address search is not used: it matches the wrong road too often. The geocode decides where; Regrid
     only supplies the parcel data around that point."""
+    REGRID_ERRORS[:] = []
     tok = os.environ.get("REGRID_TOKEN")
     if not tok:
+        REGRID_ERRORS.append("REGRID_TOKEN not set")
         return [], (lat, lon)
     feats = []
 
     def call(path, **params):
         try:
-            return _features(get(f"{REGRID}/parcels/{path}", params={**params, "token": tok}).json())
-        except Exception:  # noqa: BLE001  (no coverage / quota / bad query)
+            r = requests.get(f"{REGRID}/parcels/{path}", params={**params, "token": tok}, timeout=60)
+            if r.status_code >= 400:
+                REGRID_ERRORS.append(f"{path} {r.status_code}: {r.text[:200]}")
+                return []
+            return _features(r.json())
+        except Exception as e:  # noqa: BLE001  (no coverage / quota / bad query)
+            REGRID_ERRORS.append(f"{path}: {e}"[:250])
             return []
 
     for apn in _apns(listing):
