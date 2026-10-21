@@ -62,3 +62,21 @@ def ask_json(system, user, **kw):
         m2 = re.search(r"\{.*\}", fixed, re.S)
         data = _loads(m2.group(0) if m2 else fixed)
     return data, sources
+
+
+def ask_tool(system, user, name, description, max_tokens=8000, timeout=300, properties=None):
+    """Structured output via a forced tool call: the API returns the tool input as parsed JSON (never malformed)."""
+    schema = {"type": "object", "properties": properties or {}, "additionalProperties": True}
+    body = {"model": MODEL, "max_tokens": max_tokens, "system": system, "messages": [{"role": "user", "content": user}],
+            "tools": [{"name": name, "description": description, "input_schema": schema}],
+            "tool_choice": {"type": "tool", "name": name}}
+    r = post("https://api.anthropic.com/v1/messages",
+             headers={"x-api-key": os.environ["ANTHROPIC_API_KEY"], "anthropic-version": "2023-06-01", "content-type": "application/json"},
+             json=body, timeout=timeout, tries=2)
+    js = r.json()
+    for b in js.get("content", []) or []:
+        if b.get("type") == "tool_use" and b.get("name") == name:
+            if js.get("stop_reason") == "max_tokens":
+                raise RuntimeError(f"{name}: output hit max_tokens")
+            return b.get("input") or {}
+    raise RuntimeError(f"{name}: no tool call (stop_reason={js.get('stop_reason')}, error={js.get('error')})")

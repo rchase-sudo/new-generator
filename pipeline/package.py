@@ -101,13 +101,28 @@ INPUTS_SCHEMA = """{
 }"""
 
 
+RESEARCH_SYS = """You are a commercial real estate development analyst researching a vacant land listing for a preliminary
+development proforma. Use web search to find, for THIS jurisdiction: utility connection / tap / impact fees (current
+schedule), the land price or comparable land sales and the assessment, demographics (median household income, population,
+growth), traffic counts on the fronting road, regional construction costs for the proposed building types and site work,
+NNN rents and cap rates for the proposed uses, and the permitting sequence with real agency names (city/county planning,
+state DOT district, state environmental agency, utility). Report findings as concise notes with figures, dates and
+source URLs. Where nothing is found, give a conservative regional benchmark and label it as such."""
+
+FILL_SYS = """You turn research notes into proforma inputs for a FORMA due diligence package. Use the research figures;
+where research is missing use conservative regional benchmarks. Scale every cost to the plan quantities given
+(impervious SF, building SF, stalls, development acres). Building names must match the program exactly."""
+
+
 def research_inputs(F):
-    user = (f"Property and approved concept plan:\n{json.dumps(F, default=str)}\n\n"
-            f"Return JSON exactly in this shape (comments describe the fields):\n{INPUTS_SCHEMA}\n"
-            "Costs must fit the plan quantities (impervious SF, building SF, stalls, development acres). "
+    notes, src = claude.ask(RESEARCH_SYS, f"Property and approved concept plan:\n{json.dumps(F, default=str)}",
+                            max_tokens=6000, web_search=12, timeout=900)
+    user = (f"Property and approved concept plan:\n{json.dumps(F, default=str)}\n\nRESEARCH NOTES:\n{notes}\n\n"
+            f"Call submit_inputs with an object in exactly this shape (comments describe the fields):\n{INPUTS_SCHEMA}\n"
             "If the asking price is null, estimate a land price from comparable land sales or the assessment and say so in land.basis.")
-    data, src = claude.ask_json(INPUTS_SYS, user, max_tokens=8000, web_search=12, timeout=900)
+    data = claude.ask_tool(FILL_SYS, user, "submit_inputs", "Submit the proforma inputs.", max_tokens=8000, timeout=600)
     data["sources"] = list(dict.fromkeys((data.get("sources") or []) + src))[:20]
+    data["research_notes"] = notes[:6000]
     return data
 
 
@@ -220,8 +235,8 @@ def write_text(F, I, PF):
     user = (f"FACTS:\n{json.dumps(F, default=str)}\n\nRESEARCH INPUTS:\n{json.dumps(I, default=str)}\n\n"
             f"COMPUTED PROFORMA (authoritative numbers):\n{json.dumps(nums, default=str)}\n\n"
             f"Write the package text. Return JSON in exactly this shape:\n{TEXT_SCHEMA}")
-    data, _ = claude.ask_json(TEXT_SYS, user, max_tokens=8000, timeout=600)
-    return data
+    return claude.ask_tool(TEXT_SYS, user.replace("Return JSON in exactly this shape", "Call submit_text with an object in exactly this shape"),
+                           "submit_text", "Submit the package text.", max_tokens=8000, timeout=600)
 
 
 # ------------------------------------------------------------------------------------------------ html
