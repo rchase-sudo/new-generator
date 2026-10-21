@@ -35,7 +35,7 @@ def _num(x, default=0.0):
 def facts(job):
     L = job.get("listing") or {}
     P = job.get("parcel") or {}
-    if P.get("parts"):
+    if isinstance(P.get("parts"), list) and P["parts"]:
         P = {**P["parts"][0], "acres": sum(_num(p.get("acres")) for p in P["parts"])}
     A = P.get("attrs") or {}
     Z = job.get("zoning") or {}
@@ -65,8 +65,12 @@ def facts(job):
         "wetland_acres": S.get("wetland_acres"), "wetland_types": S.get("wetland_types"), "flood_sfha_acres": S.get("flood_sfha_acres"),
         "flood_zones": S.get("flood_zones"),
         "use": prog.get("use"), "rationale": prog.get("rationale"), "parking_calc": (prog.get("parking") or {}).get("calc"),
-        "buildings": [{k: b.get(k) for k in ("name", "label", "use", "footprint_sf", "stories", "drive_thru", "notes")}
-                      for b in prog.get("buildings") or []],
+        # building sizes come from the drawn plan (the layout may have scaled the program to fit), labels from the program
+        "buildings": [{**{k: b.get(k) for k in ("name", "label", "use", "footprint_sf", "stories", "drive_thru", "notes")},
+                       **{k: v for k, v in (next((m for m in M.get("buildings") or [] if m.get("name") == b.get("name")), {})).items()
+                          if k in ("footprint_sf", "stories")}}
+                      for b in prog.get("buildings") or []
+                      if not M.get("buildings") or any(m.get("name") == b.get("name") for m in M["buildings"])],
         "plan": {k: M.get(k) for k in ("building_sf", "gfa_sf", "stalls", "stalls_required", "ada_stalls", "impervious_sf",
                                        "impervious_pct", "lot_coverage_pct", "development_acres", "remaining_developable_acres",
                                        "far", "pond_sf")},
