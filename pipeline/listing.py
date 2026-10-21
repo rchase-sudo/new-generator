@@ -42,6 +42,8 @@ def parse_listing(text: str) -> dict:
         },
         timeout=120,
     )
+    from .claude import record
+    record(r.json(), "Read listing", MODEL)
     out = "".join(b.get("text", "") for b in r.json()["content"] if b.get("type") == "text")
     m = re.search(r"\{.*\}", out, re.S)
     data = json.loads(m.group(0)) if m else {}

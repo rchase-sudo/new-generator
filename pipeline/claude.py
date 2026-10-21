@@ -7,8 +7,29 @@ from .http import ClientError, post
 
 MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5-5")
 
+# USD per million tokens (input, output) -- platform.claude.com/docs/en/about-claude/pricing, Oct 2026
+PRICES = {"claude-sonnet-5": (2.0, 10.0), "claude-opus-5-5": (4.0, 20.0), "claude-opus-5": (5.0, 25.0),
+          "claude-haiku-5-5": (0.10, 0.50), "claude-sonnet-4": (3.0, 15.0), "claude-haiku-4": (1.0, 5.0)}
+SEARCH_USD = 0.01
+USAGE = []   # calls made during the current worker step; jobs.run flushes this onto the job row
 
-def ask(system, user, max_tokens=4000, web_search=0, timeout=300):
+
+def record(js, label, model=None):
+    """Log one Messages API response's usage and cost (called for every Claude call, including failures that return usage)."""
+    u = (js or {}).get("usage") or {}
+    if not u:
+        return
+    model = model or (js or {}).get("model") or MODEL
+    pin, pout = next((v for k, v in sorted(PRICES.items(), key=lambda kv: -len(kv[0])) if model.startswith(k)), (2.0, 10.0))
+    inp, out = int(u.get("input_tokens") or 0), int(u.get("output_tokens") or 0)
+    cw, cr = int(u.get("cache_creation_input_tokens") or 0), int(u.get("cache_read_input_tokens") or 0)
+    searches = int(((u.get("server_tool_use") or {}).get("web_search_requests")) or 0)
+    cost = (inp * pin + cw * pin * 1.25 + cr * pin * 0.1 + out * pout) / 1e6 + searches * SEARCH_USD
+    USAGE.append({"call": label, "model": model, "input_tokens": inp + cw + cr, "output_tokens": out,
+                  "searches": searches, "cost_usd": round(cost, 4)})
+
+
+def ask(system, user, max_tokens=4000, web_search=0, timeout=300, label="claude"):
     msgs = [{"role": "user", "content": user}]
     body = {"model": MODEL, "max_tokens": max_tokens, "system": system, "messages": msgs}
     if web_search:
@@ -19,6 +40,7 @@ def ask(system, user, max_tokens=4000, web_search=0, timeout=300):
                  headers={"x-api-key": os.environ["ANTHROPIC_API_KEY"], "anthropic-version": "2023-06-01", "content-type": "application/json"},
                  json=body, timeout=timeout, tries=2)
         js = r.json()
+        record(js, label)
         content = js.get("content", []) or []
         blocks += content
         if js.get("stop_reason") != "pause_turn":
@@ -58,13 +80,13 @@ def ask_json(system, user, **kw):
         # one repair pass (unescaped quotes such as 2" taps, stray comments) -- no web search, same content
         fixed, _ = ask("Return the user's data as strictly valid JSON: same keys, same values, escape inner quotes, "
                        "no comments, no prose. Output only the JSON object.", raw, max_tokens=kw.get("max_tokens", 8000),
-                       timeout=kw.get("timeout", 300))
+                       timeout=kw.get("timeout", 300), label=kw.get("label", "claude") + " (JSON repair)")
         m2 = re.search(r"\{.*\}", fixed, re.S)
         data = _loads(m2.group(0) if m2 else fixed)
     return data, sources
 
 
-def ask_tool(system, user, name, description, max_tokens=8000, timeout=300, properties=None):
+def ask_tool(system, user, name, description, max_tokens=8000, timeout=300, properties=None, label=None):
     """Structured output via a forced tool call: the API returns the tool input as parsed JSON (never malformed)."""
     schema = {"type": "object", "properties": properties or {}, "additionalProperties": not properties}
     body = {"model": MODEL, "max_tokens": max_tokens, "system": system, "messages": [{"role": "user", "content": user}],
@@ -80,6 +102,7 @@ def ask_tool(system, user, name, description, max_tokens=8000, timeout=300, prop
         body["messages"][0]["content"] += f"\n\nRespond only by calling the {name} tool."
         r = post("https://api.anthropic.com/v1/messages", headers=hdr, json=body, timeout=timeout, tries=2)
     js = r.json()
+    record(js, label or name)
     for b in js.get("content", []) or []:
         if b.get("type") == "tool_use" and b.get("name") == name:
             if js.get("stop_reason") == "max_tokens":

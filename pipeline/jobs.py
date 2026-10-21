@@ -29,7 +29,31 @@ from .concept_drawing import write_dxf as write_concept_dxf, write_sheet as writ
 from .ec_drawing import classify_edges, envelope
 
 
+def _flush_usage(job_id, step):
+    """Append this step's Claude calls (tokens, searches, USD) to pipeline_jobs.usage."""
+    from . import claude
+    calls, claude.USAGE[:] = list(claude.USAGE), []
+    if not calls:
+        return
+    import datetime as _dt
+    at = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
+    try:
+        prev = supa.get_job(job_id).get("usage") or []
+        supa.update_job(job_id, usage=prev + [{**c, "step": step, "at": at} for c in calls])
+    except Exception as e:  # noqa: BLE001  -- usage logging must never break a run
+        print("usage log failed:", e)
+
+
 def run(job_id, step):
+    from . import claude
+    claude.USAGE[:] = []
+    try:
+        _run(job_id, step)
+    finally:
+        _flush_usage(job_id, step)
+
+
+def _run(job_id, step):
     try:
         if step == "parse":
             step_parse(job_id)

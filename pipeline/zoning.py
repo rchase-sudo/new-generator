@@ -104,7 +104,7 @@ def research(listing, parcel, summary):
             "convenience store with fuel, car wash, laundromat, medical office, professional office, bank with drive-through, "
             "self-storage, contractor/flex warehouse, light industrial, daycare, multifamily, hotel, auto repair) "
             "and the parking ratio for each of those uses where the ordinance gives one.")
-    rules, sources = ask_json(ZONING_SYSTEM, user, max_tokens=6000, web_search=8, timeout=480)
+    rules, sources = ask_json(ZONING_SYSTEM, user, max_tokens=6000, web_search=8, timeout=480, label="Zoning research")
     rules["sources"] = list(dict.fromkeys((rules.get("sources") or []) + sources))[:12]
     rules["researched_at"] = dt.date.today().isoformat()
     _cache_put(key, rules)
@@ -122,7 +122,7 @@ def program(listing, summary, rules):
             f"SITE (measured): {json.dumps({k: summary.get(k) for k in ('parcel_acres','buildable_acres','frontage_buildable_acres','envelope_acres','frontage_ft','fronting_roads','wetland_acres','flood_sfha_acres')})}\n"
             f"ZONING: {json.dumps({k: rules.get(k) for k in ('jurisdiction','district','district_name','setbacks_ft','max_height_ft','max_lot_coverage_pct','max_impervious_pct','max_far','parking_ratios','uses','notes')})}\n"
             f"Choose the highest-and-best-use concept and return it in this JSON shape:\n{PROGRAM_SCHEMA}")
-    prog, _ = ask_json(PROGRAM_SYSTEM, user, max_tokens=2500, timeout=240)
+    prog, _ = ask_json(PROGRAM_SYSTEM, user, max_tokens=2500, timeout=240, label="Development program")
     for b in prog.get("buildings", []):
         b["footprint_sf"] = float(b.get("footprint_sf") or 5000)
         b["stories"] = int(b.get("stories") or 1)

@@ -224,6 +224,8 @@ def discover_county_layer(listing):
              json={"model": os.environ.get("CLAUDE_MODEL", "claude-sonnet-5-5"), "max_tokens": 600,
                    "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}],
                    "messages": [{"role": "user", "content": q}]}, timeout=180)
+    from .claude import record
+    record(r.json(), "Find county parcel layer")
     txt = " ".join(b.get("text", "") for b in r.json().get("content", []) if b.get("type") == "text")
     m = re.findall(r"https?://\S+?/(?:MapServer|FeatureServer)(?:/\d+)?", txt)
     for u in m:

@@ -116,11 +116,12 @@ where research is missing use conservative regional benchmarks. Scale every cost
 
 def research_inputs(F):
     notes, src = claude.ask(RESEARCH_SYS, f"Property and approved concept plan:\n{json.dumps(F, default=str)}",
-                            max_tokens=6000, web_search=12, timeout=900)
+                            max_tokens=6000, web_search=12, timeout=900, label="Package: research")
     user = (f"Property and approved concept plan:\n{json.dumps(F, default=str)}\n\nRESEARCH NOTES:\n{notes}\n\n"
             f"Call submit_inputs with an object in exactly this shape (comments describe the fields):\n{INPUTS_SCHEMA}\n"
             "If the asking price is null, estimate a land price from comparable land sales or the assessment and say so in land.basis.")
-    data = claude.ask_tool(FILL_SYS, user, "submit_inputs", "Submit the proforma inputs.", max_tokens=16000, timeout=900)
+    data = claude.ask_tool(FILL_SYS, user, "submit_inputs", "Submit the proforma inputs.", max_tokens=16000, timeout=900,
+                           label="Package: cost & rent inputs")
     data["sources"] = list(dict.fromkeys((data.get("sources") or []) + src))[:20]
     data["research_notes"] = notes[:6000]
     return data
@@ -252,7 +253,7 @@ def write_text(F, I, PF):
             f"Write the package text. Return JSON in exactly this shape:\n{TEXT_SCHEMA}")
     return claude.ask_tool(TEXT_SYS, user.replace("Return JSON in exactly this shape", "Call submit_text with an object in exactly this shape"),
                            "submit_text", "Submit the package text. Each field once, within its word limit.", max_tokens=16000,
-                           timeout=900, properties=TEXT_PROPS)
+                           timeout=900, properties=TEXT_PROPS, label="Package: writing")
 
 
 # ------------------------------------------------------------------------------------------------ html
