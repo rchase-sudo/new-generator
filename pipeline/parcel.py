@@ -317,7 +317,7 @@ def suggest_assemblage(cands, target, geocode_pt, max_parts=3, near_m=250):
     Look for 2-3 touching parcels near the geocode whose areas add up to the listing acreage (within 3%)."""
     here = Point(geocode_pt[1], geocode_pt[0])
     pool = [c for c in cands if not c.get("assemblage") and c["acres"] < target * 1.03][:40]
-    geoms = [shape(c["geometry"]).buffer(0.000005) for c in pool]  # ~0.5 m tolerance for touching
+    geoms = [shape(c["geometry"]).buffer(0.00003) for c in pool]  # ~3 m tolerance: parcel layers have small gaps
     best = None
 
     def consider(ix):
@@ -394,13 +394,19 @@ def find_parcels(listing, lat, lon, road_geom_ll=None, county_layer=None, max_ou
             except Exception:  # noqa: BLE001
                 continue
         ranked.sort(key=lambda c: -c["score"])
+    assemblage_note = None
     if target and ranked and not decided:
         best_single = min(abs(c["acres"] - target) / target for c in ranked)
         if best_single > 0.05:
-            combo = suggest_assemblage(ranked, target, geocode_pt)
+            try:
+                combo = suggest_assemblage(ranked, target, geocode_pt)
+            except Exception as e:  # noqa: BLE001
+                combo, assemblage_note = None, f"assemblage search failed: {e}"
+            else:
+                assemblage_note = f"assemblage: {'found ' + combo['apn'] if combo else 'none within 3%'}"
             if combo:
                 ranked.insert(0, combo)
     pool = [{"address": c.get("address"), "apn": c.get("apn"), "acres": c.get("acres"), "score": c.get("score"),
              "dist_m": round(shape(c["geometry"]).distance(Point(geocode_pt[1], geocode_pt[0])) * 111320)} for c in ranked]
     return {"epsg": epsg, "source": source, "county_layer": county_layer, "candidates": ranked[:max_out],
-            "debug": {"geocode": geocode_pt, "anchor": [lat, lon], "pool": pool[:150]}}
+            "debug": {"geocode": geocode_pt, "anchor": [lat, lon], "assemblage": assemblage_note, "pool": pool[:150]}}
