@@ -94,8 +94,11 @@ def write_dxf(ec_dxf, out_path, sp, labels, k_ft):
         ring(sp["pond"], "P-POND", width=0.3 / k_ft)
     for t in labels:
         h = (2.0 if t.get("small") else 3.0) / k_ft
-        msp.add_mtext("\\P".join(t["lines"]), dxfattribs={"layer": "P-TEXT", "char_height": h, "insert": t["at"],
-                                                          "attachment_point": 5, "rotation": 0, "bg_fill": 1})
+        mt = msp.add_mtext("\\P".join(t["lines"]), dxfattribs={"layer": "P-TEXT", "char_height": h, "insert": t["at"],
+                                                               "attachment_point": 5, "rotation": 0})
+        # background mask: must be written with its scale (45) and colour (63) codes -- a bare bg_fill flag (90)
+        # makes AutoCAD abort the open ("Press ENTER to continue" -> back to the start page)
+        mt.set_bg_color("canvas", scale=1.3)
     doc.saveas(out_path)
 
 
