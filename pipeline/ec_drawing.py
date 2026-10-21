@@ -195,10 +195,12 @@ def write_sheet(pdf_path, png_path, parcel, env, setback_line, wet, fl, rds, aer
         ip.text(0.06, y, t, fontsize=9, va="top", transform=ip.transAxes)
         y -= 0.028
     y -= 0.02
+    import textwrap
     for k, v in facts:
         ip.text(0.06, y, k.upper(), fontsize=6.5, color="#666", va="top", transform=ip.transAxes)
-        ip.text(0.06, y - 0.017, str(v), fontsize=9.5, weight="bold", va="top", transform=ip.transAxes)
-        y -= 0.05
+        lines = textwrap.wrap(str(v), 30) or [""]
+        ip.text(0.06, y - 0.017, "\n".join(lines[:3]), fontsize=9.5, weight="bold", va="top", transform=ip.transAxes, linespacing=1.25)
+        y -= 0.05 + 0.02 * (min(len(lines), 3) - 1)
     y -= 0.01
     leg = [("#e040e8", "-", "Property line"), ("#f5d33c", "--", "Zoning setback"), ("#3cf0a0", "--", "Wetlands (NWI)"),
            ("#4d8cff", "--", "FEMA flood zone (SFHA)"), ("#ff5a4d", "-.", "Road centerline (OSM)")]

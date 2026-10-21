@@ -42,6 +42,17 @@ def regrid_search(listing, lat, lon, epsg, radius_m=600, limit=60):
         if listing.get("apn"):
             r = get(f"{REGRID}/parcels/apn", params={"parcelnumber": listing["apn"], "token": tok, "limit": 10})
             feats = _features(r.json())
+        street = (listing.get("street_address") or "").strip()
+        if not feats and street[:1].isdigit():
+            q = ", ".join(x for x in [street, listing.get("city"), listing.get("state"), listing.get("zip")] if x)
+            r = get(f"{REGRID}/parcels/address", params={"query": q, "token": tok, "limit": 5})
+            feats = _features(r.json())
+            if feats:  # also pull neighbours so the approval screen can offer alternatives (assemblages, wrong match)
+                try:
+                    r2 = get(f"{REGRID}/parcels/point", params={"lat": lat, "lon": lon, "radius": 150, "limit": 15, "token": tok})
+                    feats += _features(r2.json())
+                except Exception:  # noqa: BLE001
+                    pass
         if not feats:
             r = get(f"{REGRID}/parcels/point", params={"lat": lat, "lon": lon, "radius": radius_m, "limit": limit, "token": tok})
             feats = _features(r.json())
@@ -195,6 +206,17 @@ def _candidate(source, geojson, epsg, **kw):
     return {"source": source, "geometry": mapping(g), "acres": round(_acres(sp, epsg), 3), **kw}
 
 
+def _addr_key(a):
+    """'2839 US 70 Hwy' -> ('2839', {'70'}) ; '2839 E US 70 HWY' -> ('2839', {'70'})"""
+    if not a:
+        return None, set()
+    toks = re.findall(r"[A-Za-z0-9]+", str(a).upper())
+    if not toks or not toks[0].isdigit():
+        return None, set()
+    skip = {"E", "W", "N", "S", "US", "HWY", "HIGHWAY", "RD", "ROAD", "ST", "STREET", "AVE", "DR", "LN", "TRL", "BLVD", "SR", "NC", "VA", "ROUTE", "RT"}
+    return toks[0], {t for t in toks[1:] if t not in skip}
+
+
 def rank(cands, listing, lat, lon, road_geom_ll=None):
     target = listing.get("acres")
     apn = _norm_apn(listing.get("apn"))
@@ -212,6 +234,10 @@ def rank(cands, listing, lat, lon, road_geom_ll=None):
             score += max(0.0, 1 - err * 4) * 60      # within 25% -> some credit; exact -> 60
         if apn and _norm_apn(c.get("apn")) and (_norm_apn(c.get("apn")) == apn or apn in _norm_apn(c.get("apn"))):
             score += 80
+        hn, words = _addr_key(listing.get("street_address"))
+        chn, cwords = _addr_key(c.get("address"))
+        if hn and chn == hn and (words & cwords):
+            score += 100                              # same house number on the same street
         if road_geom_ll is not None:
             score += max(0.0, 25 - g.distance(road_geom_ll) * 111320 / 8)  # fronting the named road
         score += max(0.0, 10 - g.distance(pt) * 111320 / 100)
