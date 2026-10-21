@@ -1,9 +1,10 @@
 // Forma concept pipeline API (Concept project).
-// POST { action: "start" | "approve_parcel" | "approve_zoning" | "approve_layout" | "rerun" | "status" | "list", ... }
+// POST { action: "start" | "approve_parcel" | "approve_zoning" | "approve_layout" | "render" | "rerun" | "status" | "list" | "delete", ... }
 //   start           { listing_text, source?: "tool"|"crm", crm_ref? }            -> { job_id }
 //   approve_parcel  { job_id, index? | indexes?: number[], geometry?, setbacks? } -> { ok }  (several indexes = assemblage)
 //   approve_zoning  { job_id, setbacks?, parking_setbacks?, program?, zoning? }   -> { ok }  (runs / re-runs the layout)
-//   approve_layout  { job_id }                                                    -> { ok }
+//   approve_layout  { job_id }                                                    -> { ok }  (starts the 3D model + render)
+//   render          { job_id }                                                    -> { ok }  (re-run the render)
 //   rerun           { job_id, step: "parse"|"ec"|"zoning"|"layout" }              -> { ok }
 //   status          { job_id }                                                    -> job row + signed file URLs
 //   list            { limit? }                                                    -> recent jobs (your own; service role: all)
@@ -124,8 +125,19 @@ Deno.serve(async (req) => {
       if (error) throw error;
       if (job.status !== "awaiting_layout") return json({ error: `Job is ${job.status}` }, 409);
       const { error: e2 } = await db.from("pipeline_jobs")
-        .update({ status: "layout_approved", step: "deliverables", progress: "Layout approved" }).eq("id", body.job_id);
+        .update({ status: "layout_approved", step: "deliverables", progress: "Layout approved", render_status: "queued", render_error: null })
+        .eq("id", body.job_id);
       if (e2) throw e2;
+      await kickWorker(body.job_id, "render");   // 3D model -> Nano Banana render
+      return json({ ok: true });
+    }
+
+    if (action === "render") {   // re-run the 3D model + Nano Banana render for an approved layout
+      const { data: job, error } = await db.from("pipeline_jobs").select("status").eq("id", body.job_id).single();
+      if (error) throw error;
+      if (job.status !== "layout_approved") return json({ error: "Approve the layout first" }, 409);
+      await db.from("pipeline_jobs").update({ render_status: "queued", render_error: null }).eq("id", body.job_id);
+      await kickWorker(body.job_id, "render");
       return json({ ok: true });
     }
 

@@ -39,11 +39,16 @@ def run(job_id, step):
             step_zoning(job_id)
         elif step == "layout":
             step_layout(job_id)
+        elif step == "render":
+            step_render(job_id)
         else:
             raise ValueError(f"unknown step {step}")
     except Exception as e:  # noqa: BLE001
-        supa.update_job(job_id, status="error", error=f"{type(e).__name__}: {e}", step=step,
-                        progress=traceback.format_exc()[-1500:])
+        if step == "render":   # a failed render never invalidates an approved plan
+            supa.update_job(job_id, render_status="failed", render_error=f"{type(e).__name__}: {e}"[:1500])
+        else:
+            supa.update_job(job_id, status="error", error=f"{type(e).__name__}: {e}", step=step,
+                            progress=traceback.format_exc()[-1500:])
         raise
 
 
@@ -205,8 +210,47 @@ def step_layout(job_id):
     write_concept_sheet(os.path.join(out, "concept_plan.pdf"), os.path.join(out, "concept_plan.png"), ctx["parcel_sp"], env, wet, fl, rds,
                         ctx["aerial"], ctx["k"], res["sp"], res["labels"], title, res["metrics"], prog, rules, project=project)
     write_concept_dxf(os.path.join(out, "existing_conditions.dxf"), os.path.join(out, "concept_layout.dxf"), res["sp"], res["labels"], ctx["k"])
+    with open(os.path.join(out, "layout.pkl"), "wb") as f:   # geometry for the 3D model / render step
+        pickle.dump({"sp": res["sp"], "metrics": res["metrics"], "labels": res["labels"], "frame_angle_deg": res["frame_angle_deg"]}, f)
+    supa.upload(job_id, os.path.join(out, "layout.pkl"))
     files = {n: supa.upload(job_id, os.path.join(out, n)) for n in ("existing_conditions.dxf", "existing_conditions.pdf", "existing_conditions.png")}
     lay = {n: supa.upload(job_id, os.path.join(out, n)) for n in ("concept_plan.pdf", "concept_plan.png", "concept_layout.dxf")}
     outputs = {**(job.get("outputs") or {}), "ec": {**((job.get("outputs") or {}).get("ec") or {}), **files}, "layout": lay}
     supa.update_job(job_id, status="awaiting_layout", step="layout", progress="Review the concept layout",
                     summary={**(job.get("summary") or {}), **summary}, layout=res["metrics"], outputs=outputs)
+
+
+def step_render(job_id):
+    """3D model of the approved layout (Blender, same build as the Pocahontas Trail model) -> front aerial view
+    -> handed to the `pipeline-banana` edge function for the Nano Banana photoreal pass."""
+    import requests
+    from . import render3d
+    job = supa.get_job(job_id)
+    supa.update_job(job_id, render_status="modeling", render_error=None)
+    ctx = _load_ctx(job_id)
+    lay = pickle.loads(supa.download(job_id, "layout.pkl"))
+    k, epsg = ctx["k"], ctx["epsg"]
+    c = lay["sp"]["dev"].centroid
+    half = 1900.0 / k                                   # wide aerial so the camera sees real ground to the horizon
+    ext = (c.x - half, c.y - half, c.x + half, c.y + half)
+    try:
+        aer = context.aerial(ext, epsg, k, ft_per_px=1.0, max_px=4000)
+    except Exception:  # noqa: BLE001
+        aer = ctx["aerial"]
+    try:
+        rds = context.roads(ext, epsg)
+        rds = rds if isinstance(rds, list) else ctx["rds"]
+    except Exception:  # noqa: BLE001
+        rds = ctx["rds"] if isinstance(ctx["rds"], list) else []
+    work = tempfile.mkdtemp()
+    render3d.prepare(work, ctx["parcel_sp"], k, aer, rds, lay, job.get("program"))
+    supa.update_job(job_id, render_status="rendering")
+    out = render3d.render(work, width=1600, height=1000, samples=64)
+    key = supa.upload(job_id, out, "model_front.png")
+    outputs = supa.get_job(job_id).get("outputs") or {}
+    outputs["render"] = {**(outputs.get("render") or {}), "model_front.png": key}
+    supa.update_job(job_id, outputs=outputs, render_status="nanobanana")
+    r = requests.post(f"{supa.URL}/functions/v1/pipeline-banana", json={"job_id": job_id},
+                      headers=supa._h({"Content-Type": "application/json"}), timeout=60)
+    if r.status_code >= 300:
+        raise RuntimeError(f"Nano Banana hand-off failed: {r.status_code} {r.text[:300]}")

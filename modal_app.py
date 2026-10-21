@@ -18,6 +18,20 @@ image = (
     .add_local_dir("pipeline/assets", remote_path="/assets")
 )
 
+# Blender (bpy) for the 3D model render -- same Cycles scene as the Pocahontas Trail model
+render_image = (
+    modal.Image.debian_slim(python_version="3.11")
+    .apt_install("libxrender1", "libxxf86vm1", "libxfixes3", "libxi6", "libxkbcommon0", "libsm6", "libgl1", "libegl1",
+                 "libx11-6", "libxext6", "libgomp1")
+    .pip_install(
+        "bpy==5.0.1", "requests==2.32.3", "shapely==2.0.6", "pyproj==3.7.0", "numpy==1.26.4", "pillow==10.4.0",
+        "matplotlib==3.9.2", "ezdxf==1.3.4",
+    )
+    .env({"FORMA_ASSETS": "/assets"})
+    .add_local_python_source("pipeline")
+    .add_local_dir("pipeline/assets", remote_path="/assets")
+)
+
 app = modal.App("forma-pipeline", image=image)
 secrets = [modal.Secret.from_name("forma-pipeline")]
 
@@ -27,6 +41,13 @@ def run_step(job_id: str, step: str):
     from pipeline.jobs import run
 
     run(job_id, step)
+
+
+@app.function(secrets=secrets, image=render_image, timeout=2400, cpu=8.0, memory=12288, retries=0)
+def run_render(job_id: str):
+    from pipeline.jobs import run
+
+    run(job_id, "render")
 
 
 @app.function(secrets=secrets, timeout=60)
@@ -46,7 +67,7 @@ def start():
         job_id, step = body.get("job_id"), body.get("step", "parse")
         if not job_id:
             raise HTTPException(status_code=400, detail="job_id required")
-        call = run_step.spawn(job_id, step)
+        call = run_render.spawn(job_id) if step == "render" else run_step.spawn(job_id, step)
         return {"ok": True, "call_id": call.object_id}
 
     @web.get("/health")

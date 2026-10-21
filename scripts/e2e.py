@@ -75,3 +75,16 @@ for step, files in j["files"].items():
         open(f"{out}/{name}", "wb").write(r.content)
 print("LAYOUT:", json.dumps(j["layout"], indent=1))
 print(api(action="approve_layout", job_id=job_id))
+# 3D model (Blender) -> Nano Banana render
+t0 = time.time(); last = None
+while time.time() - t0 < 1500:
+    j = api(action="status", job_id=job_id)
+    if j.get("render_status") != last:
+        last = j.get("render_status"); print(f"[{int(time.time()-t0):4d}s] render {last} {j.get('render_error') or ''}", flush=True)
+    if last in ("completed", "failed"):
+        break
+    time.sleep(10)
+for name, url in (j.get("files", {}).get("render") or {}).items():
+    open(f"{out}/{name}", "wb").write(requests.get(url, timeout=120).content)
+if last != "completed":
+    print("RENDER ERROR:", j.get("render_error")); sys.exit(1)
