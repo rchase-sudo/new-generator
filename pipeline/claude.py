@@ -39,6 +39,13 @@ def ask(system, user, max_tokens=4000, web_search=0, timeout=300):
     return text, list(dict.fromkeys(sources))
 
 
+def _loads(raw):
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return json.loads(re.sub(r",\s*([}\]])", r"\1", raw))  # trailing commas
+
+
 def ask_json(system, user, **kw):
     text, sources = ask(system, user, **kw)
     m = re.search(r"\{.*\}", text, re.S)
@@ -46,7 +53,12 @@ def ask_json(system, user, **kw):
         raise RuntimeError(f"Claude returned no JSON: {text[:300]}")
     raw = m.group(0)
     try:
-        data = json.loads(raw)
+        data = _loads(raw)
     except json.JSONDecodeError:
-        data = json.loads(re.sub(r",\s*([}\]])", r"\1", raw))  # trailing commas
+        # one repair pass (unescaped quotes such as 2" taps, stray comments) -- no web search, same content
+        fixed, _ = ask("Return the user's data as strictly valid JSON: same keys, same values, escape inner quotes, "
+                       "no comments, no prose. Output only the JSON object.", raw, max_tokens=kw.get("max_tokens", 8000),
+                       timeout=kw.get("timeout", 300))
+        m2 = re.search(r"\{.*\}", fixed, re.S)
+        data = _loads(m2.group(0) if m2 else fixed)
     return data, sources

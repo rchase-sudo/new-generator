@@ -80,7 +80,7 @@ INPUTS_SYS = """You are a commercial real estate development analyst preparing i
 for a vacant land listing. Research the jurisdiction with web search: current utility connection / tap / impact fees,
 regional construction costs, NNN rents and cap rates for the proposed uses, the permitting sequence and agencies,
 demographics, and the land price. Use real local agency names (county/city planning, state DOT district, state
-environmental agency, utility). Be conservative and realistic. Return ONLY one JSON object, no prose."""
+environmental agency, utility). Be conservative and realistic. Return ONLY one JSON object, no prose. Write inch sizes as "2-in." (never a bare " inside strings)."""
 
 INPUTS_SCHEMA = """{
  "land": {"price": number, "basis": "Per <source> asking price | Estimated from <comps/assessment> (price on request)",
@@ -88,7 +88,7 @@ INPUTS_SCHEMA = """{
  "demographics": {"median_hh_income": number|null, "population": number|null, "growth_note": "short", "geography": "county or city", "source": "e.g. ACS 2023 5-yr"},
  "site": [ {"item": "Clearing & Grading", "qty": "±2.0 AC", "unit": "—", "subtotal": number, "note": "short"} ],   // 6-9 lines: grading, paving (qty = pavement SF, unit $/SF), curb/walks, on-site utilities, stormwater, landscaping, signage, DOT/city entrance; scale to THIS plan
  "vertical": [ {"item": "Building A — Retail Shell", "building": "<exact building name>", "qty": "12,000 SF", "unit": "$185 / SF", "subtotal": number, "note": "short"} ],  // 1-2 lines per building (shell, TI if typical); max 6 lines
- "utility_fee": {"amount": number, "qty": "e.g. 2 × 2\\" taps", "unit": "e.g. $52,000", "note": "e.g. Water + sewer connection; FY2027 schedule"},
+ "utility_fee": {"amount": number, "qty": "e.g. 2 × 2-in. taps", "unit": "e.g. $52,000", "note": "e.g. Water + sewer connection; FY2027 schedule"},
  "permitting_ls": number, "legal_ls": number, "leasing_ls": number,
  "rents": [ {"building": "<exact building name>", "rent_psf": number, "basis": "short"} ],   // NNN $/SF/yr, one per building
  "cap_rate": number,   // e.g. 0.07
