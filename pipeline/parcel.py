@@ -312,6 +312,45 @@ def rank(cands, listing, lat, lon, road_geom_ll=None, aliases=None, geocode_pt=N
     return out
 
 
+def suggest_assemblage(cands, target, geocode_pt, max_parts=3, near_m=250):
+    """Listings are often several tax parcels sold together, under an address the county doesn't use.
+    Look for 2-3 touching parcels near the geocode whose areas add up to the listing acreage (within 3%)."""
+    here = Point(geocode_pt[1], geocode_pt[0])
+    pool = [c for c in cands if not c.get("assemblage") and c["acres"] < target * 1.03][:40]
+    geoms = [shape(c["geometry"]).buffer(0.000005) for c in pool]  # ~0.5 m tolerance for touching
+    best = None
+
+    def consider(ix):
+        nonlocal best
+        tot = sum(pool[i]["acres"] for i in ix)
+        err = abs(tot - target) / target
+        if err > 0.03:
+            return
+        if min(geoms[i].distance(here) for i in ix) * 111320 > near_m:
+            return
+        if best is None or err < best[0]:
+            best = (err, ix)
+
+    n = len(pool)
+    for a in range(n):
+        for b in range(a + 1, n):
+            if not geoms[a].intersects(geoms[b]):
+                continue
+            consider((a, b))
+            if max_parts >= 3:
+                for c in range(b + 1, n):
+                    if geoms[c].intersects(geoms[a]) or geoms[c].intersects(geoms[b]):
+                        consider((a, b, c))
+    if not best:
+        return None
+    parts = [pool[i] for i in best[1]]
+    g = unary_union([shape(c["geometry"]) for c in parts]).buffer(0)
+    return {"source": parts[0]["source"], "geometry": mapping(g), "acres": round(sum(c["acres"] for c in parts), 3),
+            "apn": ", ".join(str(c.get("apn")) for c in parts), "address": " / ".join(str(c.get("address")) for c in parts),
+            "zoning": ", ".join(sorted({str(c.get("zoning")) for c in parts if c.get("zoning")})),
+            "assemblage": True, "suggested": True, "parts": len(parts), "score": round(max(c["score"] for c in parts) + 45, 1)}
+
+
 def find_parcels(listing, lat, lon, road_geom_ll=None, county_layer=None, max_out=6, corridor_ll=None):
     """corridor_ll: lon/lat polygon along the listing's road, used when the listing has no street number."""
     epsg = state_plane_epsg(lat, lon)
@@ -355,6 +394,12 @@ def find_parcels(listing, lat, lon, road_geom_ll=None, county_layer=None, max_ou
             except Exception:  # noqa: BLE001
                 continue
         ranked.sort(key=lambda c: -c["score"])
+    if target and ranked and not decided:
+        best_single = min(abs(c["acres"] - target) / target for c in ranked)
+        if best_single > 0.05:
+            combo = suggest_assemblage(ranked, target, geocode_pt)
+            if combo:
+                ranked.insert(0, combo)
     pool = [{"address": c.get("address"), "apn": c.get("apn"), "acres": c.get("acres"), "score": c.get("score"),
              "dist_m": round(shape(c["geometry"]).distance(Point(geocode_pt[1], geocode_pt[0])) * 111320)} for c in ranked]
     return {"epsg": epsg, "source": source, "county_layer": county_layer, "candidates": ranked[:max_out],
