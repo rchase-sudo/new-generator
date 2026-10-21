@@ -1,0 +1,49 @@
+name: Deploy worker to Modal
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency: deploy
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      SUPABASE_URL: https://mmaqwemqbxwngqxtnsug.supabase.co
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      REGRID_TOKEN: ${{ secrets.REGRID_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Check secrets
+        run: |
+          missing=""
+          for v in MODAL_TOKEN_ID MODAL_TOKEN_SECRET SUPABASE_SERVICE_ROLE_KEY REGRID_TOKEN ANTHROPIC_API_KEY; do
+            [ -z "${!v}" ] && missing="$missing $v"
+          done
+          if [ -n "$missing" ]; then echo "::error::Missing repo secrets:$missing"; exit 1; fi
+
+      - run: pip install modal==1.6.2 requests==2.32.3
+
+      - name: Sync runtime secrets to Modal
+        run: |
+          modal secret create forma-pipeline --force \
+            SUPABASE_URL="$SUPABASE_URL" \
+            SUPABASE_SERVICE_ROLE_KEY="$SUPABASE_SERVICE_ROLE_KEY" \
+            REGRID_TOKEN="$REGRID_TOKEN" \
+            ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY"
+
+      - name: Deploy
+        run: modal deploy modal_app.py
+
+      - name: Register worker URL in Supabase
+        run: python scripts/register_endpoint.py
