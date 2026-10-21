@@ -65,7 +65,7 @@ def step_parse(job_id):
         raise RuntimeError("No parcels found near the listing location. Paste the parcel ID (APN) or adjust the address.")
     supa.update_job(job_id, status="awaiting_parcel", step="parse", progress="Confirm the parcel",
                     geocode={"lat": lat, "lon": lon, "label": label}, epsg=epsg,
-                    candidates=res["candidates"], parcel_source=res["source"], county_layer=res["county_layer"])
+                    candidates=res["candidates"], parcel_source=res["source"], county_layer=res["county_layer"], debug=res.get("debug"))
 
 
 def _extent_around(geom, k_ft, pad_ft=250, min_ft=900):

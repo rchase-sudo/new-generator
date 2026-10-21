@@ -355,4 +355,7 @@ def find_parcels(listing, lat, lon, road_geom_ll=None, county_layer=None, max_ou
             except Exception:  # noqa: BLE001
                 continue
         ranked.sort(key=lambda c: -c["score"])
-    return {"epsg": epsg, "source": source, "county_layer": county_layer, "candidates": ranked[:max_out]}
+    pool = [{"address": c.get("address"), "apn": c.get("apn"), "acres": c.get("acres"), "score": c.get("score"),
+             "dist_m": round(shape(c["geometry"]).distance(Point(geocode_pt[1], geocode_pt[0])) * 111320)} for c in ranked]
+    return {"epsg": epsg, "source": source, "county_layer": county_layer, "candidates": ranked[:max_out],
+            "debug": {"geocode": geocode_pt, "anchor": [lat, lon], "pool": pool[:150]}}
