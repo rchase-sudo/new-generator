@@ -10,14 +10,19 @@ from shapely.ops import transform as shp_transform
 from .http import get
 
 
-def google_geocode(q):
-    """Google Geocoding API (same engine as Google Maps). Returns (lat, lon, label, location_type) or None."""
+def google_geocode(q, zipc=None, city=None):
+    """Google Geocoding API (same engine as Google Maps). Returns (lat, lon, label, location_type) or None.
+    When the listing gives a ZIP / city, the answer must be in it: on highways Google will otherwise interpolate the
+    same house number in another town (2839 US 70 Hwy, Durham 27703 -> Hillsborough 27278)."""
     import os
     key = os.environ.get("GOOGLE_MAPS_API_KEY")
     if not key:
         return None
+    params = {"address": q, "key": key, "region": "us"}
+    if zipc:
+        params["components"] = f"postal_code:{str(zipc)[:5]}|country:US"
     try:
-        js = get("https://maps.googleapis.com/maps/api/geocode/json", params={"address": q, "key": key, "region": "us"}).json()
+        js = get("https://maps.googleapis.com/maps/api/geocode/json", params=params).json()
         from .usage import GEOCODE_USD, add
         add("Geocode address", "Google", GEOCODE_USD)
     except Exception:  # noqa: BLE001
@@ -26,6 +31,15 @@ def google_geocode(q):
     if js.get("status") != "OK" or not res:
         return None
     r = res[0]
+    comp = {t: c for c in r.get("address_components", []) for t in c.get("types", [])}
+    gzip = (comp.get("postal_code") or {}).get("short_name", "")[:5]
+    towns = {(comp.get(t) or {}).get("long_name", "").lower() for t in ("locality", "postal_town", "sublocality", "administrative_area_level_3")}
+    if zipc and gzip and gzip != str(zipc)[:5]:
+        return None
+    if not zipc and city and towns - {""} and city.lower() not in towns:
+        return None
+    if r.get("partial_match") and r["geometry"].get("location_type") == "APPROXIMATE":
+        return None
     loc = r["geometry"]["location"]
     return loc["lat"], loc["lng"], f'{r.get("formatted_address", q)} [google {r["geometry"].get("location_type")}]', r["geometry"].get("location_type")
 
@@ -38,7 +52,7 @@ def geocode(listing: dict):
     zipc = listing.get("zip") or ""
     if street or listing.get("road_name"):
         q = ", ".join(x for x in [street or listing.get("road_name"), city, f"{state or ''} {zipc}".strip()] if x)
-        g = google_geocode(q)
+        g = google_geocode(q, zipc=zipc or None, city=city)
         # an approximate (city / ZIP centroid) answer is worse than Census for a numbered address
         if g and (g[3] in ("ROOFTOP", "RANGE_INTERPOLATED") or not (street and street.split()[0][:1].isdigit())):
             return g[0], g[1], g[2]
