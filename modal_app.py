@@ -30,14 +30,16 @@ def run_step(job_id: str, step: str):
 @app.function(secrets=secrets, timeout=60)
 @modal.asgi_app()
 def start():
-    """POST / {job_id, step} with `Authorization: Bearer <SUPABASE_SERVICE_ROLE_KEY>`."""
+    """POST / {job_id, step} with `Authorization: Bearer <worker_token>` (sha256 of the service key, stored in pipeline_config)."""
     from fastapi import FastAPI, Header, HTTPException
 
     web = FastAPI()
 
     @web.post("/")
     def kick(body: dict, authorization: str = Header(default="")):
-        if authorization != f"Bearer {os.environ['SUPABASE_SERVICE_ROLE_KEY']}":
+        import hashlib
+        token = hashlib.sha256(os.environ["SUPABASE_SERVICE_ROLE_KEY"].encode()).hexdigest()
+        if authorization != f"Bearer {token}":
             raise HTTPException(status_code=401, detail="unauthorized")
         job_id, step = body.get("job_id"), body.get("step", "parse")
         if not job_id:

@@ -9,3 +9,5 @@ from pipeline import supa  # noqa: E402
 url = modal.Function.from_name("forma-pipeline", "start").get_web_url()
 print("worker url:", url)
 supa.set_config("worker_url", url)
+import hashlib, os  # noqa: E401,E402
+supa.set_config("worker_token", hashlib.sha256(os.environ["SUPABASE_SERVICE_ROLE_KEY"].encode()).hexdigest())

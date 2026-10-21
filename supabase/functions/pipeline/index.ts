@@ -19,11 +19,12 @@ const SERVICE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const db = createClient(SB_URL, SERVICE, { auth: { persistSession: false } });
 
 async function kickWorker(job_id: string, step: string) {
-  const { data } = await db.from("pipeline_config").select("value").eq("key", "worker_url").maybeSingle();
-  if (!data?.value) throw new Error("Worker URL not registered yet (deploy the Modal worker first)");
-  const r = await fetch(data.value.replace(/\/$/, "") + "/", {
+  const { data } = await db.from("pipeline_config").select("key,value").in("key", ["worker_url", "worker_token"]);
+  const cfg = Object.fromEntries((data ?? []).map((r: { key: string; value: string }) => [r.key, r.value]));
+  if (!cfg.worker_url || !cfg.worker_token) throw new Error("Worker not registered yet (deploy the Modal worker first)");
+  const r = await fetch(cfg.worker_url.replace(/\/$/, "") + "/", {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${SERVICE}` },
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${cfg.worker_token}` },
     body: JSON.stringify({ job_id, step }),
   });
   if (!r.ok) throw new Error(`Worker returned ${r.status}: ${await r.text()}`);
