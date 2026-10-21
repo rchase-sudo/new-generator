@@ -144,9 +144,10 @@ def proforma(F, I):
     cap = _num(I.get("cap_rate"), 0.07) or 0.07
     cap = cap / 100 if cap > 1 else cap
     land_price = _num((I.get("land") or {}).get("price")) or _num(F.get("asking_price")) or 0
-    site = [(r.get("item", ""), r.get("qty", ""), r.get("unit", "—"), round(_num(r.get("subtotal"))), r.get("note", ""))
+    clip = lambda t, n=90: (str(t or "")[:n - 1].rsplit(" ", 1)[0] + "…") if len(str(t or "")) > n else str(t or "")  # noqa: E731
+    site = [(r.get("item", ""), clip(r.get("qty", ""), 28), clip(r.get("unit", "—"), 24), round(_num(r.get("subtotal"))), clip(r.get("note", "")))
             for r in (I.get("site") or [])][:9]
-    vert = [(r.get("item", ""), r.get("qty", ""), r.get("unit", ""), round(_num(r.get("subtotal"))), r.get("note", ""),
+    vert = [(r.get("item", ""), clip(r.get("qty", ""), 28), clip(r.get("unit", ""), 24), round(_num(r.get("subtotal"))), clip(r.get("note", "")),
              r.get("building") if r.get("building") in sf else names[0]) for r in (I.get("vertical") or [])][:6]
     uf = I.get("utility_fee") or {}
 
@@ -156,7 +157,7 @@ def proforma(F, I):
         frac = sum(sf[n] for n in bset) / (sum(sf.values()) or 1)
         soft = [("Architecture + Engineering (A&amp;E)", "8% of hard", "—", round(hard * 0.08), "Civil, architectural, MEP, environmental"),
                 ("Permitting, Plan Review &amp; Escrow", "LS", "—", round(_num(I.get("permitting_ls"), 50000)), "Site plan, DOT, environmental, building"),
-                ("Utility Connection / Impact Fees", e(uf.get("qty") or "LS"), e(uf.get("unit") or "—"), round(_num(uf.get("amount"))), e(uf.get("note") or "")),
+                ("Utility Connection / Impact Fees", e(clip(uf.get("qty") or "LS", 28)), e(clip(uf.get("unit") or "—", 24)), round(_num(uf.get("amount"))), e(clip(uf.get("note") or ""))),
                 ("Construction Management / GC Fee", "5% of hard", "—", round(hard * 0.05), "Owner's rep or GC overhead + fee"),
                 ("Legal, Accounting, Entity Costs", "LS", "—", round(_num(I.get("legal_ls"), 35000) * (0.85 if frac < 1 else 1)), "LLC, leases, title work")]
         pre = hard + sum(r[3] for r in soft)
@@ -341,6 +342,11 @@ def _stats(items):
     return '<div class="stats">' + "".join(f'<div class="st"><div class="v">{a}</div><div class="l">{b}</div></div>' for a, b in items) + "</div>"
 
 
+def _tc(t):
+    """Title case that keeps acronyms (QSR, MOB, ADA) as written."""
+    return " ".join(w if (w.isupper() and len(w) <= 4) else w.capitalize() for w in str(t or "").split())
+
+
 def _money_short(n):
     if not n:
         return "—"
@@ -420,7 +426,7 @@ def build_html(F, I, PF, T, plan_img, render_img, today=None):
         dims = pb.get(n) or {}
         dim = f" — {dims['w_ft']:.0f}' × {dims['d_ft']:.0f}'" if dims.get("w_ft") and dims.get("d_ft") else ""
         st = int(_num(b.get("stories"), 1)) or 1
-        prog_rows.append((f"{e(n)} — {e(b.get('label') or b.get('use') or '').title()}{dim}{f' ({st} stories)' if st > 1 else ''}",
+        prog_rows.append((f"{e(n)} — {e(_tc(b.get('label') or b.get('use') or ''))}{dim}{f' ({st} stories)' if st > 1 else ''}",
                           f"{_num(b.get('footprint_sf')):,.0f} SF fp", f"{PF['sf'][n]:,.0f} SF", e(pn.get(n) or b.get("use") or ""),
                           "PHASE 1" if n in PF["phase1"] else "PHASE 2"))
     pave = max(0, _num(plan.get("impervious_sf")) - _num(plan.get("building_sf")))
@@ -460,7 +466,23 @@ def build_html(F, I, PF, T, plan_img, render_img, today=None):
     cr = lambda items: [(e(r[0]) if "&amp;" not in r[0] else r[0], e(r[1]) if "&" not in str(r[1]) else r[1], e(r[2]) if "&" not in str(r[2]) else r[2], f(r[3]), e(r[4]) if "&" not in str(r[4]) else r[4]) for r in items]  # noqa: E731
     all_rows = (["Land"] + cr(B_["land"]) if B_["land"] else []) + ["Site &amp; Infrastructure"] + cr(B_["site"]) + \
                ["Vertical Construction"] + cr(B_["vert"]) + ["Soft Costs"] + cr(B_["soft"])
-    cut = max(8, min(len(all_rows) - 4, 22))          # page 05 holds the scenario cards + ~22 rows; the rest flows to 05 cont.
+    # page 05 holds the scenario cards + as many rows as fit (by estimated wrapped height); the rest goes to 05 cont.
+    def _h(r):
+        if isinstance(r, str):
+            return 15.0
+        import math as _m
+        txt = lambda v: re.sub(r"<[^>]+>|&\w+;", "x", str(v))  # noqa: E731
+        lines = max(_m.ceil(len(txt(r[0])) / 30), _m.ceil(len(txt(r[1])) / 14), _m.ceil(len(txt(r[2])) / 12),
+                    _m.ceil(len(txt(r[4])) / 48), 1)
+        return 10.0 + lines * 9.7
+    budget, used, cut = 495.0, 0.0, 0
+    for r in all_rows:
+        if used + _h(r) > budget:
+            break
+        used += _h(r)
+        cut += 1
+    if cut and isinstance(all_rows[cut - 1], str):   # never leave a group header orphaned at the bottom
+        cut -= 1
     rows1, rows2 = all_rows[:cut], all_rows[cut:]
     rows2 += [(f"Total Project Cost — {'Phase 1 + 2' if nb > 1 else 'All Phases'}", "", "", f"~{f(B_['tdc'])}", f"Rounded: ~${B_['tdc'] / 1e6:.2f}M", {"cls": "tot"}),
               ("Total Cost / SF (Building)", "", "", f"~${B_['tdc'] / tsf:,.0f} / SF", f"Full {acres:g} AC land basis carried by {tsf:,.0f} SF", {"cls": "tot"})]
@@ -475,7 +497,7 @@ def build_html(F, I, PF, T, plan_img, render_img, today=None):
     NH = [("COMPONENT", ""), ("SF", "r"), ("RENT NNN", "r"), ("OCC.", "r"), ("ANNUAL REVENUE", "r"), ("NOTES", "")]
     nrows = []
     for i, (n, s, r, g, m, basis) in enumerate(PF["noiB"][0]):
-        nrows.append((f"{e(n)} — {e(next((b.get('label') or b.get('use') for b in F['buildings'] if b['name'] == n), '')).title()}",
+        nrows.append((f"{e(n)} — {e(_tc(next((b.get('label') or b.get('use') for b in F['buildings'] if b['name'] == n), '')))}",
                       f"{s:,}", f"${r:.0f} / SF", "95%", f(g), e(basis)))
         nrows.append(("Less: Management / Reserves (6%)", "", "", "", f"({f(m)})", "NNN lease; owner-side opex limited" if i == 0 else "", {}))
         if n == PF["phase1"][-1] and len(PF["phase1"]) < nb:
@@ -487,7 +509,7 @@ def build_html(F, I, PF, T, plan_img, render_img, today=None):
 {_table(NH, nrows)}
 <p class="note">{e(T.get("noi_note"))} Scenario A carries the full site and entrance cost (TDC ≈ ${O["A"]["tdc"] / 1e6:.2f}M).</p>''')
 
-    capp = f"{PF['cap'] * 100:.1f}%"
+    capp = f"{PF['cap'] * 100:.2f}".rstrip("0").rstrip(".") + "%"
     p7 = page("06", "RETURNS BY SCENARIO — THREE OUTCOMES", f'''
 <div class="lbl">SCENARIO COMPARISON — CONSERVATIVE → RESIDUAL LAND TEST</div>
 {_table([("SCENARIO", ""), ("TDC", "r"), ("STABILIZED NOI", "r"), ("DEV. YIELD", "r"), ("VALUE @ CAP RATE", "r"), ("PROFIT / (LOSS)", "r"), ("STATUS", "")], [
