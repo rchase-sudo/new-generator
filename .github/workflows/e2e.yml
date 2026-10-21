@@ -1,0 +1,33 @@
+name: E2E test run
+
+on:
+  workflow_dispatch:
+    inputs:
+      listing_file: {description: "Listing text file in repo", default: "tests/lot6_loopnet.txt"}
+      candidate: {description: "Parcel candidate index to approve", default: "0"}
+      setbacks: {description: "front side rear (ft), blank for none", default: "65 20 20"}
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - run: pip install requests==2.32.3
+      - name: Run job end to end
+        run: python scripts/e2e.py "${{ inputs.listing_file }}" "${{ inputs.candidate }}" ${{ inputs.setbacks }} 2>&1 | tee run.log
+      - name: Publish results to test-runs branch
+        if: always()
+        run: |
+          mkdir -p test_runs && cp run.log test_runs/ 2>/dev/null || true
+          git config user.name "forma-ci"; git config user.email "forma-ci@users.noreply.github.com"
+          git fetch origin test-runs || true
+          git checkout -B test-runs
+          git add -f test_runs
+          git commit -m "e2e run ${{ github.run_id }}" || exit 0
+          git push -f origin test-runs
