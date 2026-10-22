@@ -118,10 +118,13 @@ def setbacks_from(rules, defaults=None):
 
 
 def program(listing, summary, rules):
-    user = (f"LISTING: {json.dumps({k: listing.get(k) for k in ('street_address','city','state','acres','price','zoning','frontage_ft','utilities','summary')})}\n"
+    req = (listing.get("request") or "").strip()
+    ask = (f"REQUESTED PROGRAM (from the user): {req}\nDesign this program. Size it to fit; if zoning clearly prohibits part of it, "
+           f"substitute the closest permitted use and say so in the rationale.\n") if req else ""
+    user = (ask + f"LISTING: {json.dumps({k: listing.get(k) for k in ('street_address','city','state','acres','price','zoning','frontage_ft','utilities','summary')})}\n"
             f"SITE (measured): {json.dumps({k: summary.get(k) for k in ('parcel_acres','buildable_acres','frontage_buildable_acres','envelope_acres','frontage_ft','fronting_roads','wetland_acres','flood_sfha_acres')})}\n"
             f"ZONING: {json.dumps({k: rules.get(k) for k in ('jurisdiction','district','district_name','setbacks_ft','max_height_ft','max_lot_coverage_pct','max_impervious_pct','max_far','parking_ratios','uses','notes')})}\n"
-            f"Choose the highest-and-best-use concept and return it in this JSON shape:\n{PROGRAM_SCHEMA}")
+            f"{'Return the requested program' if req else 'Choose the highest-and-best-use concept and return it'} in this JSON shape:\n{PROGRAM_SCHEMA}")
     prog, _ = ask_json(PROGRAM_SYSTEM, user, max_tokens=2500, timeout=240, label="Development program")
     for b in prog.get("buildings", []):
         b["footprint_sf"] = float(b.get("footprint_sf") or 5000)

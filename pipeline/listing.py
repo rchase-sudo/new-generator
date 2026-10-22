@@ -1,4 +1,5 @@
-"""Turn pasted listing text (Ctrl+A from LoopNet, Crexi, MLS...) into structured fields with Claude."""
+"""Turn the user's input -- a short brief ("4 ac at 2839 US 70 Hwy, Durham NC; retail + a restaurant") or a whole
+pasted listing page -- into structured property fields plus the requested program, with Claude."""
 import json
 import os
 import re
@@ -7,9 +8,9 @@ from .http import post
 
 MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5-5")
 
-PROMPT = """You extract property facts from a pasted real estate listing. The text may include menus, ads and
-other listings; use only facts about the subject property. Return ONLY a JSON object with these keys
-(null when not stated, never guess):
+PROMPT = """You extract property facts from the user's input. It is either a short brief (property info plus what they
+want to build) or a pasted real estate listing page, which may include menus, ads and other listings; use only facts about
+the subject property. Return ONLY a JSON object with these keys (null when not stated, never guess):
 
 street_address   street number + name as written, or the road name if there is no number (e.g. "Pocahontas Trl")
 lot              lot / unit / parcel label if given (e.g. "Lot 6")
@@ -26,6 +27,8 @@ utilities        short text on water/sewer as stated
 listing_id
 broker           listing broker / company
 summary          one sentence describing the property
+request          what the user asks to be designed, in their words (uses, sizes, counts, e.g. "retail strip and a
+                 sit-down restaurant", "60-unit apartments", "tunnel car wash"); null if they did not ask for anything
 """
 
 
