@@ -43,8 +43,12 @@ def ask(system, user, max_tokens=4000, web_search=0, timeout=300, label="claude"
         record(js, label)
         content = js.get("content", []) or []
         blocks += content
-        if js.get("stop_reason") != "pause_turn":
+        no_text = not any(b.get("type") == "text" and b.get("text", "").strip() for b in content)
+        # continue long server-tool turns, and turns that ran out of room while still searching
+        if js.get("stop_reason") != "pause_turn" and not (js.get("stop_reason") == "max_tokens" and no_text):
             break
+        if js.get("stop_reason") == "max_tokens":
+            body["max_tokens"] = min(32000, int(body["max_tokens"] * 1.5))
         msgs = msgs[:1] + [{"role": "assistant", "content": [b for b in blocks]}]
         body["messages"] = msgs
     text = "".join(b.get("text", "") for b in content if b.get("type") == "text") or \

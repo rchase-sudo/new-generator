@@ -120,7 +120,7 @@ where research is missing use conservative regional benchmarks. Scale every cost
 
 def research_inputs(F):
     notes, src = claude.ask(RESEARCH_SYS, f"Property and approved concept plan:\n{json.dumps(F, default=str)}",
-                            max_tokens=6000, web_search=12, timeout=900, label="Package: research")
+                            max_tokens=12000, web_search=12, timeout=900, label="Package: research")
     user = (f"Property and approved concept plan:\n{json.dumps(F, default=str)}\n\nRESEARCH NOTES:\n{notes}\n\n"
             f"Call submit_inputs with an object in exactly this shape (comments describe the fields):\n{INPUTS_SCHEMA}\n"
             "If the asking price is null, estimate a land price from comparable land sales or the assessment and say so in land.basis.")
