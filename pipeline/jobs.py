@@ -160,17 +160,26 @@ def step_ec(job_id):
     ext = _extent_around(parcel_sp, k)
     aerial = context.aerial(ext, epsg, k)
     supa.update_job(job_id, progress="Wetlands, flood zones, roads")
-    wet = context.wetlands(ext, epsg)
-    fl = context.flood(ext, epsg)
-    rds = context.roads(ext, epsg)
+    # fetch the public layers in parallel under one time budget: a slow service must never leave the job hanging
+    import concurrent.futures as _cf
     import time as _t
-    for _ in range(2):   # public GIS services drop connections; one more pass before giving up on any of them
-        if not any(isinstance(v, dict) for v in (wet, fl, rds)):
+    fetch = {"wetlands": context.wetlands, "flood": context.flood, "roads": context.roads}
+    got = {}
+    t_end = _t.time() + 240
+    for attempt in range(2):
+        todo = [n for n in fetch if n not in got or isinstance(got[n], dict)]
+        if not todo or _t.time() > t_end - 30:
             break
-        _t.sleep(6)
-        wet = context.wetlands(ext, epsg) if isinstance(wet, dict) else wet
-        fl = context.flood(ext, epsg) if isinstance(fl, dict) else fl
-        rds = context.roads(ext, epsg) if isinstance(rds, dict) else rds
+        ex = _cf.ThreadPoolExecutor(max_workers=3)
+        futs = {ex.submit(fetch[n], ext, epsg): n for n in todo}
+        done, _ = _cf.wait(futs, timeout=max(10, t_end - _t.time()))
+        for f, n in futs.items():
+            try:
+                got[n] = f.result() if f in done else {"error": "timed out"}
+            except Exception as e:  # noqa: BLE001
+                got[n] = {"error": f"{type(e).__name__}: {e}"[:200]}
+        ex.shutdown(wait=False, cancel_futures=True)
+    wet, fl, rds = got.get("wetlands", {"error": "timed out"}), got.get("flood", {"error": "timed out"}), got.get("roads", {"error": "timed out"})
     if isinstance(rds, dict):
         # without roads there is no front, no setbacks by edge and nothing for the driveway to meet: stop, don't guess
         raise RuntimeError("Road data is unavailable right now (OpenStreetMap and Census both failed). Retry in a few minutes.")

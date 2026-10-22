@@ -98,16 +98,19 @@ def roads(extent_sp, epsg):
 way["highway"~"motorway|trunk|primary|secondary|tertiary|unclassified|residential|service|motorway_link|trunk_link|primary_link"]
 ({bb_ll[1]},{bb_ll[0]},{bb_ll[3]},{bb_ll[2]});out geom tags;"""
     js = None
-    for attempt in range(2):                      # public Overpass mirrors go down / rate-limit often
+    deadline = time.time() + 140                   # public Overpass mirrors go down / rate-limit often; bounded
+    for attempt in range(2):
         for u in OVERPASS:
+            if time.time() > deadline:
+                break
             try:
-                js = post(u, data={"data": q}, timeout=120, tries=1).json()
+                js = post(u, data={"data": q}, timeout=min(45, max(5, deadline - time.time())), tries=1).json()
                 break
             except Exception:  # noqa: BLE001
                 continue
-        if js is not None:
+        if js is not None or time.time() > deadline:
             break
-        time.sleep(8)
+        time.sleep(5)
     if js is None:
         try:
             out = _tiger_roads(bb_ll, epsg)       # Census TIGER roads: names + classes, no lane data
