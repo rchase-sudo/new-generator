@@ -1,0 +1,29 @@
+name: tts
+on:
+  workflow_dispatch:
+    inputs:
+      voice: {description: "Gemini voice name (blank = file default)", default: ""}
+jobs:
+  tts:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - run: pip install requests
+      - name: Voiceover
+        env:
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python scripts/tts.py marketing/vo_lines.json media_out "${{ inputs.voice }}"
+      - name: Publish to media branch
+        if: always()
+        run: |
+          git config user.name "forma-ci"; git config user.email "forma-ci@users.noreply.github.com"
+          git fetch origin media || true
+          git checkout -B media
+          mkdir -p media && cp -r media_out/* media/ 2>/dev/null || true
+          git add -f media
+          git commit -m "voiceover ${{ inputs.voice }}" || true
+          git push -f origin media

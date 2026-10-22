@@ -1,0 +1,19 @@
+{
+  "voice": "Algieba",
+  "style": "Read this in a calm, warm, low and unhurried male voice, like a premium product film narrator. Relaxed pacing, gentle pauses at commas, no excitement or sales tone:",
+  "lines": [
+    {"id": "01", "text": "Every site starts with a question."},
+    {"id": "02", "text": "What can actually be built here?"},
+    {"id": "03", "text": "This is Drafted."},
+    {"id": "04", "text": "Start with the property, and a sentence about what you have in mind."},
+    {"id": "05", "text": "Drafted locates the parcel, and shows you every lot around it, so you can confirm the right one."},
+    {"id": "06", "text": "Then it maps what's already there. Wetlands, flood zones, roads, and the area you can build on."},
+    {"id": "07", "text": "It reads the local ordinance. Setbacks, parking, permitted uses. And sizes a program that fits."},
+    {"id": "08", "text": "Then it lays out the site. Buildings, parking, curbs, landscaped islands, and a driveway that meets the road."},
+    {"id": "09", "text": "Every plan comes as a finished sheet, and as a CAD file you can keep working in."},
+    {"id": "10", "text": "From the plan, a 3D model. From the model, a photoreal render, set into its real surroundings."},
+    {"id": "11", "text": "And when you need to go further, a full due diligence package. Zoning, permitting, costs, and returns."},
+    {"id": "12", "text": "From a sentence, to a site plan."},
+    {"id": "13", "text": "Drafted."}
+  ]
+}

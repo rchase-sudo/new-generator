@@ -3,6 +3,7 @@ name: Deploy worker to Modal
 on:
   push:
     branches: [main]
+    paths: ["pipeline/**", "modal_app.py", "requirements*.txt", ".github/workflows/deploy.yml"]
   workflow_dispatch: {}
 
 concurrency: deploy
