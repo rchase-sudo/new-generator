@@ -1,0 +1,301 @@
+[
+ {
+  "id": "01",
+  "model": "gemini-2.5-pro-preview-tts",
+  "sec": 3.65,
+  "usage": {
+   "promptTokenCount": 45,
+   "candidatesTokenCount": 91,
+   "totalTokenCount": 136,
+   "promptTokensDetails": [
+    {
+     "modality": "TEXT",
+     "tokenCount": 45
+    }
+   ],
+   "candidatesTokensDetails": [
+    {
+     "modality": "AUDIO",
+     "tokenCount": 91
+    }
+   ],
+   "serviceTier": "standard"
+  }
+ },
+ {
+  "id": "02",
+  "model": "gemini-2.5-pro-preview-tts",
+  "sec": 3.25,
+  "usage": {
+   "promptTokenCount": 45,
+   "candidatesTokenCount": 81,
+   "totalTokenCount": 126,
+   "promptTokensDetails": [
+    {
+     "modality": "TEXT",
+     "tokenCount": 45
+    }
+   ],
+   "candidatesTokensDetails": [
+    {
+     "modality": "AUDIO",
+     "tokenCount": 81
+    }
+   ],
+   "serviceTier": "standard"
+  }
+ },
+ {
+  "id": "03",
+  "model": "gemini-2.5-pro-preview-tts",
+  "sec": 2.77,
+  "usage": {
+   "promptTokenCount": 43,
+   "candidatesTokenCount": 69,
+   "totalTokenCount": 112,
+   "promptTokensDetails": [
+    {
+     "modality": "TEXT",
+     "tokenCount": 43
+    }
+   ],
+   "candidatesTokensDetails": [
+    {
+     "modality": "AUDIO",
+     "tokenCount": 69
+    }
+   ],
+   "serviceTier": "standard"
+  }
+ },
+ {
+  "id": "04",
+  "model": "gemini-2.5-pro-preview-tts",
+  "sec": 6.01,
+  "usage": {
+   "promptTokenCount": 53,
+   "candidatesTokenCount": 150,
+   "totalTokenCount": 203,
+   "promptTokensDetails": [
+    {
+     "modality": "TEXT",
+     "tokenCount": 53
+    }
+   ],
+   "candidatesTokensDetails": [
+    {
+     "modality": "AUDIO",
+     "tokenCount": 150
+    }
+   ],
+   "serviceTier": "standard"
+  }
+ },
+ {
+  "id": "05",
+  "model": "gemini-2.5-pro-preview-tts",
+  "sec": 7.73,
+  "usage": {
+   "promptTokenCount": 60,
+   "candidatesTokenCount": 193,
+   "totalTokenCount": 253,
+   "promptTokensDetails": [
+    {
+     "modality": "TEXT",
+     "tokenCount": 60
+    }
+   ],
+   "candidatesTokensDetails": [
+    {
+     "modality": "AUDIO",
+     "tokenCount": 193
+    }
+   ],
+   "serviceTier": "standard"
+  }
+ },
+ {
+  "id": "06",
+  "model": "gemini-2.5-pro-preview-tts",
+  "sec": 9.37,
+  "usage": {
+   "promptTokenCount": 62,
+   "candidatesTokenCount": 234,
+   "totalTokenCount": 296,
+   "promptTokensDetails": [
+    {
+     "modality": "TEXT",
+     "tokenCount": 62
+    }
+   ],
+   "candidatesTokensDetails": [
+    {
+     "modality": "AUDIO",
+     "tokenCount": 234
+    }
+   ],
+   "serviceTier": "standard"
+  }
+ },
+ {
+  "id": "07",
+  "model": "gemini-2.5-pro-preview-tts",
+  "sec": 9.49,
+  "usage": {
+   "promptTokenCount": 59,
+   "candidatesTokenCount": 237,
+   "totalTokenCount": 296,
+   "promptTokensDetails": [
+    {
+     "modality": "TEXT",
+     "tokenCount": 59
+    }
+   ],
+   "candidatesTokensDetails": [
+    {
+     "modality": "AUDIO",
+     "tokenCount": 237
+    }
+   ],
+   "serviceTier": "standard"
+  }
+ },
+ {
+  "id": "08",
+  "model": "gemini-2.5-pro-preview-tts",
+  "sec": 10.01,
+  "usage": {
+   "promptTokenCount": 62,
+   "candidatesTokenCount": 250,
+   "totalTokenCount": 312,
+   "promptTokensDetails": [
+    {
+     "modality": "TEXT",
+     "tokenCount": 62
+    }
+   ],
+   "candidatesTokensDetails": [
+    {
+     "modality": "AUDIO",
+     "tokenCount": 250
+    }
+   ],
+   "serviceTier": "standard"
+  }
+ },
+ {
+  "id": "09",
+  "model": "gemini-2.5-pro-preview-tts",
+  "sec": 6.37,
+  "usage": {
+   "promptTokenCount": 57,
+   "candidatesTokenCount": 159,
+   "totalTokenCount": 216,
+   "promptTokensDetails": [
+    {
+     "modality": "TEXT",
+     "tokenCount": 57
+    }
+   ],
+   "candidatesTokensDetails": [
+    {
+     "modality": "AUDIO",
+     "tokenCount": 159
+    }
+   ],
+   "serviceTier": "standard"
+  }
+ },
+ {
+  "id": "10",
+  "model": "gemini-2.5-pro-preview-tts",
+  "sec": 8.81,
+  "usage": {
+   "promptTokenCount": 63,
+   "candidatesTokenCount": 220,
+   "totalTokenCount": 283,
+   "promptTokensDetails": [
+    {
+     "modality": "TEXT",
+     "tokenCount": 63
+    }
+   ],
+   "candidatesTokensDetails": [
+    {
+     "modality": "AUDIO",
+     "tokenCount": 220
+    }
+   ],
+   "serviceTier": "standard"
+  }
+ },
+ {
+  "id": "11",
+  "model": "gemini-2.5-pro-preview-tts",
+  "sec": 9.45,
+  "usage": {
+   "promptTokenCount": 61,
+   "candidatesTokenCount": 236,
+   "totalTokenCount": 297,
+   "promptTokensDetails": [
+    {
+     "modality": "TEXT",
+     "tokenCount": 61
+    }
+   ],
+   "candidatesTokensDetails": [
+    {
+     "modality": "AUDIO",
+     "tokenCount": 236
+    }
+   ],
+   "serviceTier": "standard"
+  }
+ },
+ {
+  "id": "12",
+  "model": "gemini-2.5-pro-preview-tts",
+  "sec": 3.25,
+  "usage": {
+   "promptTokenCount": 47,
+   "candidatesTokenCount": 81,
+   "totalTokenCount": 128,
+   "promptTokensDetails": [
+    {
+     "modality": "TEXT",
+     "tokenCount": 47
+    }
+   ],
+   "candidatesTokensDetails": [
+    {
+     "modality": "AUDIO",
+     "tokenCount": 81
+    }
+   ],
+   "serviceTier": "standard"
+  }
+ },
+ {
+  "id": "13",
+  "model": "gemini-2.5-pro-preview-tts",
+  "sec": 1.45,
+  "usage": {
+   "promptTokenCount": 41,
+   "candidatesTokenCount": 36,
+   "totalTokenCount": 77,
+   "promptTokensDetails": [
+    {
+     "modality": "TEXT",
+     "tokenCount": 41
+    }
+   ],
+   "candidatesTokensDetails": [
+    {
+     "modality": "AUDIO",
+     "tokenCount": 36
+    }
+   ],
+   "serviceTier": "standard"
+  }
+ }
+]
