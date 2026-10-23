@@ -37,7 +37,7 @@ LSPACE = (TXT_H * 72 * 5 / 3) / LFS   # AutoCAD MText line spacing 1.0 (1.667 x 
 T = SHEET_W / 17.0              # title-block type / line scale vs. the 17x11 layout
 
 P_LAYERS = {"P-BLDG": 1, "P-BLDG-HATCH": 8, "P-PAVE-EDGE": 7, "P-CURB": 9, "P-PARKING-STRIPE": 7, "P-ADA": 5,
-            "P-WALK": 9, "P-LANDSCAPE": 3, "P-POND": 4, "P-TEXT": 7, "P-EXIST-KEEP": 30, "P-EXIST-DEMO": 1}
+            "P-WALK": 9, "P-LANDSCAPE": 3, "P-POND": 4, "P-TEXT": 7, "P-EXIST-KEEP": 30, "P-EXIST-DEMO": 1, "P-STEEP": 1}
 
 # title block geometry (pixels of forma_titleblock.jpg, 2576 x 1667)
 TB_W, TB_H = 2576, 1667
@@ -58,7 +58,7 @@ BLDG_H = 22.0                # ft, for shadow length
 
 
 # ---------------------------------------------------------------- DXF
-def write_dxf(ec_dxf, out_path, sp, labels, k_ft, existing=None):
+def write_dxf(ec_dxf, out_path, sp, labels, k_ft, existing=None, steep=None):
     doc = ezdxf.readfile(ec_dxf)
     for n, c in P_LAYERS.items():
         if n not in doc.layers:
@@ -92,6 +92,8 @@ def write_dxf(ec_dxf, out_path, sp, labels, k_ft, existing=None):
         msp.add_circle((c.x, c.y), math.sqrt(t.area / math.pi), dxfattribs={"layer": "P-TREE"})
     if sp.get("pond") is not None:
         ring(sp["pond"], "P-POND", width=0.3 / k_ft)
+    for g in steep or []:
+        ring(g, "P-STEEP", width=1.0 / k_ft)
     for e in existing or []:
         ring(e["geom"], "P-EXIST-KEEP" if e["action"] == "keep" else "P-EXIST-DEMO", width=0.5 / k_ft)
         if e["action"] == "demo":   # X through the footprint, the usual demolition mark
@@ -194,7 +196,7 @@ def _view(sp, parcel, aerial, k_ft, aspect):
 
 
 def write_sheet(pdf_path, png_path, parcel, env, wet, fl, rds, aerial, k_ft, sp, labels, title_lines, metrics, program, rules,
-                project=None, existing=None):
+                project=None, existing=None, topo=None, steep=None):
     fig = plt.figure(figsize=(SHEET_W, SHEET_H), dpi=100)
     bg = fig.add_axes([0, 0, 1, 1])
     bg.axis("off")
@@ -219,6 +221,11 @@ def write_sheet(pdf_path, png_path, parcel, env, wet, fl, rds, aerial, k_ft, sp,
     ppu = (x1 - x0) / TB_W * SHEET_W * 72 / (vx1 - vx0)   # points per drawing unit
     lw_ft = lambda ft: max(0.4, ft / k_ft * ppu)       # noqa: E731
 
+    if topo:
+        from .ec_drawing import draw_topo
+        draw_topo(ax, topo, T / 2, shade=False, labels=False, alpha=0.7, lw=0.45)
+    for g in steep or []:
+        _patch(ax, g, 2, facecolor=(1, 0.25, 0.2, 0.12), edgecolor="#ff4d4d", lw=1.0 * T, ls=(0, (3, 3)))
     # existing: wetlands (dashed outline), parcel, setback
     for w in wet:
         _patch(ax, w["geom"], 2, facecolor="none", edgecolor="#4fdc5a", lw=1.1 * T, ls=(0, (6, 4)))
@@ -349,6 +356,11 @@ def write_sheet(pdf_path, png_path, parcel, env, wet, fl, rds, aerial, k_ft, sp,
         if vx0 < c.x < vx1 and vy0 < c.y < vy1:
             place(["WETLANDS"], (c.x, c.y), None, LFS)
             break
+
+    for g in sorted(steep or [], key=lambda g: -g.area)[:1]:
+        c = g.intersection(parcel).representative_point() if g.intersects(parcel) else None
+        if c is not None and vx0 < c.x < vx1 and vy0 < c.y < vy1:
+            place(["STEEP SLOPES", "NO DEVELOPMENT"], (c.x, c.y), None, LFS)
 
     # project block (vertical text, reading bottom-to-top) over the template's sample text
     px0, py0, px1, py1 = TB_PROJECT

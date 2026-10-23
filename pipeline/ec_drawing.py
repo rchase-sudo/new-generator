@@ -23,6 +23,9 @@ LAYERS = {
     "E-WET-HATCH": 3,
     "E-FLOOD": 5,          # FEMA flood zone (blue)
     "E-BLDG-EXIST": 30,    # existing buildings (orange)
+    "E-TOPO-MINR": 8,      # minor contours
+    "E-TOPO-MAJR": 30,     # index contours
+    "E-STEEP": 1,          # steep-slope limit
     "E-ROAD-CL": 1,        # road centerline (red)
     "E-PAVE-EDGE": 8,      # existing edge of pavement (approximate)
     "E-TEXT": 7,
@@ -125,7 +128,7 @@ def envelope(parcel, edges, setbacks_ft, k_ft):
 
 
 # ---------------------------------------------------------------- DXF
-def write_dxf(path, parcel, env, setback_line, wet, fl, rds, aerial_img_name, aerial_extent, aerial_px, labels, bld=None):
+def write_dxf(path, parcel, env, setback_line, wet, fl, rds, aerial_img_name, aerial_extent, aerial_px, labels, bld=None, topo=None, steep=None):
     doc = ezdxf.new("R2018", setup=True)
     doc.header["$INSUNITS"] = 2  # feet
     doc.header["$MEASUREMENT"] = 0
@@ -167,6 +170,18 @@ def write_dxf(path, parcel, env, setback_line, wet, fl, rds, aerial_img_name, ae
     for b in bld or []:
         for p in _polys(b["geom"]):
             ring(p.exterior, "E-BLDG-EXIST", width=0.5)
+    if topo:
+        from . import topo as _topo
+        cl, iv = _topo.contours(topo)
+        ext_box = box(*aerial_extent)
+        for z, ln in cl:
+            for g in getattr(ln.intersection(ext_box), "geoms", [ln.intersection(ext_box)]):
+                if g.geom_type == "LineString" and len(g.coords) >= 2:
+                    major = round(z / iv) % 5 == 0
+                    msp.add_lwpolyline(list(g.coords), dxfattribs={"layer": "E-TOPO-MAJR" if major else "E-TOPO-MINR", "elevation": z})
+    for g in steep or []:
+        for p in _polys(g):
+            ring(p.exterior, "E-STEEP", width=1.0)
     for r in rds:
         cl = r["centerline"]
         for ln in getattr(cl, "geoms", [cl]):
@@ -179,8 +194,45 @@ def write_dxf(path, parcel, env, setback_line, wet, fl, rds, aerial_img_name, ae
     doc.saveas(path)
 
 
+# ---------------------------------------------------------------- topography on sheets
+steep_thr = 15.0
+
+
+def _topo_iv(topo):
+    from . import topo as _t
+    z = topo["zs"]
+    relief = float(z.max() - z.min())
+    return 1.0 if relief < 6 else 2.0 if relief < 20 else 5.0 if relief < 80 else 10.0 if relief < 250 else 25.0
+
+
+def draw_topo(ax, topo, S, shade=True, labels=True, alpha=1.0, lw=0.5):
+    """Slope shading (yellow / orange / red for 5-10 / 10-15 / over 15 %) and contours; every 5th contour is an index
+    contour with its elevation."""
+    from . import topo as _t
+    h, w = topo["zs"].shape
+    ext = (topo["x0"], topo["x0"] + w * topo["cell"], topo["y1"] - h * topo["cell"], topo["y1"])
+    if shade:
+        sl = _t._smooth(topo["slope"], 2)
+        rgba = np.zeros((h, w, 4), dtype=float)
+        for lo, hi, col, a in ((5, 10, (1.0, 0.9, 0.2), 0.16), (10, 15, (1.0, 0.6, 0.1), 0.24), (15, 25, (1.0, 0.25, 0.15), 0.32), (25, 1e9, (0.7, 0.0, 0.1), 0.4)):
+            m = (sl >= lo) & (sl < hi)
+            rgba[m] = (*col, a * alpha)
+        ax.imshow(rgba, extent=ext, origin="upper", interpolation="bilinear", zorder=1.5)
+    cl, iv = _t.contours(topo)
+    done = set()
+    for z, ln in cl:
+        major = round(z / iv) % 5 == 0
+        xs, ys = ln.xy
+        ax.plot(xs, ys, color="#e6c27a" if major else "#cfa860", lw=(lw * 1.7 if major else lw) * S, alpha=0.9 * alpha, zorder=1.8, solid_capstyle="round")
+        if labels and major and len(xs) > 12 and (z, len(done) // 6) not in done and len(done) < 40:
+            done.add((z, len(done) // 6))
+            i = len(xs) // 2
+            ax.text(xs[i], ys[i], f"{z:g}", fontsize=5.5 * S, color="#fff3c8", ha="center", va="center", zorder=1.9, clip_on=True,
+                    bbox=dict(boxstyle="square,pad=0.1", fc=(0, 0, 0, 0.35), ec="none"))
+
+
 # ---------------------------------------------------------------- PDF / PNG sheet
-def write_sheet(pdf_path, png_path, parcel, env, setback_line, wet, fl, rds, aerial, k_ft, title_lines, facts, bld=None, actions=None):
+def write_sheet(pdf_path, png_path, parcel, env, setback_line, wet, fl, rds, aerial, k_ft, title_lines, facts, bld=None, actions=None, topo=None, steep=None):
     minx, miny, maxx, maxy = aerial["extent"]
     W_in, H_in = 34.0, 22.0   # ANSI D
     S = 2.0                    # type / line scale vs. the 17x11 layout
@@ -197,6 +249,10 @@ def write_sheet(pdf_path, png_path, parcel, env, setback_line, wet, fl, rds, aer
         for p in _polys(g):
             ax.add_patch(MplPoly(np.asarray(p.exterior.coords), closed=True, **kw))
 
+    if topo:
+        draw_topo(ax, topo, S, shade=True, labels=True)
+    for g in steep or []:
+        draw(g, fill=False, edgecolor="#ff4d4d", lw=1.3 * S, ls=(0, (3, 2)))
     for f in fl:
         if f.get("sfha") == "T":
             draw(f["geom"], fill=True, facecolor=(0.2, 0.45, 1, 0.18), edgecolor=(0.3, 0.55, 1, 0.9), lw=1.0 * S, ls="--")
@@ -241,6 +297,8 @@ def write_sheet(pdf_path, png_path, parcel, env, setback_line, wet, fl, rds, aer
            ("#4d8cff", "--", "FEMA flood zone (SFHA)"), ("#ff5a4d", "-.", "Road centerline (OSM)")]
     if bld:
         leg.append(("#ff9f1a", "-", "Existing building"))
+    if topo:
+        leg += [("#d9b26b", "-", f"Contours ({_topo_iv(topo):g} ft)"), ("#ff4d4d", ":", f"Slope over {steep_thr:g}% (no-build)")]
     for c, ls, lab in leg:
         ip.plot([0.06, 0.18], [y, y], color=c, lw=2 * S, ls=ls, transform=ip.transAxes)
         ip.text(0.22, y, lab, fontsize=8 * S, va="center", transform=ip.transAxes)
@@ -254,7 +312,9 @@ def write_sheet(pdf_path, png_path, parcel, env, setback_line, wet, fl, rds, aer
 
 
 # ---------------------------------------------------------------- main entry
-def build(out_dir, parcel_sp, epsg, k_ft, aerial, wet, fl, rds, setbacks_ft=None, listing=None, bld=None, actions=None):
+def build(out_dir, parcel_sp, epsg, k_ft, aerial, wet, fl, rds, setbacks_ft=None, listing=None, bld=None, actions=None, topo=None, steep=None, thr=15.0):
+    global steep_thr
+    steep_thr = thr
     os.makedirs(out_dir, exist_ok=True)
     wet = [] if isinstance(wet, dict) else wet
     fl = [] if isinstance(fl, dict) else fl
@@ -298,18 +358,23 @@ def build(out_dir, parcel_sp, epsg, k_ft, aerial, wet, fl, rds, setbacks_ft=None
         if b.get("id"):
             c = b["geom"].representative_point()
             labels.append({"text": f"EXISTING {b['id']}\\P{b['area_sf']:,.0f} SF", "at": (c.x, c.y), "h": 3.0 / k_ft})
-    write_dxf(dxf_path, parcel_sp, env, setback_line, wet, fl, rds, aerial_name, aerial["extent"], aerial["image"].size, labels, bld)
+    write_dxf(dxf_path, parcel_sp, env, setback_line, wet, fl, rds, aerial_name, aerial["extent"], aerial["image"].size, labels, bld, topo, steep)
 
     L = listing or {}
     title = [x for x in [L.get("street_address") and f"{L.get('lot') + ', ' if L.get('lot') else ''}{L.get('street_address')}",
                          ", ".join(x for x in [L.get("city"), L.get("state")] if x), L.get("county") and f"{L['county']} County"] if x]
+    tsum = None
+    if topo:
+        from . import topo as _t
+        tsum = _t.summary(topo, parcel_sp, thr)
     facts = [("Parcel area (GIS)", f"{ac(parcel_sp):.2f} ac"), ("Listing area", f"{L['acres']} ac" if L.get("acres") else "—"),
              ("Zoning", L.get("zoning") or "—"), ("Road frontage", f"{front_ft:,.0f} ft" + (f" · {', '.join(fronting)}" if fronting else "")),
              ("Mapped wetlands on parcel", f"{ac(wet_in):.2f} ac"), ("FEMA flood (SFHA) on parcel", f"{ac(sfha):.2f} ac"),
+             *([("Topography", f"{tsum['relief_ft']:g} ft relief · avg slope {tsum['avg_slope_pct']:g}% · {tsum['steep_pct']:g}% over {tsum['threshold_pct']:g}%")] if tsum else []),
              *([("Existing buildings on parcel", f"{sum(1 for b in bld if b.get('id'))} · {sum(b['area_sf'] for b in bld if b.get('id')):,.0f} SF")] if bld else []),
              ("Buildable (envelope − wetland − flood)", f"{ac(buildable):.2f} ac" if setbacks_ft else "setbacks pending")]
     write_sheet(os.path.join(out_dir, "existing_conditions.pdf"), os.path.join(out_dir, "existing_conditions.png"),
-                parcel_sp, env, setback_line, wet, fl, rds, aerial, k_ft, title, facts, bld, actions)
+                parcel_sp, env, setback_line, wet, fl, rds, aerial, k_ft, title, facts, bld, actions, topo, steep)
 
     summary = {
         "epsg": epsg, "parcel_acres": round(ac(parcel_sp), 3), "frontage_ft": round(front_ft), "fronting_roads": fronting,

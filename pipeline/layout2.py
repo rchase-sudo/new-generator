@@ -507,7 +507,7 @@ def _pond(P, dev, constraints, target_sf):
 
 
 # ---------------------------------------------------------------- main
-def _generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, parking_setbacks_ft=None, drive_road=None, keep_bldgs=None, stem=None):
+def _generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, parking_setbacks_ft=None, drive_road=None, keep_bldgs=None, stem=None, steep=None):
     """drive_road: key of the road the driveway must connect to (ec_drawing.road_key); None = longest frontage.
     keep_bldgs: footprints of existing buildings that stay; the layout treats them (plus clearance) like wetlands."""
     rules = rules or {}
@@ -536,7 +536,7 @@ def _generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, p
         from .zoning import pavement_setbacks
         psb = {k: v for k, v in pavement_setbacks(rules, setbacks_ft).items() if k != "source"}
     KEEP = unary_union([g.buffer(KEEP_CLEAR_FT / k_ft) for g in (keep_bldgs or [])]) if keep_bldgs else None
-    C = unary_union([w["geom"] for w in wet] + [f["geom"] for f in fl if f.get("sfha") == "T"] + ([KEEP] if KEEP is not None else []))
+    C = unary_union([w["geom"] for w in wet] + [f["geom"] for f in fl if f.get("sfha") == "T"] + ([KEEP] if KEEP is not None else []) + list(steep or []))
     C = fr.fwd(C.intersection(parcel_sp.buffer(50 / k_ft))) if not C.is_empty else Polygon()
     bz = fr.fwd(envelope(parcel_sp, edges, setbacks_ft, k_ft)).difference(C).buffer(0)
     pz = fr.fwd(envelope(parcel_sp, edges, psb, k_ft)).difference(C).buffer(0)
@@ -784,7 +784,7 @@ def _generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, p
 STEM_CELL = 6.0
 
 
-def _plan_stem(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, parking_setbacks_ft, drive_road, keep_bldgs, rules):
+def _plan_stem(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, parking_setbacks_ft, drive_road, keep_bldgs, rules, steep=None, dem=None):
     """When the frontage is too narrow to build against, find the largest developable pod behind it and an access road
     (AIS wide) from the frontage to the pod. Returns {entry, angle, poly_sp, pod_sp, length_ft} or None.
     The path is the shortest route through land that is inside the side/rear setbacks and clear of wetlands, flood and
@@ -806,6 +806,8 @@ def _plan_stem(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, parking_setbacks_ft, 
     C = unary_union(parts) if parts else Polygon()
     if keep_bldgs:
         C = unary_union([C, *[g.buffer(KEEP_CLEAR_FT / k_ft) for g in keep_bldgs]])
+    if steep:
+        C = unary_union([C, *steep])
     C = fr.fwd(C.intersection(parcel_sp.buffer(50 / k_ft))) if not C.is_empty else Polygon()
     pz = fr.fwd(envelope(parcel_sp, edges, psb, k_ft)).difference(C).buffer(0)
     # where the access road may run: inside the side / rear pavement setbacks (front setback is crossable), out of constraints
@@ -829,6 +831,12 @@ def _plan_stem(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, parking_setbacks_ft, 
     xs, ys = x0 + (np.arange(nx) + 0.5) * cell, y0 + (np.arange(ny) + 0.5) * cell
     gx, gy = np.meshgrid(xs, ys)
     ok = shapely.contains_xy(corr, gx, gy)
+    mult = np.ones(ok.shape)
+    if dem is not None:       # slope-weighted: the road prefers flatter ground (8% costs 2x, 16% costs 5x)
+        from . import topo as _topo
+        wx = (gx / k_ft) * math.cos(fr.a) - (gy / k_ft) * math.sin(fr.a) + fr.o[0]
+        wy = (gx / k_ft) * math.sin(fr.a) + (gy / k_ft) * math.cos(fr.a) + fr.o[1]
+        mult = 1.0 + (_topo.sample(dem, wx, wy, "slope") / 8.0) ** 2
     ctry = {}
     for pod in pods[:3]:
         tgt = shapely.contains_xy(pod.buffer(-10) if pod.buffer(-10).area > 8000 else pod, gx, gy) & ok
@@ -860,7 +868,7 @@ def _plan_stem(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, parking_setbacks_ft, 
             for dj, di in ((-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)):
                 jj, ii = j + dj, i + di
                 if 0 <= jj < ny and 0 <= ii < nx and ok[jj, ii]:
-                    nd = d + cell * (1.414 if dj and di else 1.0)
+                    nd = d + cell * (1.414 if dj and di else 1.0) * mult[jj, ii]
                     if nd < dist[jj, ii]:
                         dist[jj, ii] = nd
                         prev[(jj, ii)] = (j, i)
@@ -920,12 +928,12 @@ def parcel_poly_ext(P, y_r):
     return P.union(box(minx - 100, y_r - 5, maxx + 100, 0.0))
 
 
-def generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, parking_setbacks_ft=None, drive_road=None, keep_bldgs=None):
+def generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, parking_setbacks_ft=None, drive_road=None, keep_bldgs=None, steep=None, dem=None):
     """drive_road: key of the road the driveway must connect to (ec_drawing.road_key); None = longest frontage.
     keep_bldgs: footprints of existing buildings that stay; the layout treats them (plus clearance) like wetlands.
     Tries the normal frontage layout first. If that fails, or has to shrink / drop buildings, it looks for a developable
     pod behind a narrow neck and lays the site out around an access road from the frontage to it, keeping the better."""
-    kw = dict(rules=rules, parking_setbacks_ft=parking_setbacks_ft, drive_road=drive_road, keep_bldgs=keep_bldgs)
+    kw = dict(rules=rules, parking_setbacks_ft=parking_setbacks_ft, drive_road=drive_road, keep_bldgs=keep_bldgs, steep=steep)
     front, err = None, None
     try:
         front = _generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, **kw)
@@ -935,7 +943,7 @@ def generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, pa
     if front and m["program_scale"] >= 1.0 and not any(w.startswith("Did not fit") for w in m["warnings"]):
         return front
     try:
-        stem = _plan_stem(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, parking_setbacks_ft, drive_road, keep_bldgs, rules or {})
+        stem = _plan_stem(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, parking_setbacks_ft, drive_road, keep_bldgs, rules or {}, steep=steep, dem=dem)
     except Exception as e:  # noqa: BLE001
         print("stem planning failed:", repr(e))
         stem = None

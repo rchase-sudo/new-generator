@@ -74,6 +74,7 @@ def facts(job):
         "plan": {k: M.get(k) for k in ("building_sf", "gfa_sf", "stalls", "stalls_required", "ada_stalls", "impervious_sf",
                                        "impervious_pct", "lot_coverage_pct", "development_acres", "remaining_developable_acres",
                                        "far", "pond_sf")},
+        "topography": {**{k: (S.get("topo") or {}).get(k) for k in ("relief_ft", "avg_slope_pct", "steep_pct", "threshold_pct")}, "earthwork": M.get("earthwork")},
         "existing_structures": [{k: b.get(k) for k in ("id", "label", "action", "sf")} for b in M.get("existing") or []],
         "plan_buildings": [{k: b.get(k) for k in ("name", "use", "w_ft", "d_ft", "footprint_sf", "stories", "drive_thru")}
                            for b in M.get("buildings") or []],

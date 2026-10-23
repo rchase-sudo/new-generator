@@ -72,6 +72,8 @@ def _run(job_id, step):
             step_zoning(job_id)
         elif step == "buildings":
             step_buildings(job_id)
+        elif step == "topo":
+            step_topo(job_id)
         elif step == "layout":
             step_layout(job_id)
         elif step == "render":
@@ -171,14 +173,16 @@ def step_ec(job_id):
     # fetch the public layers in parallel under one time budget: a slow service must never leave the job hanging
     import concurrent.futures as _cf
     import time as _t
-    fetch = {"wetlands": context.wetlands, "flood": context.flood, "roads": context.roads, "bld": context.buildings}
+    from . import topo as topo_mod
+    fetch = {"wetlands": context.wetlands, "flood": context.flood, "roads": context.roads, "bld": context.buildings,
+             "topo": lambda e_, ep_: topo_mod.fetch(e_, ep_, k)}
     got = {}
     t_end = _t.time() + 240
     for attempt in range(2):
         todo = [n for n in fetch if n not in got or isinstance(got[n], dict)]
         if not todo or _t.time() > t_end - 30:
             break
-        ex = _cf.ThreadPoolExecutor(max_workers=4)
+        ex = _cf.ThreadPoolExecutor(max_workers=5)
         futs = {ex.submit(fetch[n], ext, epsg): n for n in todo}
         done, _ = _cf.wait(futs, timeout=max(10, t_end - _t.time()))
         for f, n in futs.items():
@@ -192,21 +196,28 @@ def step_ec(job_id):
         # without roads there is no front, no setbacks by edge and nothing for the driveway to meet: stop, don't guess
         raise RuntimeError("Road data is unavailable right now (OpenStreetMap and Census both failed). Retry in a few minutes.")
     bld_raw = got.get("bld", {"error": "timed out"})
-    warnings = [f"{n}: {v['error']}" for n, v in (("wetlands", wet), ("flood", fl), ("roads", rds), ("buildings", bld_raw)) if isinstance(v, dict)]
+    dem = got.get("topo", {"error": "timed out"})
+    warnings = [f"{n}: {v['error']}" for n, v in (("wetlands", wet), ("flood", fl), ("roads", rds), ("buildings", bld_raw), ("topography", dem)) if isinstance(v, dict)]
+    dem = None if "error" in dem else topo_mod.analyze(dem)
+    if dem:
+        dem.pop("z", None)
     from . import existing
     bld = existing.prepare(bld_raw, parcel_sp, k)
 
     supa.update_job(job_id, progress="Drawing")
     out = tempfile.mkdtemp()
-    summary = build_ec(out, parcel_sp, epsg, k, aerial, wet, fl, rds, setbacks_ft=job.get("setbacks"), listing=job.get("listing"), bld=bld)
+    summary = build_ec(out, parcel_sp, epsg, k, aerial, wet, fl, rds, setbacks_ft=job.get("setbacks"), listing=job.get("listing"), bld=bld, topo=dem,
+                    steep=topo_mod.steep_polys(dem, parcel_sp, (job.get("zoning") or {}).get("max_slope_pct", topo_mod.DEFAULT_MAX_SLOPE)) if dem else [],
+                    thr=(job.get("zoning") or {}).get("max_slope_pct", topo_mod.DEFAULT_MAX_SLOPE) or 0)
     summary["warnings"] = warnings
+    summary["topo"] = topo_mod.summary(dem, parcel_sp, (job.get("zoning") or {}).get("max_slope_pct", topo_mod.DEFAULT_MAX_SLOPE)) if dem else {"available": False}
     summary["existing_buildings"] = existing.summary(bld, epsg)
     summary["buildings_checked"] = not isinstance(bld_raw, dict)
     files = {}
     for name in ("existing_conditions.dxf", "existing_conditions.pdf", "existing_conditions.png", "aerial.jpg", "aerial.jgw"):
         files[name] = supa.upload(job_id, os.path.join(out, name))
     # cache the site context so later steps (layout, re-layouts) don't re-fetch it
-    ctx = {"parcel_sp": parcel_sp, "epsg": epsg, "k": k, "wet": wet, "fl": fl, "rds": rds, "bld": bld, "warnings": warnings,
+    ctx = {"parcel_sp": parcel_sp, "epsg": epsg, "k": k, "wet": wet, "fl": fl, "rds": rds, "bld": bld, "topo": dem, "warnings": warnings,
            "aerial": {"extent": aerial["extent"], "source": aerial.get("source"), "jpg": _jpg(aerial["image"])}}
     with open(os.path.join(out, "context.pkl"), "wb") as f:
         pickle.dump(ctx, f)
@@ -237,6 +248,31 @@ def step_buildings(job_id):
     supa.update_job(job_id, status=back, summary=summary, progress="Confirm zoning, setbacks and program" if back == "awaiting_zoning" else "Existing buildings ready")
 
 
+def step_topo(job_id):
+    """Fetch elevation for a job whose site context is already cached (older jobs, or a retry after 3DEP was down)."""
+    from . import topo as topo_mod
+    job = supa.get_job(job_id)
+    back = job.get("status") if job.get("status") not in ("error", "building_ec") else ("awaiting_zoning" if job.get("zoning") else "ec_ready")
+    supa.update_job(job_id, progress="Reading elevation data", error=None)
+    ctx = _load_ctx(job_id)
+    ext = _extent_around(ctx["parcel_sp"], ctx["k"])
+    dem = topo_mod.fetch(ext, ctx["epsg"], ctx["k"])
+    ok = "error" not in dem
+    if ok:
+        dem = topo_mod.analyze(dem)
+        dem.pop("z", None)
+    ctx["topo"] = dem if ok else None
+    ctx["warnings"] = [w for w in ctx.get("warnings", []) if not w.startswith("topography:")] + ([] if ok else [f"topography: {dem['error']}"])
+    ctx["aerial"] = {k_: v for k_, v in ctx["aerial"].items() if k_ != "image"}
+    path = os.path.join(tempfile.mkdtemp(), "context.pkl")
+    with open(path, "wb") as f:
+        pickle.dump(ctx, f)
+    supa.upload(job_id, path)
+    thr = (job.get("zoning") or {}).get("max_slope_pct", topo_mod.DEFAULT_MAX_SLOPE)
+    summary = {**(job.get("summary") or {}), "topo": topo_mod.summary(dem, ctx["parcel_sp"], thr) if ok else {"available": False}}
+    supa.update_job(job_id, status=back, summary=summary, progress="Confirm zoning, setbacks and program" if back == "awaiting_zoning" else "Elevation ready")
+
+
 def _jpg(img):
     b = io.BytesIO()
     img.save(b, "JPEG", quality=90)
@@ -263,6 +299,9 @@ def step_zoning(job_id):
     from shapely.ops import unary_union
     cons = [w["geom"] for w in (ctx["wet"] if isinstance(ctx["wet"], list) else [])] + \
            [f["geom"] for f in (ctx["fl"] if isinstance(ctx["fl"], list) else []) if f.get("sfha") == "T"]
+    if ctx.get("topo"):
+        from . import topo as _tp
+        cons += _tp.steep_polys(ctx["topo"], ctx["parcel_sp"], (job.get("zoning") or {}).get("max_slope_pct", _tp.DEFAULT_MAX_SLOPE))
     bld = env.difference(unary_union(cons)) if cons else env
     # the buildable piece that reaches the road (wetlands / streams can cut off the back of a site)
     from .ec_drawing import _polys
@@ -290,8 +329,13 @@ def step_layout(job_id):
     bld = ctx.get("bld") or []          # jobs from before building detection have none: behaves exactly as before
     actions = {b["id"]: (((rules.get("building_actions") or {}).get(b["id"])) or "keep") for b in bld if b.get("onsite")}
     keep, demo = existing.split(bld, actions)
+    from . import topo as topo_mod
+    dem = ctx.get("topo")
+    thr = rules.get("max_slope_pct", topo_mod.DEFAULT_MAX_SLOPE)
+    steep = topo_mod.steep_polys(dem, ctx["parcel_sp"], thr) if dem else []
     summary = build_ec(out, ctx["parcel_sp"], ctx["epsg"], ctx["k"], ctx["aerial"], ctx["wet"], ctx["fl"], ctx["rds"],
-                       setbacks_ft=setbacks, listing=job.get("listing"), bld=bld, actions=actions)
+                       setbacks_ft=setbacks, listing=job.get("listing"), bld=bld, actions=actions, topo=dem, steep=steep, thr=thr or 0)
+    summary["topo"] = topo_mod.summary(dem, ctx["parcel_sp"], thr) if dem else {"available": False}
     summary["existing_buildings"] = (job.get("summary") or {}).get("existing_buildings", [])
     summary["warnings"] = ctx.get("warnings", [])
     from .ec_drawing import front_roads
@@ -301,7 +345,7 @@ def step_layout(job_id):
     try:
         res = generate_layout(ctx["parcel_sp"], ctx["k"], ctx["rds"], ctx["wet"], ctx["fl"], setbacks, prog, rules=rules,
                               parking_setbacks_ft=psb, drive_road=rules.get("drive_road") or None,
-                              keep_bldgs=[b["geom"] for b in keep])
+                              keep_bldgs=[b["geom"] for b in keep], steep=steep, dem=dem)
     except RuntimeError as e:
         dr = rules.get("drive_road")
         fr = {r["key"]: r["frontage_ft"] for r in (summary.get("front_roads") or [])}
@@ -321,12 +365,19 @@ def step_layout(job_id):
     wet = ctx["wet"] if isinstance(ctx["wet"], list) else []
     fl = ctx["fl"] if isinstance(ctx["fl"], list) else []
     rds = ctx["rds"] if isinstance(ctx["rds"], list) else []
+    if dem:
+        ew = topo_mod.earthwork(dem, res["sp"]["dev"])
+        if ew:
+            res["metrics"]["earthwork"] = ew
+            if ew["cut_cy"] + ew["fill_cy"] > 0 and ew["area_ac"] > 0 and (ew["cut_cy"] + ew["fill_cy"]) / ew["area_ac"] > 2500:
+                res["metrics"]["warnings"].append(f"Grading: about {ew['cut_cy']:,.0f} CY cut / {ew['fill_cy']:,.0f} CY fill to level the development area")
     ex = [{"id": b["id"], "action": "keep", "geom": b["geom"], "sf": b["area_sf"], "label": b.get("kind")} for b in keep] + \
          [{"id": b["id"], "action": "demo", "geom": b["geom"], "sf": b["area_sf"], "label": b.get("kind")} for b in demo]
     res["metrics"]["existing"] = [{"id": e["id"], "action": e["action"], "sf": round(e["sf"], -1), "label": e["label"]} for e in ex]
     write_concept_sheet(os.path.join(out, "concept_plan.pdf"), os.path.join(out, "concept_plan.png"), ctx["parcel_sp"], env, wet, fl, rds,
-                        ctx["aerial"], ctx["k"], res["sp"], res["labels"], title, res["metrics"], prog, rules, project=project, existing=ex)
-    write_concept_dxf(os.path.join(out, "existing_conditions.dxf"), os.path.join(out, "concept_layout.dxf"), res["sp"], res["labels"], ctx["k"], existing=ex)
+                        ctx["aerial"], ctx["k"], res["sp"], res["labels"], title, res["metrics"], prog, rules, project=project, existing=ex,
+                        topo=dem, steep=steep)
+    write_concept_dxf(os.path.join(out, "existing_conditions.dxf"), os.path.join(out, "concept_layout.dxf"), res["sp"], res["labels"], ctx["k"], existing=ex, steep=steep)
     with open(os.path.join(out, "layout.pkl"), "wb") as f:   # geometry for the 3D model / render step
         pickle.dump({"sp": res["sp"], "metrics": res["metrics"], "labels": res["labels"], "frame_angle_deg": res["frame_angle_deg"], "existing": ex}, f)
     supa.upload(job_id, os.path.join(out, "layout.pkl"))

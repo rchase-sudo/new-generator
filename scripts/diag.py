@@ -24,3 +24,17 @@ if isinstance(bld, list):
     items = existing.prepare(bld, ctx["parcel_sp"], ctx["k"])
     for b in items:
         print(b["id"], b["onsite"], round(b["area_sf"]), round(b["pct_on_site"], 2), b["src"], b["kind"])
+
+from pipeline import topo  # noqa: E402
+dem = topo.fetch(ext, ctx["epsg"], ctx["k"])
+print("topo:", dem if "error" in dem else {k: (v.shape if hasattr(v, "shape") else v) for k, v in dem.items()})
+if "error" not in dem:
+    dem = topo.analyze(dem)
+    print("summary:", topo.summary(dem, ctx["parcel_sp"]))
+    st = topo.steep_polys(dem, ctx["parcel_sp"], 15)
+    print("steep polys:", len(st), [round(g.area * ctx["k"] ** 2 / 43560, 2) for g in st])
+    cl, iv = topo.contours(dem)
+    print("contours:", len(cl), "interval", iv)
+    import pickle as _p
+    dem.pop("z", None)
+    _p.dump(dem, open(f"{out}/dem.pkl", "wb"))
