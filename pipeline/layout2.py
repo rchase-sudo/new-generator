@@ -14,7 +14,7 @@ import numpy as np
 import shapely
 from shapely import affinity
 from shapely.geometry import LineString, Point, Polygon, box
-from shapely.ops import polylabel, unary_union
+from shapely.ops import polylabel, substring, unary_union
 
 from .ec_drawing import _polys, classify_edges, envelope, road_key
 from .existing import KEEP_CLEAR_FT
@@ -462,7 +462,7 @@ def _search_med(ctx, buildings, scale, req, med):
 
 
 # ---------------------------------------------------------------- driveway
-def _driveway(ctx, D):
+def _driveway(ctx, D, flare=True):
     P, R = ctx["P"], ctx["R"]
     dminx, _, dmaxx, _ = D.bounds
     lo, hi = max(ctx["drive_lo"], dminx + R_OUT + AIS / 2), min(ctx["drive_hi"], dmaxx - R_OUT - AIS / 2)
@@ -481,9 +481,9 @@ def _driveway(ctx, D):
         y_r = (min(yb) if yb else 0.0) - 10
     drive = box(xd - AIS / 2, y_r, xd + AIS / 2, y_d + RING)
     r = 25.0
-    flare = box(xd - AIS / 2 - r, y_r, xd + AIS / 2 + r, y_r + r)
-    flare = flare.difference(Point(xd - AIS / 2 - r, y_r + r).buffer(r, 48)).difference(Point(xd + AIS / 2 + r, y_r + r).buffer(r, 48))
-    return drive.union(flare), xd, y_r
+    fl_ = box(xd - AIS / 2 - r, y_r, xd + AIS / 2 + r, y_r + r)
+    fl_ = fl_.difference(Point(xd - AIS / 2 - r, y_r + r).buffer(r, 48)).difference(Point(xd + AIS / 2 + r, y_r + r).buffer(r, 48))
+    return (drive.union(fl_) if flare else drive), xd, y_r
 
 
 def _pond(P, dev, constraints, target_sf):
@@ -507,7 +507,7 @@ def _pond(P, dev, constraints, target_sf):
 
 
 # ---------------------------------------------------------------- main
-def generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, parking_setbacks_ft=None, drive_road=None, keep_bldgs=None):
+def _generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, parking_setbacks_ft=None, drive_road=None, keep_bldgs=None, stem=None):
     """drive_road: key of the road the driveway must connect to (ec_drawing.road_key); None = longest frontage.
     keep_bldgs: footprints of existing buildings that stay; the layout treats them (plus clearance) like wetlands."""
     rules = rules or {}
@@ -525,6 +525,9 @@ def generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, pa
             raise RuntimeError(f"The parcel has no frontage on {drive_road}. Pick another road for the driveway.")
         main = max(on, key=lambda e: e["len_ft"])
     fr = Frame(parcel_sp, edges, k_ft, main=main)
+    if stem:   # access-road mode: the frame sits where the access road enters the development pod, +y running into it
+        fr.o, fr.a = stem["entry"], stem["angle"]
+        fr.front_line = LineString([(-400.0, 0.0), (400.0, 0.0)])
     main_road = (main or max([e for e in edges if e["kind"] == "front"] or edges, key=lambda e: e["len_ft"])).get("road")
     P = fr.fwd(parcel_sp)
     if parking_setbacks_ft:
@@ -539,19 +542,27 @@ def generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, pa
     pz = fr.fwd(envelope(parcel_sp, edges, psb, k_ft)).difference(C).buffer(0)
     drive_rds = [r for r, kk in zip(named, keys) if kk == drive_road] if drive_road else rds
     R = unary_union([fr.fwd(r["pavement"]) for r in drive_rds]) if drive_rds else None
+    if stem:
+        R = fr.fwd(stem["poly_sp"])
     # frontage = every front edge lying along the main front line
     fl_lines = [fr.fwd(e["line"]) for e in edges if e["kind"] == "front" and (not drive_road or e.get("road") == drive_road)]
     fl_lines = [g for g in fl_lines if max(abs(c[1]) for c in g.coords) < 40] or [fr.front_line]
+    if stem:
+        fl_lines = [fr.front_line]
     fx = [min(c[0] for g in fl_lines for c in g.coords), max(c[0] for g in fl_lines for c in g.coords)]
     front_ln = unary_union(fl_lines)
     # wetlands can split the usable land: develop the piece that reaches the frontage
+    if stem:
+        pz = pz.intersection(fr.fwd(stem["pod_sp"])).intersection(box(-6000, -2.0, 6000, 6000)).buffer(0)
     pieces = [g for g in _polys(pz) if g.area > 5000]
     if not pieces:
         raise RuntimeError("No usable land left after setbacks, wetlands and flood zones.")
-    pz = min(pieces, key=lambda g: (round(g.distance(front_ln) / 50), -g.area))
+    pz = max(pieces, key=lambda g: g.area) if stem else min(pieces, key=lambda g: (round(g.distance(front_ln) / 50), -g.area))
     lo, hi = fx[0] + 50, fx[1] - 50
     if hi < lo:
         lo = hi = (fx[0] + fx[1]) / 2
+    if stem:
+        lo = hi = 0.0
     shapely.prepare(pz)
     shapely.prepare(bz)
     ctx = {"P": P, "pz": pz, "bz": bz, "R": R, "y0": math.ceil(pz.bounds[1]), "drive_lo": lo, "drive_hi": hi}
@@ -578,7 +589,9 @@ def generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, pa
         raise RuntimeError("Even the first building at half size does not fit the usable land. Reduce the program or adjust setbacks.")
 
     D, I, row = best["D"], best["I"], best["row"]
-    drive, xd, y_r = _driveway(ctx, D)
+    drive, xd, y_r = _driveway(ctx, D, flare=not stem)
+    if stem:
+        drive = drive.union(fr.fwd(stem["poly_sp"]))
     ring = D.difference(I)
     lanes = [unary_union([g for g in (r["lane"], r["legs"]) if g is not None]) for r in row if r["lane"] is not None]
     # fillets: generous where the driveway meets the loop, tight (curb-return size) where aisles meet it, so the
@@ -705,6 +718,7 @@ def generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, pa
         "buildings": [{"name": r["b"].get("name"), "use": r["b"].get("use"), "w_ft": round(r["w"]), "d_ft": round(r["d"]),
                        "footprint_sf": round(r["fp"], -1), "stories": r["b"].get("stories", 1), "drive_thru": bool(r["b"].get("drive_thru"))} for r in row],
         "drive_road": drive_road or main_road,
+        **({"access": "road", "access_road_ft": round(stem["length_ft"])} if stem else {}),
         "building_sf": round(bsf, -1), "gfa_sf": round(gfa_sf, -1), "program_scale": scale,
         "stalls": n_st, "stalls_required": req, "ada_stalls": n_ada, "template": f"ring/{best['bpos']}/{best['m']}",
         "impervious_sf": round(imperv_sf, -1), "impervious_pct": round(100 * imperv_sf / parcel_sf, 1),
@@ -764,3 +778,176 @@ def generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, pa
         c = fr.inv(polylabel(pond, 2))
         labels.append({"at": (c.x, c.y), "rot": math.degrees(fr.a), "lines": ["STORMWATER", "MANAGEMENT"], "small": True})
     return {"metrics": metrics, "sp": sp, "local": local, "labels": labels, "frame_angle_deg": math.degrees(fr.a)}
+
+
+# ---------------------------------------------------------------- access-road mode (flag / horseshoe lots)
+STEM_CELL = 6.0
+
+
+def _plan_stem(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, parking_setbacks_ft, drive_road, keep_bldgs, rules):
+    """When the frontage is too narrow to build against, find the largest developable pod behind it and an access road
+    (AIS wide) from the frontage to the pod. Returns {entry, angle, poly_sp, pod_sp, length_ft} or None.
+    The path is the shortest route through land that is inside the side/rear setbacks and clear of wetlands, flood and
+    kept buildings, so a horseshoe or a long neck is handled."""
+    import heapq
+    wet, fl = ([] if isinstance(wet, dict) else wet), ([] if isinstance(fl, dict) else fl)
+    rds = [] if isinstance(rds, dict) else rds
+    named = [r for r in rds if r["class"] != "service"]
+    keys = [road_key(r) for r in named]
+    edges = classify_edges(parcel_sp, [r["centerline"] for r in named], k_ft, keys)
+    fronts = [e for e in edges if e["kind"] == "front" and (not drive_road or e.get("road") == drive_road)]
+    if not fronts:
+        print('stem: no front edges on', drive_road)
+        return None
+    main = max(fronts, key=lambda e: e["len_ft"])
+    fr = Frame(parcel_sp, edges, k_ft, main=main)
+    psb = {k: float((parking_setbacks_ft or {}).get(k, DEFAULT_PARK_SB[k])) for k in ("front", "side", "rear")}
+    parts = [w["geom"] for w in wet] + [f["geom"] for f in fl if f.get("sfha") == "T"]
+    C = unary_union(parts) if parts else Polygon()
+    if keep_bldgs:
+        C = unary_union([C, *[g.buffer(KEEP_CLEAR_FT / k_ft) for g in keep_bldgs]])
+    C = fr.fwd(C.intersection(parcel_sp.buffer(50 / k_ft))) if not C.is_empty else Polygon()
+    pz = fr.fwd(envelope(parcel_sp, edges, psb, k_ft)).difference(C).buffer(0)
+    # where the access road may run: inside the side / rear pavement setbacks (front setback is crossable), out of constraints
+    allowed = fr.fwd(envelope(parcel_sp, edges, {"front": 0, "side": psb["side"], "rear": psb["rear"]}, k_ft)).difference(C).buffer(0)
+    corr = allowed.buffer(-AIS / 2)
+    if corr.is_empty:
+        print('stem: no corridor')
+        return None
+    pods = []
+    for rho in (100.0, 80.0, 60.0, 45.0, 30.0):         # opened: strips narrower than 2*rho are necks, not pods
+        pods = [g for g in _polys(pz.buffer(-rho).buffer(rho)) if g.area > 40000]
+        if pods:
+            break
+    pods.sort(key=lambda g: -g.area)
+    fl_lines = [fr.fwd(e["line"]) for e in fronts]
+    road = unary_union([fr.fwd(r["pavement"]) for r, kk in zip(named, keys) if (not drive_road or kk == drive_road)])
+
+    x0, y0, x1, y1 = corr.bounds
+    cell = STEM_CELL if (x1 - x0) * (y1 - y0) < 6e6 else 12.0
+    nx, ny = int((x1 - x0) / cell) + 1, int((y1 - y0) / cell) + 1
+    xs, ys = x0 + (np.arange(nx) + 0.5) * cell, y0 + (np.arange(ny) + 0.5) * cell
+    gx, gy = np.meshgrid(xs, ys)
+    ok = shapely.contains_xy(corr, gx, gy)
+    ctry = {}
+    for pod in pods[:3]:
+        tgt = shapely.contains_xy(pod.buffer(-10) if pod.buffer(-10).area > 8000 else pod, gx, gy) & ok
+        if not tgt.any():
+            print('stem: pod has no reachable cells', round(pod.area / 43560, 2))
+            continue
+        # sources: corridor cells right at a frontage line on the chosen road
+        src = np.zeros_like(ok)
+        for ln in fl_lines:
+            src |= ok & (shapely.distance(ln, shapely.points(gx, gy)) <= AIS / 2 + cell * 1.6)
+        if not src.any():
+            print('stem: no start cells on the frontage')
+            continue
+        INF = 1e18
+        dist = np.full(ok.shape, INF)
+        prev = {}
+        pq = []
+        for j, i in zip(*np.nonzero(src)):
+            dist[j, i] = 0.0
+            heapq.heappush(pq, (0.0, j, i))
+        hit = None
+        while pq:
+            d, j, i = heapq.heappop(pq)
+            if d > dist[j, i]:
+                continue
+            if tgt[j, i]:
+                hit = (j, i)
+                break
+            for dj, di in ((-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)):
+                jj, ii = j + dj, i + di
+                if 0 <= jj < ny and 0 <= ii < nx and ok[jj, ii]:
+                    nd = d + cell * (1.414 if dj and di else 1.0)
+                    if nd < dist[jj, ii]:
+                        dist[jj, ii] = nd
+                        prev[(jj, ii)] = (j, i)
+                        heapq.heappush(pq, (nd, jj, ii))
+        if hit is None:
+            print('stem: no path to pod', round(pod.area / 43560, 2))
+            continue
+        path = [hit]
+        while path[-1] in prev:
+            path.append(prev[path[-1]])
+        path = path[::-1]
+        if len(path) < 2:
+            continue      # the frontage already touches the pod: no access road needed
+        line = LineString([(xs[i], ys[j]) for j, i in path]).simplify(cell * 1.2)
+        if line.length < 2:
+            continue
+        ctry = {"pod": pod, "line": line}
+        break
+    if not ctry:
+        print('stem: no pod/path found; pods =', [round(g.area / 43560, 2) for g in pods])
+        return None
+    pod, line = ctry["pod"], ctry["line"]
+    # trim the road where it enters the pod; extend the start to the road edge
+    inside = line.intersection(pod)
+    if not inside.is_empty:
+        cut = min(line.project(Point(c)) for g in getattr(inside, "geoms", [inside]) for c in g.coords)
+        if cut > 4:
+            line = substring(line, 0, cut)
+    if line.length < 12:
+        print('stem: path too short', line.length)
+        return None
+    sx, sy = line.coords[0]
+    if not road.is_empty:
+        probe = LineString([(sx, sy + 4), (sx, sy - 400)])
+        hit = probe.intersection(road)
+        yy = [c[1] for g in getattr(hit, "geoms", [hit]) for c in g.coords if not hit.is_empty and c[1] <= sy + 4]
+        y_r = max(yy) if yy else sy - 10
+    else:
+        y_r = sy - 10
+    line = LineString([(sx, y_r), *line.coords]) if y_r < sy - 1 else line
+    # last direction before the pod -> frame for the layout
+    L = line.length
+    a_pt, b_pt = line.interpolate(max(0.0, L - 40.0)), line.interpolate(L)
+    th = math.atan2(b_pt.y - a_pt.y, b_pt.x - a_pt.x)
+    stem_poly = line.buffer(AIS / 2, cap_style=2, join_style=1)
+    r = 25.0
+    flare = box(sx - AIS / 2 - r, y_r, sx + AIS / 2 + r, y_r + r)
+    flare = flare.difference(Point(sx - AIS / 2 - r, y_r + r).buffer(r, 48)).difference(Point(sx + AIS / 2 + r, y_r + r).buffer(r, 48))
+    stem_poly = stem_poly.union(flare).intersection(parcel_poly_ext(fr.fwd(parcel_sp), y_r)).buffer(0)
+    return {"entry": fr.inv(b_pt).coords[0], "angle": th - math.pi / 2 + fr.a,
+            "poly_sp": fr.inv(stem_poly), "pod_sp": fr.inv(pod.buffer(rho + 2)), "length_ft": line.length}
+
+
+def parcel_poly_ext(P, y_r):
+    """Parcel plus everything out to the road edge (the access road leaves the parcel at the frontage)."""
+    minx, miny, maxx, maxy = P.bounds
+    return P.union(box(minx - 100, y_r - 5, maxx + 100, 0.0))
+
+
+def generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, parking_setbacks_ft=None, drive_road=None, keep_bldgs=None):
+    """drive_road: key of the road the driveway must connect to (ec_drawing.road_key); None = longest frontage.
+    keep_bldgs: footprints of existing buildings that stay; the layout treats them (plus clearance) like wetlands.
+    Tries the normal frontage layout first. If that fails, or has to shrink / drop buildings, it looks for a developable
+    pod behind a narrow neck and lays the site out around an access road from the frontage to it, keeping the better."""
+    kw = dict(rules=rules, parking_setbacks_ft=parking_setbacks_ft, drive_road=drive_road, keep_bldgs=keep_bldgs)
+    front, err = None, None
+    try:
+        front = _generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, **kw)
+    except RuntimeError as e:
+        err = e
+    m = front["metrics"] if front else None
+    if front and m["program_scale"] >= 1.0 and not any(w.startswith("Did not fit") for w in m["warnings"]):
+        return front
+    try:
+        stem = _plan_stem(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, parking_setbacks_ft, drive_road, keep_bldgs, rules or {})
+    except Exception as e:  # noqa: BLE001
+        print("stem planning failed:", repr(e))
+        stem = None
+    alt = None
+    if stem:
+        try:
+            alt = _generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, stem=stem, **kw)
+        except RuntimeError as e:
+            print("access-road layout failed:", e)
+    if alt and (front is None or alt["metrics"]["building_sf"] >= 1.15 * m["building_sf"]):
+        alt["metrics"]["warnings"].insert(0, f"Access road of about {stem['length_ft']:,.0f} ft from the frontage to the developable land behind it")
+        return alt
+    if front:
+        return front
+    raise err

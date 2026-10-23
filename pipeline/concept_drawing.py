@@ -188,6 +188,7 @@ def _view(sp, parcel, aerial, k_ft, aspect):
     w, h = vx1 - vx0, vy1 - vy0
     w, h = (h * aspect, h) if w / h < aspect else (w, w / aspect)
     w, h = min(w, maxx - minx), min(h, maxy - miny)
+    w, h = min(w, h * aspect), min(h, w / aspect)    # keep the sheet's aspect when the aerial is the limit
     cx, cy = min(max(cx, minx + w / 2), maxx - w / 2), min(max(cy, miny + h / 2), maxy - h / 2)
     return cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2
 
