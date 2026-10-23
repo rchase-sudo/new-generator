@@ -1,0 +1,26 @@
+name: Diagnose job
+on:
+  workflow_dispatch:
+    inputs:
+      job_id: {required: true}
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    permissions: {contents: write}
+    env:
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - run: pip install -r requirements.txt
+      - run: set -o pipefail; python scripts/diag.py "${{ inputs.job_id }}" 2>&1 | tee diag.log
+      - if: always()
+        run: |
+          mkdir -p test_runs && cp diag.log test_runs/diag.log
+          git config user.name "forma-ci"; git config user.email "forma-ci@users.noreply.github.com"
+          git fetch origin test-runs || true
+          git checkout -B test-runs
+          git add -f test_runs
+          git commit -m "diag ${{ github.run_id }}" || exit 0
+          git push -f origin test-runs
