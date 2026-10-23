@@ -56,6 +56,26 @@ def prepare(work, parcel_sp, k_ft, aerial, rds, lay, program=None, seed=3):
     minx, miny, maxx, maxy = aerial["extent"]
     AW, AH = img.size
     px = lambda x, y: ((x - minx) / (maxx - minx) * AW, (maxy - y) / (maxy - miny) * AH)  # noqa: E731
+    # demolished buildings disappear from the draped aerial: fill each footprint with the colour of the ground around it
+    demo = [e["geom"] for e in lay.get("existing") or [] if e["action"] == "demo"]
+    if demo:
+        a = np.asarray(img).astype(float)
+        for g in demo:
+            ring = g.buffer(14 / k_ft).difference(g.buffer(5 / k_ft))
+            m_in, m_ring = Image.new("L", (AW, AH), 0), Image.new("L", (AW, AH), 0)
+            for p_ in _polys(g.buffer(4 / k_ft)):
+                ImageDraw.Draw(m_in).polygon([px(x, y) for x, y in p_.exterior.coords], fill=255)
+            for p_ in _polys(ring):
+                ImageDraw.Draw(m_ring).polygon([px(x, y) for x, y in p_.exterior.coords], fill=255)
+            ri = np.asarray(m_ring) > 127
+            if ri.sum() < 10:
+                continue
+            fill = np.median(a[ri], axis=0)
+            rng_ = np.random.default_rng(7)
+            soft = np.asarray(m_in.filter(ImageFilter.GaussianBlur(2))).astype(float)[..., None] / 255.0
+            noise = rng_.normal(0, 4.0, a.shape[:2])[..., None]
+            a = a * (1 - soft) + (fill[None, None, :] + noise) * soft
+        img = Image.fromarray(a.clip(0, 255).astype("uint8"))
     img.save(os.path.join(work, "ground.jpg"), quality=92)
     pad = sp.get("pad") or sp.get("grass")
     clear = unary_union([dev.buffer(45 / k_ft), pad if pad is not None else dev]).intersection(parcel_sp.buffer(5 / k_ft))
@@ -148,6 +168,11 @@ def prepare(work, parcel_sp, k_ft, aerial, rds, lay, program=None, seed=3):
                      "entry": [W(x, y) for x, y in list(rb.exterior.coords)[:-1]] if rb is not None else None,
                      "entry_H": H + 2.2})
 
+    kept = []
+    for e in lay.get("existing") or []:
+        if e["action"] == "keep":
+            kept.append({"poly": [W(x, y) for x, y in list(e["geom"].exterior.coords)[:-1]], "H": 4.8})
+
     # ---------------- camera: from the road side, 3/4 aerial like the Pocahontas front view
     a = math.radians(lay.get("frame_angle_deg") or 0.0)
     n_in = np.array([-math.sin(a), math.cos(a)])        # into the site
@@ -165,6 +190,7 @@ def prepare(work, parcel_sp, k_ft, aerial, rds, lay, program=None, seed=3):
         "site_rect": [W(sx0, sy0), W(sx1, sy1)],
         "curbs": Wg(pave),
         "buildings": blds,
+        "existing": kept,
         "pond": Wg(sp["pond"]) if sp.get("pond") is not None else [],
         "trees": trees,
         "ornamental": orn,

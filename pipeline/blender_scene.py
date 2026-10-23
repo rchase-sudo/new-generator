@@ -332,6 +332,9 @@ for B in D['buildings']:
         ring('EntryParapet', ep, 0.3, eh - 0.75, eh, M_WOODSOFF)
         ring('EntryCap', [tuple(p) for p in offset(ep if area(ep) > 0 else ep[::-1], -0.06)], 0.42, eh, eh + 0.1, M_CAP)
 
+for B in D.get('existing', []):   # existing buildings that stay: plain massing, the real roof/wall materials
+    prism('Existing', [tuple(p) for p in B['poly']], 0, B['H'], lambda *a: M_SIDE, M_ROOF)
+
 # ---------------------------------------------------------------- pond
 if D.get('pond'):
     wm = bpy.data.materials.new('Water'); wm.use_nodes = True; wnt = wm.node_tree; wnt.nodes.clear()

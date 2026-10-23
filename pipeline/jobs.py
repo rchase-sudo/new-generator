@@ -169,14 +169,14 @@ def step_ec(job_id):
     # fetch the public layers in parallel under one time budget: a slow service must never leave the job hanging
     import concurrent.futures as _cf
     import time as _t
-    fetch = {"wetlands": context.wetlands, "flood": context.flood, "roads": context.roads}
+    fetch = {"wetlands": context.wetlands, "flood": context.flood, "roads": context.roads, "bld": context.buildings}
     got = {}
     t_end = _t.time() + 240
     for attempt in range(2):
         todo = [n for n in fetch if n not in got or isinstance(got[n], dict)]
         if not todo or _t.time() > t_end - 30:
             break
-        ex = _cf.ThreadPoolExecutor(max_workers=3)
+        ex = _cf.ThreadPoolExecutor(max_workers=4)
         futs = {ex.submit(fetch[n], ext, epsg): n for n in todo}
         done, _ = _cf.wait(futs, timeout=max(10, t_end - _t.time()))
         for f, n in futs.items():
@@ -189,17 +189,22 @@ def step_ec(job_id):
     if isinstance(rds, dict):
         # without roads there is no front, no setbacks by edge and nothing for the driveway to meet: stop, don't guess
         raise RuntimeError("Road data is unavailable right now (OpenStreetMap and Census both failed). Retry in a few minutes.")
-    warnings = [f"{n}: {v['error']}" for n, v in (("wetlands", wet), ("flood", fl), ("roads", rds)) if isinstance(v, dict)]
+    bld_raw = got.get("bld", {"error": "timed out"})
+    warnings = [f"{n}: {v['error']}" for n, v in (("wetlands", wet), ("flood", fl), ("roads", rds), ("buildings", bld_raw)) if isinstance(v, dict)]
+    from . import existing
+    bld = existing.prepare(bld_raw, parcel_sp, k)
 
     supa.update_job(job_id, progress="Drawing")
     out = tempfile.mkdtemp()
-    summary = build_ec(out, parcel_sp, epsg, k, aerial, wet, fl, rds, setbacks_ft=job.get("setbacks"), listing=job.get("listing"))
+    summary = build_ec(out, parcel_sp, epsg, k, aerial, wet, fl, rds, setbacks_ft=job.get("setbacks"), listing=job.get("listing"), bld=bld)
     summary["warnings"] = warnings
+    summary["existing_buildings"] = existing.summary(bld, epsg)
+    summary["buildings_checked"] = not isinstance(bld_raw, dict)
     files = {}
     for name in ("existing_conditions.dxf", "existing_conditions.pdf", "existing_conditions.png", "aerial.jpg", "aerial.jgw"):
         files[name] = supa.upload(job_id, os.path.join(out, name))
     # cache the site context so later steps (layout, re-layouts) don't re-fetch it
-    ctx = {"parcel_sp": parcel_sp, "epsg": epsg, "k": k, "wet": wet, "fl": fl, "rds": rds, "warnings": warnings,
+    ctx = {"parcel_sp": parcel_sp, "epsg": epsg, "k": k, "wet": wet, "fl": fl, "rds": rds, "bld": bld, "warnings": warnings,
            "aerial": {"extent": aerial["extent"], "source": aerial.get("source"), "jpg": _jpg(aerial["image"])}}
     with open(os.path.join(out, "context.pkl"), "wb") as f:
         pickle.dump(ctx, f)
@@ -257,15 +262,21 @@ def step_layout(job_id):
     rules, prog, setbacks = job.get("zoning") or {}, job.get("program") or {}, job.get("setbacks") or {"front": 25, "side": 10, "rear": 10}
     out = tempfile.mkdtemp()
     # refresh the existing-conditions drawing with the confirmed setbacks
+    from . import existing
+    bld = ctx.get("bld") or []          # jobs from before building detection have none: behaves exactly as before
+    actions = {b["id"]: (((rules.get("building_actions") or {}).get(b["id"])) or "keep") for b in bld if b.get("onsite")}
+    keep, demo = existing.split(bld, actions)
     summary = build_ec(out, ctx["parcel_sp"], ctx["epsg"], ctx["k"], ctx["aerial"], ctx["wet"], ctx["fl"], ctx["rds"],
-                       setbacks_ft=setbacks, listing=job.get("listing"))
+                       setbacks_ft=setbacks, listing=job.get("listing"), bld=bld, actions=actions)
+    summary["existing_buildings"] = (job.get("summary") or {}).get("existing_buildings", [])
     summary["warnings"] = ctx.get("warnings", [])
     from .ec_drawing import front_roads
     summary["front_roads"] = front_roads(ctx["parcel_sp"], ctx["rds"], ctx["k"], ctx["epsg"])
     psb = rules.get("pavement_setbacks_ft") or zoning_mod.pavement_setbacks(rules, setbacks)
     psb = {k: float(psb[k]) for k in ("front", "side", "rear") if isinstance(psb.get(k), (int, float))}
     res = generate_layout(ctx["parcel_sp"], ctx["k"], ctx["rds"], ctx["wet"], ctx["fl"], setbacks, prog, rules=rules,
-                          parking_setbacks_ft=psb, drive_road=rules.get("drive_road") or None)
+                          parking_setbacks_ft=psb, drive_road=rules.get("drive_road") or None,
+                          keep_bldgs=[b["geom"] for b in keep])
     supa.update_job(job_id, progress="Drawing the concept plan")
     L = job.get("listing") or {}
     title = [x for x in [L.get("street_address") and f"{L.get('lot') + ', ' if L.get('lot') else ''}{L.get('street_address')}",
@@ -277,11 +288,14 @@ def step_layout(job_id):
     wet = ctx["wet"] if isinstance(ctx["wet"], list) else []
     fl = ctx["fl"] if isinstance(ctx["fl"], list) else []
     rds = ctx["rds"] if isinstance(ctx["rds"], list) else []
+    ex = [{"id": b["id"], "action": "keep", "geom": b["geom"], "sf": b["area_sf"], "label": b.get("kind")} for b in keep] + \
+         [{"id": b["id"], "action": "demo", "geom": b["geom"], "sf": b["area_sf"], "label": b.get("kind")} for b in demo]
+    res["metrics"]["existing"] = [{"id": e["id"], "action": e["action"], "sf": round(e["sf"], -1), "label": e["label"]} for e in ex]
     write_concept_sheet(os.path.join(out, "concept_plan.pdf"), os.path.join(out, "concept_plan.png"), ctx["parcel_sp"], env, wet, fl, rds,
-                        ctx["aerial"], ctx["k"], res["sp"], res["labels"], title, res["metrics"], prog, rules, project=project)
-    write_concept_dxf(os.path.join(out, "existing_conditions.dxf"), os.path.join(out, "concept_layout.dxf"), res["sp"], res["labels"], ctx["k"])
+                        ctx["aerial"], ctx["k"], res["sp"], res["labels"], title, res["metrics"], prog, rules, project=project, existing=ex)
+    write_concept_dxf(os.path.join(out, "existing_conditions.dxf"), os.path.join(out, "concept_layout.dxf"), res["sp"], res["labels"], ctx["k"], existing=ex)
     with open(os.path.join(out, "layout.pkl"), "wb") as f:   # geometry for the 3D model / render step
-        pickle.dump({"sp": res["sp"], "metrics": res["metrics"], "labels": res["labels"], "frame_angle_deg": res["frame_angle_deg"]}, f)
+        pickle.dump({"sp": res["sp"], "metrics": res["metrics"], "labels": res["labels"], "frame_angle_deg": res["frame_angle_deg"], "existing": ex}, f)
     supa.upload(job_id, os.path.join(out, "layout.pkl"))
     files = {n: supa.upload(job_id, os.path.join(out, n)) for n in ("existing_conditions.dxf", "existing_conditions.pdf", "existing_conditions.png")}
     lay = {n: supa.upload(job_id, os.path.join(out, n)) for n in ("concept_plan.pdf", "concept_plan.png", "concept_layout.dxf")}

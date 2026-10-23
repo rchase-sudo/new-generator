@@ -22,6 +22,7 @@ LAYERS = {
     "E-WET-EDGE": 3,       # wetland limit
     "E-WET-HATCH": 3,
     "E-FLOOD": 5,          # FEMA flood zone (blue)
+    "E-BLDG-EXIST": 30,    # existing buildings (orange)
     "E-ROAD-CL": 1,        # road centerline (red)
     "E-PAVE-EDGE": 8,      # existing edge of pavement (approximate)
     "E-TEXT": 7,
@@ -124,7 +125,7 @@ def envelope(parcel, edges, setbacks_ft, k_ft):
 
 
 # ---------------------------------------------------------------- DXF
-def write_dxf(path, parcel, env, setback_line, wet, fl, rds, aerial_img_name, aerial_extent, aerial_px, labels):
+def write_dxf(path, parcel, env, setback_line, wet, fl, rds, aerial_img_name, aerial_extent, aerial_px, labels, bld=None):
     doc = ezdxf.new("R2018", setup=True)
     doc.header["$INSUNITS"] = 2  # feet
     doc.header["$MEASUREMENT"] = 0
@@ -163,6 +164,9 @@ def write_dxf(path, parcel, env, setback_line, wet, fl, rds, aerial_img_name, ae
     for f in fl:
         for p in _polys(f["geom"]):
             ring(p.exterior, "E-FLOOD")
+    for b in bld or []:
+        for p in _polys(b["geom"]):
+            ring(p.exterior, "E-BLDG-EXIST", width=0.5)
     for r in rds:
         cl = r["centerline"]
         for ln in getattr(cl, "geoms", [cl]):
@@ -176,7 +180,7 @@ def write_dxf(path, parcel, env, setback_line, wet, fl, rds, aerial_img_name, ae
 
 
 # ---------------------------------------------------------------- PDF / PNG sheet
-def write_sheet(pdf_path, png_path, parcel, env, setback_line, wet, fl, rds, aerial, k_ft, title_lines, facts):
+def write_sheet(pdf_path, png_path, parcel, env, setback_line, wet, fl, rds, aerial, k_ft, title_lines, facts, bld=None, actions=None):
     minx, miny, maxx, maxy = aerial["extent"]
     W_in, H_in = 34.0, 22.0   # ANSI D
     S = 2.0                    # type / line scale vs. the 17x11 layout
@@ -202,6 +206,15 @@ def write_sheet(pdf_path, png_path, parcel, env, setback_line, wet, fl, rds, aer
         for ln in getattr(r["centerline"], "geoms", [r["centerline"]]):
             xs, ys = ln.xy
             ax.plot(xs, ys, color=(1, 0.35, 0.3, 0.8), lw=0.8 * S, ls=(0, (10, 3, 2, 3)))
+    for b in bld or []:
+        st = (actions or {}).get(b.get("id"))
+        col = "#ff3b30" if st == "demo" else "#ff9f1a"
+        draw(b["geom"], fill=True, facecolor=(*matplotlib.colors.to_rgb(col), 0.38), edgecolor=col, lw=1.2 * S, ls="--" if st == "demo" else "-")
+        if b.get("id"):
+            c = b["geom"].representative_point()
+            tag = {"demo": "DEMOLISH", "keep": "KEEP"}.get(st, "")
+            ax.text(c.x, c.y, f"{b['id']}\n{b['area_sf']:,.0f} SF" + (f"\n{tag}" if tag else ""), ha="center", va="center", fontsize=6.5 * S,
+                    color="w", weight="bold", bbox=dict(boxstyle="square,pad=0.2", fc=(0, 0, 0, 0.55), ec="none"), zorder=20)
     if setback_line is not None:
         draw(setback_line, fill=False, edgecolor="#f5d33c", lw=1.4 * S, ls=(0, (6, 4)))
     draw(parcel, fill=False, edgecolor="#e040e8", lw=2.6 * S)
@@ -226,12 +239,14 @@ def write_sheet(pdf_path, png_path, parcel, env, setback_line, wet, fl, rds, aer
     y -= 0.01
     leg = [("#e040e8", "-", "Property line"), ("#f5d33c", "--", "Zoning setback"), ("#3cf0a0", "--", "Wetlands (NWI)"),
            ("#4d8cff", "--", "FEMA flood zone (SFHA)"), ("#ff5a4d", "-.", "Road centerline (OSM)")]
+    if bld:
+        leg.append(("#ff9f1a", "-", "Existing building"))
     for c, ls, lab in leg:
         ip.plot([0.06, 0.18], [y, y], color=c, lw=2 * S, ls=ls, transform=ip.transAxes)
         ip.text(0.22, y, lab, fontsize=8 * S, va="center", transform=ip.transAxes)
         y -= 0.03
     ip.text(0.06, 0.05, f"Aerial: {aerial.get('source','NAIP')} (USDA NAIP)\nWetlands: USFWS NWI (not a delineation)\n"
-            "Flood: FEMA NFHL · Roads: OpenStreetMap\nPreliminary — not a survey. Not for construction.",
+            "Flood: FEMA NFHL · Roads: OpenStreetMap\nBuildings: OpenStreetMap / USA Structures\nPreliminary — not a survey. Not for construction.",
             fontsize=6.5 * S, color="#555", va="bottom", transform=ip.transAxes)
     fig.savefig(pdf_path)
     fig.savefig(png_path, dpi=40)
@@ -239,7 +254,7 @@ def write_sheet(pdf_path, png_path, parcel, env, setback_line, wet, fl, rds, aer
 
 
 # ---------------------------------------------------------------- main entry
-def build(out_dir, parcel_sp, epsg, k_ft, aerial, wet, fl, rds, setbacks_ft=None, listing=None):
+def build(out_dir, parcel_sp, epsg, k_ft, aerial, wet, fl, rds, setbacks_ft=None, listing=None, bld=None, actions=None):
     os.makedirs(out_dir, exist_ok=True)
     wet = [] if isinstance(wet, dict) else wet
     fl = [] if isinstance(fl, dict) else fl
@@ -278,7 +293,12 @@ def build(out_dir, parcel_sp, epsg, k_ft, aerial, wet, fl, rds, setbacks_ft=None
             labels.append({"text": r["name"].upper(), "at": (p.x, p.y), "h": 7 / k_ft, "rot": rot})
 
     dxf_path = os.path.join(out_dir, "existing_conditions.dxf")
-    write_dxf(dxf_path, parcel_sp, env, setback_line, wet, fl, rds, aerial_name, aerial["extent"], aerial["image"].size, labels)
+    bld = [b for b in (bld or []) if b["geom"].intersects(ext)] if isinstance(bld, list) else []
+    for b in bld:
+        if b.get("id"):
+            c = b["geom"].representative_point()
+            labels.append({"text": f"EXISTING {b['id']}\\P{b['area_sf']:,.0f} SF", "at": (c.x, c.y), "h": 3.0 / k_ft})
+    write_dxf(dxf_path, parcel_sp, env, setback_line, wet, fl, rds, aerial_name, aerial["extent"], aerial["image"].size, labels, bld)
 
     L = listing or {}
     title = [x for x in [L.get("street_address") and f"{L.get('lot') + ', ' if L.get('lot') else ''}{L.get('street_address')}",
@@ -286,9 +306,10 @@ def build(out_dir, parcel_sp, epsg, k_ft, aerial, wet, fl, rds, setbacks_ft=None
     facts = [("Parcel area (GIS)", f"{ac(parcel_sp):.2f} ac"), ("Listing area", f"{L['acres']} ac" if L.get("acres") else "—"),
              ("Zoning", L.get("zoning") or "—"), ("Road frontage", f"{front_ft:,.0f} ft" + (f" · {', '.join(fronting)}" if fronting else "")),
              ("Mapped wetlands on parcel", f"{ac(wet_in):.2f} ac"), ("FEMA flood (SFHA) on parcel", f"{ac(sfha):.2f} ac"),
+             *([("Existing buildings on parcel", f"{sum(1 for b in bld if b.get('id'))} · {sum(b['area_sf'] for b in bld if b.get('id')):,.0f} SF")] if bld else []),
              ("Buildable (envelope − wetland − flood)", f"{ac(buildable):.2f} ac" if setbacks_ft else "setbacks pending")]
     write_sheet(os.path.join(out_dir, "existing_conditions.pdf"), os.path.join(out_dir, "existing_conditions.png"),
-                parcel_sp, env, setback_line, wet, fl, rds, aerial, k_ft, title, facts)
+                parcel_sp, env, setback_line, wet, fl, rds, aerial, k_ft, title, facts, bld, actions)
 
     summary = {
         "epsg": epsg, "parcel_acres": round(ac(parcel_sp), 3), "frontage_ft": round(front_ft), "fronting_roads": fronting,

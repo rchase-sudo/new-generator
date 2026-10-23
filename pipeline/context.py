@@ -5,7 +5,7 @@ import math
 
 import numpy as np
 from PIL import Image
-from shapely.geometry import LineString, box, shape
+from shapely.geometry import LineString, Polygon, box, shape
 from shapely.ops import unary_union
 
 from .geo import to_crs
@@ -256,3 +256,84 @@ def road_aliases(lat, lon, radius_m=500):
                 groups.append(toks)
         return groups
     return []
+
+
+# ---------------------------------------------------------------- existing buildings
+STRUCTURES_LAYER = "https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/USA_Structures_View/FeatureServer/0"   # FEMA / ORNL USA Structures
+MIN_BLDG_SF = 120.0
+
+
+def _bldg_kind(t):
+    b = (t.get("building") or "yes").lower()
+    return {"house": "House", "detached": "House", "residential": "House", "apartments": "Apartments", "garage": "Garage", "garages": "Garage",
+            "shed": "Shed", "barn": "Barn", "farm_auxiliary": "Farm building", "greenhouse": "Greenhouse", "commercial": "Commercial building",
+            "retail": "Retail building", "industrial": "Industrial building", "warehouse": "Warehouse", "church": "Church", "roof": "Carport / canopy",
+            "carport": "Carport", "cabin": "Cabin", "static_caravan": "Mobile home", "ruins": "Ruins", "service": "Service building"}.get(b, "Building")
+
+
+def _osm_buildings(bb_ll, epsg, k, budget=100):
+    q = f"""[out:json][timeout:50];way["building"]({bb_ll[1]},{bb_ll[0]},{bb_ll[3]},{bb_ll[2]});out geom tags;"""
+    js, deadline = None, time.time() + budget
+    for u in OVERPASS:
+        if time.time() > deadline:
+            break
+        try:
+            js = post(u, data={"data": q}, timeout=min(45, max(5, deadline - time.time())), tries=1).json()
+            break
+        except Exception:  # noqa: BLE001
+            continue
+    if js is None:
+        raise RuntimeError("Overpass unavailable")
+    out = []
+    for el in js.get("elements", []):
+        pts = [(p["lon"], p["lat"]) for p in el.get("geometry", [])]
+        if len(pts) < 4:
+            continue
+        t = el.get("tags", {})
+        g = to_crs(Polygon(pts), 4326, epsg).buffer(0)
+        if g.is_empty:
+            continue
+        out.append({"geom": g, "src": "OpenStreetMap", "kind": t.get("name") or _bldg_kind(t),
+                    "levels": _num(t.get("building:levels")), "osm_id": el.get("id")})
+    return out
+
+
+def _structures(extent_sp, epsg):
+    out = []
+    for g, p in _arcgis_polys(STRUCTURES_LAYER, extent_sp, epsg, "*"):
+        for q in getattr(g, "geoms", [g]):
+            if q.geom_type == "Polygon" and not q.is_empty:
+                out.append({"geom": q, "src": "USA Structures", "kind": "Building", "levels": None})
+    return out
+
+
+def buildings(extent_sp, epsg):
+    """Existing building footprints in the extent (state-plane polygons): OpenStreetMap plus the USA Structures
+    footprint inventory (which covers the buildings OSM volunteers haven't mapped). Either source may fail."""
+    from .geo import units_to_ft
+    k = units_to_ft(epsg)
+    minx, miny, maxx, maxy = extent_sp
+    bb_ll = to_crs(box(minx, miny, maxx, maxy), epsg, 4326).bounds
+    osm, st, errs = [], [], []
+    try:
+        osm = _osm_buildings(bb_ll, epsg, k)
+    except Exception as e:  # noqa: BLE001
+        errs.append(f"OSM: {str(e)[:80]}")
+    try:
+        st = _structures(extent_sp, epsg)
+    except Exception as e:  # noqa: BLE001
+        errs.append(f"USA Structures: {str(e)[:80]}")
+    if errs and not osm and not st:
+        return {"error": "; ".join(errs)}
+    out = list(osm)
+    for s in st:   # keep structures OSM doesn't already have
+        a = s["geom"].area
+        if a and not any(o["geom"].intersection(s["geom"]).area > 0.3 * a for o in osm):
+            out.append(s)
+    res = []
+    for b in out:
+        g = b["geom"].simplify(0.4 / k)
+        if g.is_empty or g.area * k * k < MIN_BLDG_SF:
+            continue
+        res.append({**b, "geom": g})
+    return res

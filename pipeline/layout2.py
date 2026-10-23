@@ -17,6 +17,7 @@ from shapely.geometry import LineString, Point, Polygon, box
 from shapely.ops import polylabel, unary_union
 
 from .ec_drawing import _polys, classify_edges, envelope, road_key
+from .existing import KEEP_CLEAR_FT
 from .layout import DEFAULT_PARK_SB, Frame, ada_required
 
 SW, SD, AIS, RING = 9.0, 18.0, 24.0, 24.0
@@ -506,8 +507,9 @@ def _pond(P, dev, constraints, target_sf):
 
 
 # ---------------------------------------------------------------- main
-def generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, parking_setbacks_ft=None, drive_road=None):
-    """drive_road: key of the road the driveway must connect to (ec_drawing.road_key); None = longest frontage."""
+def generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, parking_setbacks_ft=None, drive_road=None, keep_bldgs=None):
+    """drive_road: key of the road the driveway must connect to (ec_drawing.road_key); None = longest frontage.
+    keep_bldgs: footprints of existing buildings that stay; the layout treats them (plus clearance) like wetlands."""
     rules = rules or {}
     wet = [] if isinstance(wet, dict) else wet
     fl = [] if isinstance(fl, dict) else fl
@@ -530,7 +532,8 @@ def generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, pa
     else:
         from .zoning import pavement_setbacks
         psb = {k: v for k, v in pavement_setbacks(rules, setbacks_ft).items() if k != "source"}
-    C = unary_union([w["geom"] for w in wet] + [f["geom"] for f in fl if f.get("sfha") == "T"])
+    KEEP = unary_union([g.buffer(KEEP_CLEAR_FT / k_ft) for g in (keep_bldgs or [])]) if keep_bldgs else None
+    C = unary_union([w["geom"] for w in wet] + [f["geom"] for f in fl if f.get("sfha") == "T"] + ([KEEP] if KEEP is not None else []))
     C = fr.fwd(C.intersection(parcel_sp.buffer(50 / k_ft))) if not C.is_empty else Polygon()
     bz = fr.fwd(envelope(parcel_sp, edges, setbacks_ft, k_ft)).difference(C).buffer(0)
     pz = fr.fwd(envelope(parcel_sp, edges, psb, k_ft)).difference(C).buffer(0)
@@ -712,6 +715,11 @@ def generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, pa
         "parking_setbacks_ft": psb, "setbacks_ft": setbacks_ft,
     }
     warn = []
+    if keep_bldgs:
+        kb = fr.fwd(unary_union(list(keep_bldgs)))
+        if dev.intersects(kb.buffer(2.0)):
+            warn.append("The layout touches an existing building that is marked to remain")
+        metrics["existing_kept"] = len(keep_bldgs)
     if n_st < req:
         warn.append(f"Parking short: {n_st} provided vs {req} required")
     if scale < 1:

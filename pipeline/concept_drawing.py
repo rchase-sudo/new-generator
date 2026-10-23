@@ -37,7 +37,7 @@ LSPACE = (TXT_H * 72 * 5 / 3) / LFS   # AutoCAD MText line spacing 1.0 (1.667 x 
 T = SHEET_W / 17.0              # title-block type / line scale vs. the 17x11 layout
 
 P_LAYERS = {"P-BLDG": 1, "P-BLDG-HATCH": 8, "P-PAVE-EDGE": 7, "P-CURB": 9, "P-PARKING-STRIPE": 7, "P-ADA": 5,
-            "P-WALK": 9, "P-LANDSCAPE": 3, "P-POND": 4, "P-TEXT": 7}
+            "P-WALK": 9, "P-LANDSCAPE": 3, "P-POND": 4, "P-TEXT": 7, "P-EXIST-KEEP": 30, "P-EXIST-DEMO": 1}
 
 # title block geometry (pixels of forma_titleblock.jpg, 2576 x 1667)
 TB_W, TB_H = 2576, 1667
@@ -58,7 +58,7 @@ BLDG_H = 22.0                # ft, for shadow length
 
 
 # ---------------------------------------------------------------- DXF
-def write_dxf(ec_dxf, out_path, sp, labels, k_ft):
+def write_dxf(ec_dxf, out_path, sp, labels, k_ft, existing=None):
     doc = ezdxf.readfile(ec_dxf)
     for n, c in P_LAYERS.items():
         if n not in doc.layers:
@@ -92,6 +92,17 @@ def write_dxf(ec_dxf, out_path, sp, labels, k_ft):
         msp.add_circle((c.x, c.y), math.sqrt(t.area / math.pi), dxfattribs={"layer": "P-TREE"})
     if sp.get("pond") is not None:
         ring(sp["pond"], "P-POND", width=0.3 / k_ft)
+    for e in existing or []:
+        ring(e["geom"], "P-EXIST-KEEP" if e["action"] == "keep" else "P-EXIST-DEMO", width=0.5 / k_ft)
+        if e["action"] == "demo":   # X through the footprint, the usual demolition mark
+            for p in _polys(e["geom"]):
+                x0, y0, x1, y1 = p.minimum_rotated_rectangle.bounds
+                msp.add_line((x0, y0), (x1, y1), dxfattribs={"layer": "P-EXIST-DEMO"})
+                msp.add_line((x0, y1), (x1, y0), dxfattribs={"layer": "P-EXIST-DEMO"})
+        c = e["geom"].representative_point()
+        mt = msp.add_mtext(f"EXISTING {e['id']} TO BE {'DEMOLISHED' if e['action'] == 'demo' else 'RETAINED'}\\P{e['sf']:,.0f} SF",
+                           dxfattribs={"layer": "P-TEXT", "char_height": 2.5 / k_ft, "insert": (c.x, c.y), "attachment_point": 5, "rotation": 0})
+        mt.set_bg_color("canvas", scale=1.3)
     for t in labels:
         h = (2.0 if t.get("small") else 3.0) / k_ft
         mt = msp.add_mtext("\\P".join(t["lines"]), dxfattribs={"layer": "P-TEXT", "char_height": h, "insert": t["at"],
@@ -182,7 +193,7 @@ def _view(sp, parcel, aerial, k_ft, aspect):
 
 
 def write_sheet(pdf_path, png_path, parcel, env, wet, fl, rds, aerial, k_ft, sp, labels, title_lines, metrics, program, rules,
-                project=None):
+                project=None, existing=None):
     fig = plt.figure(figsize=(SHEET_W, SHEET_H), dpi=100)
     bg = fig.add_axes([0, 0, 1, 1])
     bg.axis("off")
@@ -245,6 +256,16 @@ def write_sheet(pdf_path, png_path, parcel, env, wet, fl, rds, aerial, k_ft, sp,
             _patch(ax, extra, 9.7, facecolor="none", edgecolor=C_DARK, lw=lw_ft(1.1), joinstyle="miter")
             _patch(ax, affinity.translate(extra, 0.8 / k_ft, -0.8 / k_ft).difference(extra).intersection(b), 9.65, facecolor=(0.18, 0.23, 0.29, 0.6), edgecolor="none")
 
+    for e in existing or []:
+        if e["action"] == "keep":
+            _patch(ax, e["geom"], 9.2, facecolor="#aeb4bb", edgecolor=C_DARK, lw=lw_ft(1.2), joinstyle="miter")
+        else:
+            _patch(ax, e["geom"], 9.2, facecolor=(1, 0.2, 0.2, 0.22), edgecolor="#ff3b30", lw=lw_ft(1.2), ls=(0, (5, 3)))
+            for p in _polys(e["geom"]):
+                x0_, y0_, x1_, y1_ = p.minimum_rotated_rectangle.bounds
+                ax.plot([x0_, x1_], [y0_, y1_], color="#ff3b30", lw=lw_ft(0.8), zorder=9.3)
+                ax.plot([x0_, x1_], [y1_, y0_], color="#ff3b30", lw=lw_ft(0.8), zorder=9.3)
+
     # ornamental trees: NE shadow, canopy with a lit south-west side
     from matplotlib.patches import Circle
     for t in sp.get("trees") or []:
@@ -266,6 +287,10 @@ def write_sheet(pdf_path, png_path, parcel, env, wet, fl, rds, aerial, k_ft, sp,
     box_kw = dict(boxstyle=f"square,pad={TXT_H * 72 * 0.5 / LFS:.3f}", fc="w", ec="none")
     bldgs = [b for b in sp["bldgs"] if b is not None]
     hard = unary_union([b.buffer(3 / k_ft) for b in bldgs]) if bldgs else None
+    ex_keep = [e for e in existing or [] if e["action"] == "keep"]
+    if ex_keep:
+        eh = unary_union([e["geom"].buffer(3 / k_ft) for e in ex_keep])
+        hard = eh if hard is None else hard.union(eh)
     if sp.get("pond") is not None:
         hard = sp["pond"] if hard is None else hard.union(sp["pond"])
     placed = []
@@ -310,6 +335,11 @@ def write_sheet(pdf_path, png_path, parcel, env, wet, fl, rds, aerial, k_ft, sp,
         target = bldgs[bi] if bi < len(bldgs) else None
         bi += 1
         place(t["lines"], t["at"], target, LFS)
+    for e in existing or []:
+        c = e["geom"].representative_point()
+        if not (vx0 < c.x < vx1 and vy0 < c.y < vy1):
+            continue
+        place([f"EXISTING {e['id']}", "TO BE DEMOLISHED" if e["action"] == "demo" else "TO REMAIN", f"{e['sf']:,.0f} SF"], (c.x, c.y), e["geom"], LFS)
     for w in wet:
         g = w["geom"].intersection(parcel)
         if g.is_empty or g.area < 2000 / k_ft ** 2:
