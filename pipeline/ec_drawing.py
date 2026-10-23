@@ -265,6 +265,9 @@ def write_sheet(pdf_path, png_path, parcel, env, setback_line, wet, fl, rds, aer
     for b in bld or []:
         st = (actions or {}).get(b.get("id"))
         col = "#ff3b30" if st == "demo" else "#ff9f1a"
+        if not b.get("id"):     # neighbours: context only
+            draw(b["geom"], fill=True, facecolor=(1, 0.62, 0.1, 0.12), edgecolor=(1, 0.62, 0.1, 0.55), lw=0.6 * S)
+            continue
         draw(b["geom"], fill=True, facecolor=(*matplotlib.colors.to_rgb(col), 0.38), edgecolor=col, lw=1.2 * S, ls="--" if st == "demo" else "-")
         if b.get("id"):
             c = b["geom"].representative_point()
@@ -302,7 +305,7 @@ def write_sheet(pdf_path, png_path, parcel, env, setback_line, wet, fl, rds, aer
     for c, ls, lab in leg:
         ip.plot([0.06, 0.18], [y, y], color=c, lw=2 * S, ls=ls, transform=ip.transAxes)
         ip.text(0.22, y, lab, fontsize=8 * S, va="center", transform=ip.transAxes)
-        y -= 0.03
+        y -= 0.03 if len(leg) <= 7 else 0.0245
     ip.text(0.06, 0.05, f"Aerial: {aerial.get('source','NAIP')} (USDA NAIP)\nWetlands: USFWS NWI (not a delineation)\n"
             "Flood: FEMA NFHL · Roads: OpenStreetMap\nBuildings: OpenStreetMap / USA Structures\nPreliminary — not a survey. Not for construction.",
             fontsize=6.5 * S, color="#555", va="bottom", transform=ip.transAxes)
