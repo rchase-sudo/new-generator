@@ -183,7 +183,7 @@ def step_ec(job_id):
     got = {}
     t_end = _t.time() + 240
     for attempt in range(2):
-        todo = [n for n in fetch if n not in got or isinstance(got[n], dict)]
+        todo = [n for n in fetch if n not in got or (isinstance(got[n], dict) and (n != "topo" or "error" in got[n]))]
         if not todo or _t.time() > t_end - 30:
             break
         ex = _cf.ThreadPoolExecutor(max_workers=5)
@@ -196,13 +196,13 @@ def step_ec(job_id):
                 got[n] = {"error": f"{type(e).__name__}: {e}"[:200]}
         ex.shutdown(wait=False, cancel_futures=True)
     wet, fl, rds = got.get("wetlands", {"error": "timed out"}), got.get("flood", {"error": "timed out"}), got.get("roads", {"error": "timed out"})
-    if isinstance(rds, dict):
+    if isinstance(rds, dict) and "error" in rds:
         # without roads there is no front, no setbacks by edge and nothing for the driveway to meet: stop, don't guess
         raise RuntimeError("Road data is unavailable right now (OpenStreetMap and Census both failed). Retry in a few minutes.")
     bld_raw = got.get("bld", {"error": "timed out"})
     dem = got.get("topo", {"error": "timed out"})
-    warnings = [f"{n}: {v['error']}" for n, v in (("wetlands", wet), ("flood", fl), ("roads", rds), ("buildings", bld_raw), ("topography", dem)) if isinstance(v, dict)]
-    dem = None if "error" in dem else topo_mod.analyze(dem)
+    warnings = [f"{n}: {v['error']}" for n, v in (("wetlands", wet), ("flood", fl), ("roads", rds), ("buildings", bld_raw), ("topography", dem)) if isinstance(v, dict) and "error" in v]
+    dem = None if (isinstance(dem, dict) and "error" in dem) else topo_mod.analyze(dem)
     if dem:
         dem.pop("z", None)
     from . import existing
