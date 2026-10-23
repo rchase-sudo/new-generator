@@ -37,6 +37,15 @@ def wait(job_id, until, timeout=1500):
     raise SystemExit("timed out")
 
 
+if sys.argv[1].startswith("rerun:"):   # rerun:<job_id>:<step> -- re-run one step of an existing job and report
+    _, job_id, step = sys.argv[1].split(":", 2)
+    api(action="rerun", job_id=job_id, step=step)
+    time.sleep(8)
+    j = wait(job_id, {"awaiting_parcel", "awaiting_zoning", "awaiting_layout", "ec_ready"})
+    print(json.dumps({k: j.get(k) for k in ("status", "error", "parcel_source", "county_layer", "geocode")}, indent=1, default=str))
+    print(json.dumps([{k: c.get(k) for k in ("source", "acres", "apn", "address", "zoning", "score")} for c in (j.get("candidates") or [])][:6], indent=1))
+    sys.exit(0 if j["status"] != "error" else 1)
+
 if sys.argv[1].startswith("package:"):   # build the due diligence package for an existing rendered job
     job_id = sys.argv[1].split(":", 1)[1]
     out = os.path.join("test_runs", job_id)

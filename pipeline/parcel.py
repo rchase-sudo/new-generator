@@ -81,7 +81,7 @@ def regrid_search(listing, lat, lon, epsg, radius_m=300, limit=80):
             return []
 
     for apn in _apns(listing):
-        feats += call("apn", parcelnumber=apn, limit=5)
+        feats += call("apn", parcelnumb=apn, limit=5)
     feats += call("point", lat=lat, lon=lon, radius=radius_m, limit=limit)
     out = []
     for f in feats:
@@ -229,6 +229,9 @@ def discover_county_layer(listing):
     if not key:
         return None
     county, state = listing.get("county"), listing.get("state")
+    if not county or not state:   # nothing to search for (callers fill county from the geocode first)
+        return None
+    county = re.sub(r"\s+(County|Parish|Borough)$", "", str(county), flags=re.I)
     q = (f"Find the public ArcGIS REST endpoint (MapServer or FeatureServer URL) for tax parcel polygons in {county} County, {state}. "
          "Reply with ONLY the URL, ending in /MapServer, /FeatureServer, or a numbered layer. Reply NONE if not found.")
     r = post("https://api.anthropic.com/v1/messages",

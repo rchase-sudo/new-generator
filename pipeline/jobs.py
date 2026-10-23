@@ -97,6 +97,12 @@ def step_parse(job_id):
     listing = job.get("listing") or parse_listing(job["listing_text"])
     supa.update_job(job_id, listing=listing, progress="Locating property")
     lat, lon, label = geocode(listing)
+    if not listing.get("county"):   # listings often omit it; the county parcel-GIS fallback needs it
+        from .geo import county_at
+        cty, st = county_at(lat, lon)
+        if cty:
+            listing = {**listing, "county": cty, "state": listing.get("state") or st}
+            supa.update_job(job_id, listing=listing)
     epsg = state_plane_epsg(lat, lon)
     k = units_to_ft(epsg)
 

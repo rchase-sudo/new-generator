@@ -1,4 +1,5 @@
 """Geocoding, state-plane selection and coordinate transforms."""
+import re
 from functools import lru_cache
 
 from pyproj import CRS, Transformer
@@ -84,6 +85,25 @@ def geocode(listing: dict):
         except Exception:  # noqa: BLE001
             continue
     raise RuntimeError("Could not geocode the listing location")
+
+
+def county_at(lat, lon):
+    """County name (without 'County') and state code at a point: FCC Census Area API, then Nominatim reverse."""
+    try:
+        js = get("https://geo.fcc.gov/api/census/area", params={"lat": lat, "lon": lon, "censusYear": 2020, "format": "json"}, timeout=20).json()
+        r = (js.get("results") or [{}])[0]
+        if r.get("county_name"):
+            return re.sub(r"\s+(County|Parish|Borough|Census Area|Municipality)$", "", r["county_name"]), r.get("state_code")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        js = get("https://nominatim.openstreetmap.org/reverse", params={"lat": lat, "lon": lon, "format": "json", "zoom": 10}, timeout=20).json()
+        c = (js.get("address") or {}).get("county")
+        if c:
+            return re.sub(r"\s+(County|Parish|Borough)$", "", c), None
+    except Exception:  # noqa: BLE001
+        pass
+    return None, None
 
 
 @lru_cache(maxsize=256)
