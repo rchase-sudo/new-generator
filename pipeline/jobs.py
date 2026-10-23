@@ -82,11 +82,15 @@ def _run(job_id, step):
             step_render_composite(job_id)
         elif step == "package":
             step_package(job_id)
+        elif step == "design":
+            step_design(job_id)
         else:
             raise ValueError(f"unknown step {step}")
     except Exception as e:  # noqa: BLE001
         if step in ("render", "render_composite"):   # a failed render never invalidates an approved plan
             supa.update_job(job_id, render_status="failed", render_error=f"{type(e).__name__}: {e}"[:1500])
+        elif step == "design":   # the full design phase is optional and never touches the approved plan
+            supa.update_job(job_id, design_status="failed", design_error=f"{type(e).__name__}: {e}"[:1500])
         elif step == "package":
             supa.update_job(job_id, package_status="failed", package_error=f"{type(e).__name__}: {e}"[:1500])
         else:
@@ -519,3 +523,20 @@ def step_package(job_id):
     outputs["package"] = {"package.pdf": key}
     summary = {**(supa.get_job(job_id).get("summary") or {}), "package_name": name}
     supa.update_job(job_id, outputs=outputs, summary=summary, package_status="completed", package_error=None)
+
+
+def step_design(job_id):
+    """Full design phase (post-pipeline, optional): grading, drainage, utilities and a preliminary plan set from the approved layout."""
+    from .fd import planset
+    job = supa.get_job(job_id)
+    supa.update_job(job_id, design_status="designing", design_error=None)
+    ctx = _load_ctx(job_id)
+    lay = pickle.loads(supa.download(job_id, "layout.pkl"))
+    out = tempfile.mkdtemp()
+    res = planset.build(ctx, lay, job, out, prog_cb=lambda m: supa.update_job(job_id, design_status="designing", progress=m))
+    files = {"plan_set.pdf": supa.upload(job_id, res["pdf"])}
+    for p in res["pngs"]:
+        files[os.path.basename(p)] = supa.upload(job_id, p)
+    outputs = supa.get_job(job_id).get("outputs") or {}
+    outputs["design"] = files
+    supa.update_job(job_id, outputs=outputs, design=planset.summary(res["X"]), design_status="completed", design_error=None, progress="Plan set ready")
