@@ -502,6 +502,8 @@ def erosion(g, G, L, util, D, net, spine):
     lod = g.cell_poly(G["lod_mask"]).buffer(4).buffer(-2)
     lod = unary_union([p for p in polys(lod) if p.area > 400]) if not lod.is_empty else lod
     lod = lod.simplify(2.0)
+    if L.get("parcel") is not None and not lod.is_empty:
+        lod = lod.intersection(L["parcel"].buffer(-1.5))      # never outside the property line
     out = {"lod": lod, "lod_ac": round(lod.area / 43560.0, 2)}
     # silt sock along the downhill side of the LOD, outside the pavement entrance
     ring = lod.boundary

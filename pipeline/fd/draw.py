@@ -13,7 +13,7 @@ from .sheetbase import BLUE, BROWN, CYAN, EXIST, GREEN, GREY, INK, LGREY, RED
 def parcel_labels(S, X, ctx_parcel_sp, fr, dim=True, name=True):
     L = X["L"]
     P = L["parcel"]
-    S.poly(P, ec=INK, lw=2.2, z=12)
+    S.poly(P, ec=INK, lw=2.2, z=48)
     if not dim:
         return
     # bearings / distances on every straight run longer than 40 ft (computed in state plane so bearings are true)

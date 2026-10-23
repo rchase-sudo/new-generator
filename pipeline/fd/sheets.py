@@ -207,7 +207,7 @@ def c2(meta, X):
     _legend(S, 0.015, 0.74, [("line", dict(color=INK, lw=1.6), "Proposed building"), ("line", dict(color=INK, lw=1.2), "Proposed curb / edge of pavement"),
                               ("line", dict(color=INK, lw=0.8, ls=(0, (9, 4, 2, 4))), "Building setback line"), ("line", dict(color=INK, lw=2.0), "Property line")])
     _apply_notes(S, ["All dimensions are to face of curb unless noted.", "Parking stalls per concept layout; verify count and ADA requirements with the local code.",
-                     "Proposed pavement section, curb and sidewalk details to be provided in final plans.", "Site lighting, landscaping, utilities and drainage are shown on sheets C5 – C10."],
+                     "Proposed pavement section, curb and sidewalk details to be provided in final plans.", "Site lighting, landscaping, utilities and drainage are shown on sheets C5 – C8."],
                  0.015, 0.50, title="SITE NOTES", width=5.6)
     _prelim_note(S)
     return S
@@ -277,7 +277,6 @@ def c4(meta, X):
     for p in polys(X["ER"]["lod"]):
         S.line(p.exterior, color=RED, lw=0.8, ls=(0, (10, 3, 2, 3)), z=12)
     _bldg_labels(S, X, with_ffe=True)
-    draw.stationing(S, X)
     # spot elevations along the pavement edge
     grid, z = X["grid"], X["z_prop"]
     seen = []
@@ -323,6 +322,7 @@ def c5(meta, X):
     L, D, net = X["L"], X["D"], X["net"]
     S = _site(meta, X, "C5", "DRAINAGE PLAN & CALCULATIONS")
     draw.road_layers(S, X)
+    draw.parcel_labels(S, X, X["parcel_sp"], X["frame"], dim=False)
     draw.contours(S, X, "pr", labels=False)
     draw.proposed_base(S, X, fill=False)
     pal = ["#d94f4f", "#3b82c4", "#4aa564", "#c58a1d", "#8a5fc7"]
@@ -511,7 +511,7 @@ def c7(meta, X):
     ext = [U["corridor"].buffer(12), U["road_sewer"].buffer(15)] if onsite else [U["sewer_main"].buffer(12), U["water_main"].buffer(12), U["road_sewer"].buffer(15)]
     if onsite:
         ext += [Point(*U["well"]).buffer(110)] + [g for g in (U.get("field"), U.get("reserve")) if g is not None]
-    S = _site(meta, X, "C7", "UTILITY PLAN", extra=ext, margin=40)
+    S = _site(meta, X, "C6", "UTILITY PLAN", extra=ext, margin=40)
     draw.neighbor_buildings(S, X)
     draw.road_layers(S, X)
     draw.parcel_labels(S, X, X["parcel_sp"], X["frame"], dim=False)
@@ -616,7 +616,7 @@ def c7(meta, X):
         notes = ["Public water and sanitary sewer are ASSUMED in the selected main road. Obtain a will-serve letter and verify the main location, size, depth and capacity.",
                  "Lines run inside our own property from the property-line connection on the selected road, in a single corridor, and tap the road mains only at the right-of-way. Existing main invert is assumed 8 ft below the road surface.",
                  "Every change of direction or junction in the sewer is a manhole; sewer drops 0.1 ft through each manhole and runs at 0.50%. Deep or shallow structures and lift-station needs are flagged below.",
-                 "Water main 8\" minimum for fire flow; hydrants spaced per the fire plan (C8). Provide thrust restraint, backflow prevention and meter per utility standards. Maintain 10 ft horizontal / 18 in vertical separation between water and sewer.",
+                 "Water main 8\" minimum for fire flow; hydrant spacing per the local fire marshal. Provide thrust restraint, backflow prevention and meter per utility standards. Maintain 10 ft horizontal / 18 in vertical separation between water and sewer.",
                  "Dry utilities (electric, gas, communications) are schematic; coordinate routing, easements and transformer location with the providers."]
     _apply_notes(S, notes + list(U["warnings"]) + list(U["notes"]), 0.015, 0.29, title="UTILITY NOTES", width=7.6)
     S.call811()
@@ -665,7 +665,7 @@ def c8(meta, X):
 # ======================================================================== C9 landscape
 def c9(meta, X):
     L, LS = X["L"], X["LS"]
-    S = _site(meta, X, "C9", "LANDSCAPE PLAN")
+    S = _site(meta, X, "C7", "LANDSCAPE PLAN")
     draw.road_layers(S, X)
     draw.parcel_labels(S, X, X["parcel_sp"], X["frame"], dim=False)
     if L.get("grass") is not None:
@@ -697,7 +697,7 @@ def c9(meta, X):
 # ======================================================================== C10 lighting
 def c10(meta, X):
     L, LT = X["L"], X["LT"]
-    S = _site(meta, X, "C10", "SITE LIGHTING PLAN")
+    S = _site(meta, X, "C8", "SITE LIGHTING PLAN")
     draw.road_layers(S, X)
     draw.parcel_labels(S, X, X["parcel_sp"], X["frame"], dim=False)
     draw.proposed_base(S, X)
@@ -727,5 +727,5 @@ def c10(meta, X):
 
 
 ALL = [("T1", "TITLE SHEET", t1), ("C1", "EXISTING CONDITIONS PLAN", c1), ("C2", "SITE DEVELOPMENT PLAN", c2), ("C3", "EROSION CONTROL & DEMOLITION PLAN", c3),
-       ("C4", "GRADING & PAVING PLAN", c4), ("C5", "DRAINAGE PLAN & CALCULATIONS", c5), ("C6", "PROFILES", c6), ("C7", "UTILITY PLAN", c7),
-       ("C8", "FIRE PROTECTION PLAN", c8), ("C9", "LANDSCAPE PLAN", c9), ("C10", "SITE LIGHTING PLAN", c10)]
+       ("C4", "GRADING & PAVING PLAN", c4), ("C5", "DRAINAGE PLAN & CALCULATIONS", c5), ("C6", "UTILITY PLAN", c7),
+       ("C7", "LANDSCAPE PLAN", c9), ("C8", "SITE LIGHTING PLAN", c10)]
