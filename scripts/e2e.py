@@ -49,6 +49,22 @@ if sys.argv[1].startswith("rerun:"):   # rerun:<job_id>:<step> -- re-run one ste
     print(json.dumps([{k: c.get(k) for k in ("source", "acres", "apn", "address", "zoning", "score")} for c in (j.get("candidates") or [])][:6], indent=1))
     sys.exit(0 if j["status"] != "error" else 1)
 
+if sys.argv[1].startswith("design:"):   # build the preliminary plan set for an approved job and save it under test_runs
+    job_id = sys.argv[1].split(":", 1)[1]
+    api(action="design", job_id=job_id)
+    for _ in range(120):
+        time.sleep(5)
+        j = api(action="status", job_id=job_id)
+        if j.get("design_status") in ("completed", "failed"):
+            break
+    out = os.path.join("test_runs", job_id)
+    os.makedirs(out, exist_ok=True)
+    import requests as _rq
+    for name, url in ((j.get("files") or {}).get("design") or {}).items():
+        open(os.path.join(out, "design_" + name), "wb").write(_rq.get(url, timeout=120).content)
+    print(json.dumps({k: j.get(k) for k in ("design_status", "design_error", "design")}, indent=1, default=str))
+    sys.exit(0 if j.get("design_status") == "completed" else 1)
+
 if sys.argv[1].startswith("package:"):   # build the due diligence package for an existing rendered job
     job_id = sys.argv[1].split(":", 1)[1]
     out = os.path.join("test_runs", job_id)
