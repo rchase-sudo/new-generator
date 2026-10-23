@@ -375,7 +375,10 @@ def storm_network(g, z_prop, D, L, rain, blocked_extra=None):
     warns = []
     for s in structs:
         if s["kind"] == "CB" and s.get("cover") is not None and s["cover"] < 2.0:
-            warns.append(f"{s['id']}: only {s['cover']} ft of cover over the outlet pipe; use RCP or raise grades")
+            if s["cover"] < 0:
+                warns.append(f"{s['id']}: the pond outfall is higher than this inlet, so gravity drainage does not work as drawn; lower the pond, regrade, or add a pump / forebay (engineer to resolve)")
+            else:
+                warns.append(f"{s['id']}: only {s['cover']} ft of cover over the outlet pipe; use RCP or raise grades")
         if s["kind"] == "CB" and s.get("inv_out") is not None and s["rim"] - s["inv_out"] > 12:
             warns.append(f"{s['id']}: structure deeper than 12 ft")
     return {"structs": structs, "pipes": pipes, "warnings": warns}
