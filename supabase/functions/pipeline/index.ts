@@ -3,6 +3,8 @@
 //   start           { listing_text, source?: "tool"|"crm", crm_ref? }            -> { job_id }
 //   approve_parcel  { job_id, index? | indexes?: number[], geometry?, setbacks? } -> { ok }  (several indexes = assemblage)
 //   approve_zoning  { job_id, setbacks?, parking_setbacks?, program?, zoning?, drive_road? } -> { ok }  (runs / re-runs the layout)
+//                   zoning.building_actions = { "E1": "keep" | "demo" } sets what happens to each existing building;
+//                   zoning.max_slope_pct = steepest ground (%) buildings / parking may use (0 = ignore slope)
 //   approve_layout  { job_id }                                                    -> { ok }  (starts the 3D model + render)
 //   render          { job_id }                                                    -> { ok }  (re-run the render)
 //   package         { job_id }                                                    -> { ok }  (due diligence package, after the render)

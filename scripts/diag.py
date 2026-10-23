@@ -15,6 +15,11 @@ raw = supa.download(job_id, "context.pkl")
 open(f"{out}/context.pkl", "wb").write(raw)
 j = supa.get_job(job_id)
 json.dump({k: j.get(k) for k in ("program", "zoning", "setbacks", "summary", "layout", "error", "listing")}, open(f"{out}/job.json", "w"), default=str)
+for nm in ("concept_plan.png", "existing_conditions.png"):
+    try:
+        open(f"{out}/{nm}", "wb").write(supa.download(job_id, nm))
+    except Exception as e:  # noqa: BLE001
+        print("no", nm, e)
 ctx = pickle.loads(raw)
 from pipeline.jobs import _extent_around  # noqa: E402
 ext = _extent_around(ctx["parcel_sp"], ctx["k"])
