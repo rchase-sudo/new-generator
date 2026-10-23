@@ -1,0 +1,43 @@
+{
+ "design_status": "completed",
+ "design_error": null,
+ "design": {
+  "hsg": "A",
+  "npdes": true,
+  "cut_cy": 5950,
+  "sheets": [
+   "T1",
+   "C1",
+   "C2",
+   "C3",
+   "C4",
+   "C5",
+   "C6",
+   "C7",
+   "C8"
+  ],
+  "fill_cy": 2070,
+  "pond_cf": 78007,
+  "warnings": [
+   "Pond top set 7.0 ft lower (bank 47.1) so the storm sewer can drain to it by gravity",
+   "Detention could not fully attenuate post to pre-development peaks within the layout's pond footprint at a 14.0 ft depth; the footprint cannot change, so reduce impervious area or add underground storage",
+   "The concept pond footprint is too narrow for 3:1 slopes at the depth needed; interior slopes are 1:1 (retaining walls / structural slopes) to hold the volume",
+   "The pond is 14.0 ft deep to hold the required volume inside the concept footprint; provide fencing / safety bench and confirm geotechnical and groundwater conditions",
+   "CB-2: only 0.8 ft of cover over the outlet pipe; use RCP or raise grades",
+   "DMH-1: only 1.3 ft of cover over the outlet pipe; use RCP or raise grades",
+   "CB-3: only 1.0 ft of cover over the outlet pipe; use RCP or raise grades",
+   "CB-4: the pond outfall is higher than this inlet, so gravity drainage does not work as drawn; lower the pond, regrade, or add a pump / forebay (engineer to resolve)",
+   "Gravity sewer cannot keep 4 ft of cover at SMH-3, SMH-4, SMH-5; a lift station or grinder pumps are likely required",
+   "Building 1: sewer lateral invert 52.3 is above the building outlet 46.4; pump or deeper main required",
+   "Part of the access drive is narrower than 22 ft clear; widen for fire apparatus",
+   "Centerline turning radius of about 14 ft is tight for a 100 ft ladder truck (inside radius of 25 ft needed)",
+   "The access drive is a dead end longer than 150 ft; confirm an approved turnaround for apparatus"
+  ],
+  "parcel_ac": 12.91,
+  "orifice_in": 6,
+  "pond_top_sf": 7907,
+  "rain_source": "NOAA Atlas 14 (point precipitation frequency estimates)",
+  "disturbed_ac": 2.39,
+  "soils_source": "USDA NRCS Soil Data Access"
+ }
+}
