@@ -95,7 +95,8 @@ def build(ctx, lay, job, rules, prog, log=print):
     G["z_prop"], G["z_design2"], G["design_mask2"] = z_prop, zd, dmask
     net = drainage.storm_network(g, z_prop, D, L, rain)
     deep = max([s.get("rim", 0) - s.get("inv_out", 0) for s in net["structs"] if s["kind"] == "CB" and s.get("inv_out") is not None] or [0])
-    if deep > 9.0:     # the layout's pond sits too far below the pavement for a shallow gravity system: site it next to the lot instead
+    tight = min([s_.get("cover", 9.0) for s_ in net["structs"] if s_["kind"] == "CB"] or [9.0])
+    if deep > 9.0 or tight < 1.5:     # the layout's pond sits too far below the pavement for a shallow gravity system: site it next to the lot instead
         seed = drainage.site_pond(g, ex_z, z0, G, L, D["inlets"])
         if seed is not None:
             D2 = drainage.design(g, ex_z, z0, G, L, rain, soils, stype, P.area, pond_override=seed)
