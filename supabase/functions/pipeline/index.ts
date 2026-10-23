@@ -6,7 +6,7 @@
 //   approve_layout  { job_id }                                                    -> { ok }  (starts the 3D model + render)
 //   render          { job_id }                                                    -> { ok }  (re-run the render)
 //   package         { job_id }                                                    -> { ok }  (due diligence package, after the render)
-//   rerun           { job_id, step: "parse"|"ec"|"zoning"|"layout" }              -> { ok }
+//   rerun           { job_id, step: "parse"|"ec"|"zoning"|"layout"|"buildings" }              -> { ok }
 //   status          { job_id }                                                    -> job row + signed file URLs
 //   list            { limit? }                                                    -> recent jobs (your own; service role: all)
 //   delete          { job_id }                                                    -> { ok }
@@ -166,7 +166,7 @@ Deno.serve(async (req) => {
     }
 
     if (action === "rerun") {
-      if (!["parse", "ec", "zoning", "layout"].includes(body.step)) return json({ error: "Unknown step" }, 400);
+      if (!["parse", "ec", "zoning", "layout", "buildings"].includes(body.step)) return json({ error: "Unknown step" }, 400);
       await db.from("pipeline_jobs").update({ error: null, progress: `Re-running ${body.step}` }).eq("id", body.job_id);
       await kickWorker(body.job_id, body.step);
       return json({ ok: true });

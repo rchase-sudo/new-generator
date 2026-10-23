@@ -70,6 +70,8 @@ def _run(job_id, step):
             step_zoning(job_id)
         elif step == "zoning":
             step_zoning(job_id)
+        elif step == "buildings":
+            step_buildings(job_id)
         elif step == "layout":
             step_layout(job_id)
         elif step == "render":
@@ -213,6 +215,28 @@ def step_ec(job_id):
     supa.update_job(job_id, status="ec_ready", step="ec", progress="Existing conditions ready", summary=summary, outputs=outputs)
 
 
+def step_buildings(job_id):
+    """Look up existing buildings for a job whose site context is already cached (jobs from before building
+    detection, or a retry after the data sources were down). No re-research, no new drawing until the layout runs."""
+    from . import existing
+    job = supa.get_job(job_id)
+    back = job.get("status") if job.get("status") not in ("error", "building_ec") else ("awaiting_zoning" if job.get("zoning") else "ec_ready")
+    supa.update_job(job_id, progress="Looking up existing buildings", error=None)
+    ctx = _load_ctx(job_id)
+    ext = _extent_around(ctx["parcel_sp"], ctx["k"])
+    raw = context.buildings(ext, ctx["epsg"])
+    bld = existing.prepare(raw, ctx["parcel_sp"], ctx["k"])
+    ctx["bld"] = bld
+    ctx["warnings"] = [w for w in ctx.get("warnings", []) if not w.startswith("buildings:")] + ([f"buildings: {raw['error']}"] if isinstance(raw, dict) else [])
+    ctx["aerial"] = {k_: v for k_, v in ctx["aerial"].items() if k_ != "image"}
+    path = os.path.join(tempfile.mkdtemp(), "context.pkl")
+    with open(path, "wb") as f:
+        pickle.dump(ctx, f)
+    supa.upload(job_id, path)
+    summary = {**(job.get("summary") or {}), "existing_buildings": existing.summary(bld, ctx["epsg"]), "buildings_checked": not isinstance(raw, dict)}
+    supa.update_job(job_id, status=back, summary=summary, progress="Confirm zoning, setbacks and program" if back == "awaiting_zoning" else "Existing buildings ready")
+
+
 def _jpg(img):
     b = io.BytesIO()
     img.save(b, "JPEG", quality=90)
@@ -274,9 +298,18 @@ def step_layout(job_id):
     summary["front_roads"] = front_roads(ctx["parcel_sp"], ctx["rds"], ctx["k"], ctx["epsg"])
     psb = rules.get("pavement_setbacks_ft") or zoning_mod.pavement_setbacks(rules, setbacks)
     psb = {k: float(psb[k]) for k in ("front", "side", "rear") if isinstance(psb.get(k), (int, float))}
-    res = generate_layout(ctx["parcel_sp"], ctx["k"], ctx["rds"], ctx["wet"], ctx["fl"], setbacks, prog, rules=rules,
-                          parking_setbacks_ft=psb, drive_road=rules.get("drive_road") or None,
-                          keep_bldgs=[b["geom"] for b in keep])
+    try:
+        res = generate_layout(ctx["parcel_sp"], ctx["k"], ctx["rds"], ctx["wet"], ctx["fl"], setbacks, prog, rules=rules,
+                              parking_setbacks_ft=psb, drive_road=rules.get("drive_road") or None,
+                              keep_bldgs=[b["geom"] for b in keep])
+    except RuntimeError as e:
+        dr = rules.get("drive_road")
+        fr = {r["key"]: r["frontage_ft"] for r in (summary.get("front_roads") or [])}
+        if dr and "does not fit" in str(e) and fr:
+            best = max(fr, key=fr.get)
+            raise RuntimeError(f"{e} Only {fr.get(dr, 0):,} ft of this parcel fronts {dr}, too little to organize the site around. "
+                               f"Pick Automatic or {best} ({fr[best]:,} ft of frontage) for the driveway.") from None
+        raise
     supa.update_job(job_id, progress="Drawing the concept plan")
     L = job.get("listing") or {}
     title = [x for x in [L.get("street_address") and f"{L.get('lot') + ', ' if L.get('lot') else ''}{L.get('street_address')}",
