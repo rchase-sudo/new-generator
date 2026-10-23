@@ -170,7 +170,7 @@ def prepare(work, parcel_sp, k_ft, aerial, rds, lay, program=None, seed=3):
 
     kept = []
     for e in lay.get("existing") or []:
-        if e["action"] == "keep":
+        if e["action"] == "keep" and e.get("kind") != "pavement":
             kept.append({"poly": [W(x, y) for x, y in list(e["geom"].exterior.coords)[:-1]], "H": 4.8})
 
     # ---------------- camera: from the road side, 3/4 aerial like the Pocahontas front view

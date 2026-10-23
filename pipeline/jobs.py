@@ -174,7 +174,7 @@ def step_ec(job_id):
     import concurrent.futures as _cf
     import time as _t
     from . import topo as topo_mod
-    fetch = {"wetlands": context.wetlands, "flood": context.flood, "roads": context.roads, "bld": context.buildings,
+    fetch = {"wetlands": context.wetlands, "flood": context.flood, "roads": context.roads, "bld": context.buildings, "pave": context.pavement,
              "topo": lambda e_, ep_: topo_mod.fetch(e_, ep_, k)}
     got = {}
     t_end = _t.time() + 240
@@ -203,6 +203,7 @@ def step_ec(job_id):
         dem.pop("z", None)
     from . import existing
     bld = existing.prepare(bld_raw, parcel_sp, k)
+    pave = existing.find_pavement(aerial, parcel_sp, k, bld, got.get("pave"))
 
     supa.update_job(job_id, progress="Drawing")
     out = tempfile.mkdtemp()
@@ -213,11 +214,12 @@ def step_ec(job_id):
     summary["topo"] = topo_mod.summary(dem, parcel_sp, (job.get("zoning") or {}).get("max_slope_pct", topo_mod.DEFAULT_MAX_SLOPE)) if dem else {"available": False}
     summary["existing_buildings"] = existing.summary(bld, epsg)
     summary["buildings_checked"] = not isinstance(bld_raw, dict)
+    summary["existing_pavement"] = existing.pave_summary(pave, epsg)
     files = {}
     for name in ("existing_conditions.dxf", "existing_conditions.pdf", "existing_conditions.png", "aerial.jpg", "aerial.jgw"):
         files[name] = supa.upload(job_id, os.path.join(out, name))
     # cache the site context so later steps (layout, re-layouts) don't re-fetch it
-    ctx = {"parcel_sp": parcel_sp, "epsg": epsg, "k": k, "wet": wet, "fl": fl, "rds": rds, "bld": bld, "topo": dem, "warnings": warnings,
+    ctx = {"parcel_sp": parcel_sp, "epsg": epsg, "k": k, "wet": wet, "fl": fl, "rds": rds, "bld": bld, "pave": pave, "topo": dem, "warnings": warnings,
            "aerial": {"extent": aerial["extent"], "source": aerial.get("source"), "jpg": _jpg(aerial["image"])}}
     with open(os.path.join(out, "context.pkl"), "wb") as f:
         pickle.dump(ctx, f)
@@ -238,13 +240,15 @@ def step_buildings(job_id):
     raw = context.buildings(ext, ctx["epsg"])
     bld = existing.prepare(raw, ctx["parcel_sp"], ctx["k"])
     ctx["bld"] = bld
+    ctx["pave"] = existing.find_pavement(ctx["aerial"], ctx["parcel_sp"], ctx["k"], bld, context.pavement(ext, ctx["epsg"]))
     ctx["warnings"] = [w for w in ctx.get("warnings", []) if not w.startswith("buildings:")] + ([f"buildings: {raw['error']}"] if isinstance(raw, dict) else [])
     ctx["aerial"] = {k_: v for k_, v in ctx["aerial"].items() if k_ != "image"}
     path = os.path.join(tempfile.mkdtemp(), "context.pkl")
     with open(path, "wb") as f:
         pickle.dump(ctx, f)
     supa.upload(job_id, path)
-    summary = {**(job.get("summary") or {}), "existing_buildings": existing.summary(bld, ctx["epsg"]), "buildings_checked": not isinstance(raw, dict)}
+    summary = {**(job.get("summary") or {}), "existing_buildings": existing.summary(bld, ctx["epsg"]), "buildings_checked": not isinstance(raw, dict),
+               "existing_pavement": existing.pave_summary(ctx["pave"], ctx["epsg"])}
     supa.update_job(job_id, status=back, summary=summary, progress="Confirm zoning, setbacks and program" if back == "awaiting_zoning" else "Existing buildings ready")
 
 
@@ -329,6 +333,10 @@ def step_layout(job_id):
     bld = ctx.get("bld") or []          # jobs from before building detection have none: behaves exactly as before
     actions = {b["id"]: (((rules.get("building_actions") or {}).get(b["id"])) or "keep") for b in bld if b.get("onsite")}
     keep, demo = existing.split(bld, actions)
+    pave_all = ctx.get("pave") or []
+    pactions = {p["id"]: ((rules.get("pavement_actions") or {}).get(p["id"]) or "reuse") for p in pave_all}
+    pave_keep, pave_rm = existing.pave_split(pave_all, pactions)
+    shared = int(rules.get("shared_stalls") or 0)
     from . import topo as topo_mod
     dem = ctx.get("topo")
     thr = rules.get("max_slope_pct", topo_mod.DEFAULT_MAX_SLOPE)
@@ -345,7 +353,8 @@ def step_layout(job_id):
     try:
         res = generate_layout(ctx["parcel_sp"], ctx["k"], ctx["rds"], ctx["wet"], ctx["fl"], setbacks, prog, rules=rules,
                               parking_setbacks_ft=psb, drive_road=rules.get("drive_road") or None,
-                              keep_bldgs=[b["geom"] for b in keep], steep=steep, dem=dem)
+                              keep_bldgs=[b["geom"] for b in keep], steep=steep, dem=dem,
+                              reuse_pave=[p["geom"] for p in pave_keep], shared_stalls=shared)
     except RuntimeError as e:
         dr = rules.get("drive_road")
         fr = {r["key"]: r["frontage_ft"] for r in (summary.get("front_roads") or [])}
@@ -373,7 +382,10 @@ def step_layout(job_id):
                 res["metrics"]["warnings"].append(f"Grading: about {ew['cut_cy']:,.0f} CY cut / {ew['fill_cy']:,.0f} CY fill to level the development area")
     ex = [{"id": b["id"], "action": "keep", "geom": b["geom"], "sf": b["area_sf"], "label": b.get("kind")} for b in keep] + \
          [{"id": b["id"], "action": "demo", "geom": b["geom"], "sf": b["area_sf"], "label": b.get("kind")} for b in demo]
-    res["metrics"]["existing"] = [{"id": e["id"], "action": e["action"], "sf": round(e["sf"], -1), "label": e["label"]} for e in ex]
+    ex += [{"id": p["id"], "action": "keep", "geom": p["geom"], "sf": p["area_sf"], "label": ("Parking" if p["kind"] == "parking" else "Drive") +
+            (f" (about {p['est_stalls']} stalls)" if p.get("est_stalls") else ""), "kind": "pavement"} for p in pave_keep] + \
+          [{"id": p["id"], "action": "demo", "geom": p["geom"], "sf": p["area_sf"], "label": "Parking" if p["kind"] == "parking" else "Drive", "kind": "pavement"} for p in pave_rm]
+    res["metrics"]["existing"] = [{"id": e["id"], "action": e["action"], "sf": round(e["sf"], -1), "label": e["label"], **({"kind": "pavement"} if e.get("kind") == "pavement" else {})} for e in ex]
     write_concept_sheet(os.path.join(out, "concept_plan.pdf"), os.path.join(out, "concept_plan.png"), ctx["parcel_sp"], env, wet, fl, rds,
                         ctx["aerial"], ctx["k"], res["sp"], res["labels"], title, res["metrics"], prog, rules, project=project, existing=ex,
                         topo=dem, steep=steep)

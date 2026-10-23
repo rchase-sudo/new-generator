@@ -337,3 +337,47 @@ def buildings(extent_sp, epsg):
             continue
         res.append({**b, "geom": g})
     return res
+
+
+# ---------------------------------------------------------------- existing pavement
+def pavement(extent_sp, epsg, budget=80):
+    """OSM parking lots (amenity=parking polygons) and service drives / parking aisles (buffered to a paved width) in
+    the extent. Returns [{"geom", "kind": "parking"|"drive"}] in state plane, or {"error"}."""
+    from .geo import units_to_ft
+    k = units_to_ft(epsg)
+    minx, miny, maxx, maxy = extent_sp
+    s, w, n, e = to_crs(box(minx, miny, maxx, maxy), epsg, 4326).bounds[1], to_crs(box(minx, miny, maxx, maxy), epsg, 4326).bounds[0], \
+        to_crs(box(minx, miny, maxx, maxy), epsg, 4326).bounds[3], to_crs(box(minx, miny, maxx, maxy), epsg, 4326).bounds[2]
+    q = f"""[out:json][timeout:50];(way["amenity"="parking"]({s},{w},{n},{e});way["highway"="service"]({s},{w},{n},{e}););out geom tags;"""
+    js, deadline = None, time.time() + budget
+    for u in OVERPASS:
+        if time.time() > deadline:
+            break
+        try:
+            js = post(u, data={"data": q}, timeout=min(45, max(5, deadline - time.time())), tries=1).json()
+            break
+        except Exception:  # noqa: BLE001
+            continue
+    if js is None:
+        return {"error": "Overpass unavailable"}
+    out = []
+    for el in js.get("elements", []):
+        pts = [(p["lon"], p["lat"]) for p in el.get("geometry", [])]
+        t = el.get("tags", {})
+        if len(pts) < 2:
+            continue
+        try:
+            if t.get("amenity") == "parking":
+                if t.get("parking") in ("underground", "multi-storey", "rooftop") or len(pts) < 4:
+                    continue
+                g = to_crs(Polygon(pts), 4326, epsg).buffer(0)
+                kind = "parking"
+            else:
+                half = 12.0 if t.get("service") in ("parking_aisle", "driveway") else 11.0   # ft each side -> ~22-24 ft paved
+                g = to_crs(LineString(pts), 4326, epsg).buffer(half / k)
+                kind = "drive"
+        except Exception:  # noqa: BLE001
+            continue
+        if not g.is_empty:
+            out.append({"geom": g, "kind": kind})
+    return out

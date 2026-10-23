@@ -507,7 +507,7 @@ def _pond(P, dev, constraints, target_sf):
 
 
 # ---------------------------------------------------------------- main
-def _generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, parking_setbacks_ft=None, drive_road=None, keep_bldgs=None, stem=None, steep=None):
+def _generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, parking_setbacks_ft=None, drive_road=None, keep_bldgs=None, stem=None, steep=None, reuse_pave=None, shared_stalls=0):
     """drive_road: key of the road the driveway must connect to (ec_drawing.road_key); None = longest frontage.
     keep_bldgs: footprints of existing buildings that stay; the layout treats them (plus clearance) like wetlands."""
     rules = rules or {}
@@ -536,7 +536,10 @@ def _generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, p
         from .zoning import pavement_setbacks
         psb = {k: v for k, v in pavement_setbacks(rules, setbacks_ft).items() if k != "source"}
     KEEP = unary_union([g.buffer(KEEP_CLEAR_FT / k_ft) for g in (keep_bldgs or [])]) if keep_bldgs else None
-    C = unary_union([w["geom"] for w in wet] + [f["geom"] for f in fl if f.get("sfha") == "T"] + ([KEEP] if KEEP is not None else []) + list(steep or []))
+    RP = unary_union([g for g in (reuse_pave or [])]).intersection(parcel_sp) if reuse_pave else None
+    if RP is not None and RP.is_empty:
+        RP = None
+    C = unary_union([w["geom"] for w in wet] + [f["geom"] for f in fl if f.get("sfha") == "T"] + ([KEEP] if KEEP is not None else []) + list(steep or []) + ([RP.buffer(1.0 / k_ft)] if RP is not None else []))
     C = fr.fwd(C.intersection(parcel_sp.buffer(50 / k_ft))) if not C.is_empty else Polygon()
     bz = fr.fwd(envelope(parcel_sp, edges, setbacks_ft, k_ft)).difference(C).buffer(0)
     pz = fr.fwd(envelope(parcel_sp, edges, psb, k_ft)).difference(C).buffer(0)
@@ -571,6 +574,7 @@ def _generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, p
     gfa = sum(b["footprint_sf"] * b.get("stories", 1) for b in buildings)
     req0 = (program.get("parking") or {}).get("required")
     req0 = float(req0) if isinstance(req0, (int, float)) and req0 > 0 else gfa / 1000 * 4
+    req0 = max(req0 - max(0, int(shared_stalls or 0)), 0.0)   # existing stalls the new program may share
 
     best, scale, req, dropped = None, 1.0, math.ceil(req0), []
     # shrink the program first; if it still doesn't fit, drop buildings from the end of the list (lowest priority)
@@ -644,12 +648,15 @@ def _generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, p
     pave = pave.difference(unary_union([r["rect"] for r in row]))
     # rounding must never push pavement into the parking setback (only the driveway may cross it)
     pave = pave.intersection(pz.union(drive.buffer(R_JOIN + 2))).buffer(0)
+    RPf = fr.fwd(RP) if RP is not None else None
+    if RPf is not None:
+        pave = pave.difference(RPf).buffer(0)      # reused pavement is existing: only new paving is drawn / counted
     walks = unary_union([r["walk"] for r in row]).difference(pave)
     bldgs = [r["rect"] for r in row]
     dev = unary_union([pave, walks, *bldgs])
     grass = _fillet(dev.buffer(14, join_style=1), 6).intersection(P).difference(C).difference(dev)
     grass = unary_union([grass, I.difference(dev)])
-    imperv_sf = pave.area + walks.area + sum(b.area for b in bldgs)
+    imperv_sf = pave.area + walks.area + sum(b.area for b in bldgs) + (RPf.area if RPf is not None else 0.0)
     land = [g for g in _polys(P.difference(C)) if g.intersects(dev)]
     land = unary_union(land) if land else P
     pond = _pond(land, dev.union(grass), C, max(3000.0, imperv_sf * 0.08))
@@ -698,7 +705,7 @@ def _generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, p
                 q = Point(xx, yy)
                 if core.contains(q):
                     trees.append((q, 8.0))
-    edge_line = dev.buffer(8, join_style=1).exterior
+    edge_line = unary_union([g.exterior for g in _polys(dev.buffer(8, join_style=1))])
     pad_ok = pad.buffer(-4) if pad is not None and not pad.is_empty else None
     drive_keep = drive.buffer(30)
     nt = int(edge_line.length // 45)
@@ -727,6 +734,7 @@ def _generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, p
         "development_acres": round(dev.area / 43560, 2),
         "remaining_developable_acres": round(remaining_ac, 2),
         "parking_setbacks_ft": psb, "setbacks_ft": setbacks_ft,
+        **({"reused_pavement_sf": round(RPf.area, -1), "shared_stalls": int(shared_stalls or 0)} if RPf is not None else {}),
     }
     warn = []
     if keep_bldgs:
@@ -764,7 +772,7 @@ def _generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, p
             fy = by0 if r["facing"] < 0 else by1 - c_
             roof_blocks.append(box(bx0, fy, bx0 + c_, fy + c_))
     local = {"P": P, "bz": bz, "pz": pz, "C": C, "pave": pave, "walk": walks, "grass": grass, "pad": pad, "roof_blocks": roof_blocks, "bldgs": bldgs,
-             "stalls": stalls, "ada": ada, "stripes": stripes, "pond": pond, "drive": drive, "dev": dev,
+             "reuse": RPf, "stalls": stalls, "ada": ada, "stripes": stripes, "pond": pond, "drive": drive, "dev": dev,
              "trees": [q.buffer(r, 24) for q, r in trees]}
     sp = {k: ([fr.inv(g) if g is not None else None for g in v] if isinstance(v, list) else (fr.inv(v) if v is not None else None))
           for k, v in local.items()}
@@ -784,7 +792,7 @@ def _generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, p
 STEM_CELL = 6.0
 
 
-def _plan_stem(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, parking_setbacks_ft, drive_road, keep_bldgs, rules, steep=None, dem=None):
+def _plan_stem(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, parking_setbacks_ft, drive_road, keep_bldgs, rules, steep=None, dem=None, reuse_pave=None):
     """When the frontage is too narrow to build against, find the largest developable pod behind it and an access road
     (AIS wide) from the frontage to the pod. Returns {entry, angle, poly_sp, pod_sp, length_ft} or None.
     The path is the shortest route through land that is inside the side/rear setbacks and clear of wetlands, flood and
@@ -809,7 +817,10 @@ def _plan_stem(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, parking_setbacks_ft, 
     if steep:
         C = unary_union([C, *steep])
     C = fr.fwd(C.intersection(parcel_sp.buffer(50 / k_ft))) if not C.is_empty else Polygon()
+    RPl = fr.fwd(unary_union(list(reuse_pave)).intersection(parcel_sp)) if reuse_pave else None
     pz = fr.fwd(envelope(parcel_sp, edges, psb, k_ft)).difference(C).buffer(0)
+    if RPl is not None and not RPl.is_empty:
+        pz = pz.difference(RPl.buffer(1.0)).buffer(0)
     # where the access road may run: inside the side / rear pavement setbacks (front setback is crossable), out of constraints
     allowed = fr.fwd(envelope(parcel_sp, edges, {"front": 0, "side": psb["side"], "rear": psb["rear"]}, k_ft)).difference(C).buffer(0)
     corr = allowed.buffer(-AIS / 2)
@@ -837,6 +848,8 @@ def _plan_stem(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, parking_setbacks_ft, 
         wx = (gx / k_ft) * math.cos(fr.a) - (gy / k_ft) * math.sin(fr.a) + fr.o[0]
         wy = (gx / k_ft) * math.sin(fr.a) + (gy / k_ft) * math.cos(fr.a) + fr.o[1]
         mult = 1.0 + (_topo.sample(dem, wx, wy, "slope") / 8.0) ** 2
+    if RPl is not None and not RPl.is_empty:      # existing drives / lots: the access road follows them where it can
+        mult = mult * np.where(shapely.contains_xy(RPl, gx, gy), 0.3, 1.0)
     ctry = {}
     for pod in pods[:3]:
         tgt = shapely.contains_xy(pod.buffer(-10) if pod.buffer(-10).area > 8000 else pod, gx, gy) & ok
@@ -928,12 +941,13 @@ def parcel_poly_ext(P, y_r):
     return P.union(box(minx - 100, y_r - 5, maxx + 100, 0.0))
 
 
-def generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, parking_setbacks_ft=None, drive_road=None, keep_bldgs=None, steep=None, dem=None):
+def generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, parking_setbacks_ft=None, drive_road=None, keep_bldgs=None, steep=None, dem=None, reuse_pave=None, shared_stalls=0):
     """drive_road: key of the road the driveway must connect to (ec_drawing.road_key); None = longest frontage.
     keep_bldgs: footprints of existing buildings that stay; the layout treats them (plus clearance) like wetlands.
+    reuse_pave: existing pavement that stays; new buildings and parking stay off it and the access road follows it.
     Tries the normal frontage layout first. If that fails, or has to shrink / drop buildings, it looks for a developable
     pod behind a narrow neck and lays the site out around an access road from the frontage to it, keeping the better."""
-    kw = dict(rules=rules, parking_setbacks_ft=parking_setbacks_ft, drive_road=drive_road, keep_bldgs=keep_bldgs, steep=steep)
+    kw = dict(rules=rules, parking_setbacks_ft=parking_setbacks_ft, drive_road=drive_road, keep_bldgs=keep_bldgs, steep=steep, reuse_pave=reuse_pave, shared_stalls=shared_stalls)
     front, err = None, None
     try:
         front = _generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, **kw)
@@ -943,7 +957,7 @@ def generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, pa
     if front and m["program_scale"] >= 1.0 and not any(w.startswith("Did not fit") for w in m["warnings"]):
         return front
     try:
-        stem = _plan_stem(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, parking_setbacks_ft, drive_road, keep_bldgs, rules or {}, steep=steep, dem=dem)
+        stem = _plan_stem(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, parking_setbacks_ft, drive_road, keep_bldgs, rules or {}, steep=steep, dem=dem, reuse_pave=reuse_pave)
     except Exception as e:  # noqa: BLE001
         print("stem planning failed:", repr(e))
         stem = None

@@ -37,7 +37,7 @@ LSPACE = (TXT_H * 72 * 5 / 3) / LFS   # AutoCAD MText line spacing 1.0 (1.667 x 
 T = SHEET_W / 17.0              # title-block type / line scale vs. the 17x11 layout
 
 P_LAYERS = {"P-BLDG": 1, "P-BLDG-HATCH": 8, "P-PAVE-EDGE": 7, "P-CURB": 9, "P-PARKING-STRIPE": 7, "P-ADA": 5,
-            "P-WALK": 9, "P-LANDSCAPE": 3, "P-POND": 4, "P-TEXT": 7, "P-EXIST-KEEP": 30, "P-EXIST-DEMO": 1, "P-STEEP": 1}
+            "P-WALK": 9, "P-LANDSCAPE": 3, "P-POND": 4, "P-TEXT": 7, "P-EXIST-KEEP": 30, "P-EXIST-DEMO": 1, "P-EXIST-PAVE": 8, "P-STEEP": 1}
 
 # title block geometry (pixels of forma_titleblock.jpg, 2576 x 1667)
 TB_W, TB_H = 2576, 1667
@@ -95,14 +95,15 @@ def write_dxf(ec_dxf, out_path, sp, labels, k_ft, existing=None, steep=None):
     for g in steep or []:
         ring(g, "P-STEEP", width=1.0 / k_ft)
     for e in existing or []:
-        ring(e["geom"], "P-EXIST-KEEP" if e["action"] == "keep" else "P-EXIST-DEMO", width=0.5 / k_ft)
-        if e["action"] == "demo":   # X through the footprint, the usual demolition mark
+        pv = e.get("kind") == "pavement"
+        ring(e["geom"], "P-EXIST-PAVE" if (pv and e["action"] == "keep") else ("P-EXIST-KEEP" if e["action"] == "keep" else "P-EXIST-DEMO"), width=0.5 / k_ft)
+        if e["action"] == "demo" and not pv:   # X through the footprint, the usual demolition mark
             for p in _polys(e["geom"]):
                 x0, y0, x1, y1 = p.minimum_rotated_rectangle.bounds
                 msp.add_line((x0, y0), (x1, y1), dxfattribs={"layer": "P-EXIST-DEMO"})
                 msp.add_line((x0, y1), (x1, y0), dxfattribs={"layer": "P-EXIST-DEMO"})
         c = e["geom"].representative_point()
-        mt = msp.add_mtext(f"EXISTING {e['id']} TO BE {'DEMOLISHED' if e['action'] == 'demo' else 'RETAINED'}\\P{e['sf']:,.0f} SF",
+        mt = msp.add_mtext(f"EXISTING {'PAVEMENT ' if pv else ''}{e['id']} TO BE {'REMOVED' if pv and e['action'] == 'demo' else 'DEMOLISHED' if e['action'] == 'demo' else 'RETAINED'}\\P{e['sf']:,.0f} SF",
                            dxfattribs={"layer": "P-TEXT", "char_height": 2.5 / k_ft, "insert": (c.x, c.y), "attachment_point": 5, "rotation": 0})
         mt.set_bg_color("canvas", scale=1.3)
     for t in labels:
@@ -149,7 +150,7 @@ def _textured(ax, g, view, color, amp, z, k_ft, edge=None, lw=0.0):
     n = 0.65 * _noise((H, W), int(z * 10), 1.2) + 0.35 * _noise((H, W), int(z * 10) + 1, 6)
     img = np.clip(base[None, None, :] * (1 + amp * n[..., None]), 0, 1)
     im = ax.imshow(img, extent=(x0, x1, y0, y1), origin="upper", zorder=z, interpolation="bilinear")
-    for p in _polys(g):
+    for pi_, p in enumerate(_polys(g)):
         verts, codes = [], []
         for r in [p.exterior, *p.interiors]:
             cs = np.asarray(r.coords)
@@ -157,7 +158,7 @@ def _textured(ax, g, view, color, amp, z, k_ft, edge=None, lw=0.0):
             codes += [MPath.MOVETO] + [MPath.LINETO] * (len(cs) - 2) + [MPath.CLOSEPOLY]
         clip = PathPatch(MPath(verts, codes), transform=ax.transData, facecolor="none", edgecolor="none")
         ax.add_patch(clip)
-        im2 = im if p is _polys(g)[0] else ax.imshow(img, extent=(x0, x1, y0, y1), origin="upper", zorder=z, interpolation="bilinear")
+        im2 = im if pi_ == 0 else ax.imshow(img, extent=(x0, x1, y0, y1), origin="upper", zorder=z, interpolation="bilinear")
         im2.set_clip_path(clip)
     if edge:
         _patch(ax, g, z + 0.1, facecolor="none", edgecolor=edge, lw=lw)
@@ -265,6 +266,12 @@ def write_sheet(pdf_path, png_path, parcel, env, wet, fl, rds, aerial, k_ft, sp,
             _patch(ax, affinity.translate(extra, 0.8 / k_ft, -0.8 / k_ft).difference(extra).intersection(b), 9.65, facecolor=(0.18, 0.23, 0.29, 0.6), edgecolor="none")
 
     for e in existing or []:
+        if e.get("kind") == "pavement":
+            if e["action"] == "keep":
+                _patch(ax, e["geom"], 5.4, facecolor=(0.78, 0.80, 0.83, 0.85), edgecolor="#6b7480", lw=lw_ft(0.9), ls=(0, (6, 3)))
+            else:
+                _patch(ax, e["geom"], 5.4, facecolor=(1, 0.2, 0.2, 0.18), edgecolor="#ff3b30", lw=lw_ft(0.9), ls=(0, (5, 3)), hatch="//")
+            continue
         if e["action"] == "keep":
             _patch(ax, e["geom"], 9.2, facecolor="#aeb4bb", edgecolor=C_DARK, lw=lw_ft(1.2), joinstyle="miter")
         else:
@@ -295,7 +302,7 @@ def write_sheet(pdf_path, png_path, parcel, env, wet, fl, rds, aerial, k_ft, sp,
     box_kw = dict(boxstyle=f"square,pad={TXT_H * 72 * 0.5 / LFS:.3f}", fc="w", ec="none")
     bldgs = [b for b in sp["bldgs"] if b is not None]
     hard = unary_union([b.buffer(3 / k_ft) for b in bldgs]) if bldgs else None
-    ex_keep = [e for e in existing or [] if e["action"] == "keep"]
+    ex_keep = [e for e in existing or [] if e["action"] == "keep" and e.get("kind") != "pavement"]
     if ex_keep:
         eh = unary_union([e["geom"].buffer(3 / k_ft) for e in ex_keep])
         hard = eh if hard is None else hard.union(eh)
@@ -346,6 +353,9 @@ def write_sheet(pdf_path, png_path, parcel, env, wet, fl, rds, aerial, k_ft, sp,
     for e in existing or []:
         c = e["geom"].representative_point()
         if not (vx0 < c.x < vx1 and vy0 < c.y < vy1):
+            continue
+        if e.get("kind") == "pavement":
+            place([f"EXISTING PAVEMENT {e['id']}", "TO BE REMOVED" if e["action"] == "demo" else "TO REMAIN", f"{e['label']}, {e['sf']:,.0f} SF"], (c.x, c.y), e["geom"], LFS)
             continue
         place([f"EXISTING {e['id']}", "TO BE DEMOLISHED" if e["action"] == "demo" else "TO REMAIN", f"{e['sf']:,.0f} SF"], (c.x, c.y), e["geom"], LFS)
     for w in wet:

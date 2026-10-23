@@ -51,3 +51,32 @@ def split(items, actions):
 def keep_zone(keep, k):
     """Geometry the layout must stay out of: each kept building plus clearance."""
     return unary_union([b["geom"].buffer(KEEP_CLEAR_FT / k) for b in keep]) if keep else None
+
+
+# ---------------------------------------------------------------- existing pavement
+def pave_summary(items, epsg):
+    """Detected on-site pavement (ids P1..) as JSON for the UI map."""
+    res = []
+    for p in items or []:
+        g = p["geom"]
+        if g.is_empty or g.geom_type != "Polygon":
+            continue
+        ll = to_crs(g, epsg, 4326)
+        res.append({"id": p["id"], "area_sf": round(p["area_sf"], -1), "kind": p["kind"], "est_stalls": p.get("est_stalls", 0),
+                    "src": p.get("src", "aerial"), "ring": [[round(y, 6), round(x, 6)] for x, y in ll.exterior.coords]})
+    return res
+
+
+def pave_split(items, actions):
+    """(reuse, remove): pavement stays unless the user says "remove"."""
+    actions = actions or {}
+    return [p for p in (items or []) if actions.get(p["id"]) != "remove"], [p for p in (items or []) if actions.get(p["id"]) == "remove"]
+
+
+def find_pavement(ctx_aerial, parcel_sp, k, bld, osm):
+    from . import pavement
+    try:
+        return pavement.detect(ctx_aerial, parcel_sp, k, bld, osm=osm if isinstance(osm, list) else [])
+    except Exception as e:  # noqa: BLE001
+        print("pavement detection failed:", repr(e))
+        return []
