@@ -7,7 +7,7 @@ from shapely.ops import substring, unary_union
 
 from . import grading
 from .base import bearing_text, lines, polys
-from .sheetbase import BLUE, BROWN, CYAN, GREEN, GREY, INK, LGREY, RED
+from .sheetbase import BLUE, BROWN, CYAN, EXIST, GREEN, GREY, INK, LGREY, RED
 
 
 def parcel_labels(S, X, ctx_parcel_sp, fr, dim=True, name=True):
@@ -55,11 +55,14 @@ def neighbor_buildings(S, X):
 
 
 def existing_features(S, X, demo_marks=False, label_ids=True):
-    """Everything existing on the parcel that we know about: kept buildings and pavement are shown, removals are hatched red."""
+    """Existing work. Design sheets show only what stays, subdued (CAD colour 253). The demolition sheet also shows what is removed."""
     L = X["L"]
     labelled = {"keep_pave": False, "demo_pave": False}
+    vb = box(*S.view)
     for e in L.get("existing") or []:
-        if not e["geom"].intersects(box(*S.view)):
+        if not e["geom"].intersects(vb):
+            continue
+        if e["action"] == "demo" and not demo_marks:
             continue
         if e.get("kind") == "pavement":
             if e["action"] == "demo":
@@ -69,26 +72,23 @@ def existing_features(S, X, demo_marks=False, label_ids=True):
                     S.txt(q.x, q.y, "EXISTING PAVEMENT\nTO BE REMOVED", 5.2, color=RED, halo=True, z=20)
                     labelled["demo_pave"] = True
             else:
-                S.poly(e["geom"], fc="#e9ebee", ec=GREY, lw=0.9, z=3)
+                S.poly(e["geom"], ec=EXIST, lw=0.7, z=3)
                 if not labelled["keep_pave"] or e["geom"].area > 20000:
                     q = e["geom"].representative_point()
-                    S.txt(q.x, q.y, "EXISTING PAVEMENT\n(TO REMAIN)", 5.2, color="#555", halo=True, z=20)
+                    S.txt(q.x, q.y, "EXISTING PAVEMENT\n(TO REMAIN)", 5.2, color=EXIST, halo=True, z=20)
                     labelled["keep_pave"] = True
             continue
         if e["action"] == "keep":
-            S.poly(e["geom"], fc="#e6e8eb", ec=GREY, lw=1.0, z=4)
+            S.poly(e["geom"], ec=EXIST, lw=0.9, z=4)
             c = e["geom"].representative_point()
-            S.txt(c.x, c.y, "EXISTING BUILDING\n(TO REMAIN)", 5.2, halo=True, z=20)
+            S.txt(c.x, c.y, "EXISTING BUILDING\n(TO REMAIN)", 5.2, color=EXIST, halo=True, z=20)
         else:
-            S.poly(e["geom"], fc=(1, .2, .2, .08), ec=RED if demo_marks else GREY, lw=1.0, ls=(0, (5, 3)), z=4)
+            S.poly(e["geom"], fc=(1, .2, .2, .08), ec=RED, lw=1.0, ls=(0, (5, 3)), z=4)
+            x0, y0, x1, y1 = e["geom"].bounds
+            S.line(LineString([(x0, y0), (x1, y1)]), color=RED, lw=0.8, z=9)
+            S.line(LineString([(x0, y1), (x1, y0)]), color=RED, lw=0.8, z=9)
             c = e["geom"].representative_point()
-            if demo_marks:
-                x0, y0, x1, y1 = e["geom"].bounds
-                S.line(LineString([(x0, y0), (x1, y1)]), color=RED, lw=0.8, z=9)
-                S.line(LineString([(x0, y1), (x1, y0)]), color=RED, lw=0.8, z=9)
-                S.txt(c.x, c.y, "EXISTING BUILDING\nTO BE DEMOLISHED", 5.2, color=RED, halo=True, z=20)
-            else:
-                S.txt(c.x, c.y, "EXISTING BUILDING\n(TO BE DEMOLISHED)", 5.2, halo=True, z=20)
+            S.txt(c.x, c.y, "EXISTING BUILDING\nTO BE DEMOLISHED", 5.2, color=RED, halo=True, z=20)
 
 
 def constraints(S, X, setback=True):
@@ -156,7 +156,7 @@ def proposed_base(S, X, labels=True, fill=True, existing=True):
         S.poly(a, ec=BLUE, lw=0.6, z=8)
     pond = X["D"]["pond"]["poly"]
     S.poly(pond, ec=INK, lw=1.1, z=9)
-    S.poly(pond.buffer(-(X["D"]["pond"]["depth_ft"] * 3.0)), ec=INK, lw=0.6, z=9)
+    S.poly(pond.buffer(-(X["D"]["pond"]["depth_ft"] * X["D"]["pond"].get("side", 3.0))), ec=INK, lw=0.6, z=9)
 
 
 def stationing(S, X, step=50.0, size=5.2):

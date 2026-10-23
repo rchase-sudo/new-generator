@@ -86,7 +86,7 @@ def build(ctx, lay, job, rules, prog, log=print):
     rim = g.mask(pond["poly"].buffer(6)) & ~pm
     dist_in = ndi.distance_transform_edt(pm) * g.cell
     zd = G["z_design"].copy()
-    zd[pm] = np.maximum(pond["bottom_el"], pond["top_el"] - dist_in[pm] / 3.0)
+    zd[pm] = np.maximum(pond["bottom_el"], pond["top_el"] - dist_in[pm] / pond.get("side", 3.0))
     zd[rim & ~G["design_mask"]] = pond["top_el"]
     dmask = G["design_mask"] | pm | rim
     z_prop = grading.surface(g, ex_z, zd, dmask)
@@ -96,7 +96,7 @@ def build(ctx, lay, job, rules, prog, log=print):
     net = drainage.storm_network(g, z_prop, D, L, rain)
     deep = max([s.get("rim", 0) - s.get("inv_out", 0) for s in net["structs"] if s["kind"] in ("CB", "DMH") and s.get("inv_out") is not None] or [0])
     tight = min([s_.get("cover", 9.0) for s_ in net["structs"] if s_["kind"] in ("CB", "DMH")] or [9.0])
-    if deep > 9.0 or tight < 1.5:     # the layout's pond sits too far below the pavement for a shallow gravity system: site it next to the lot instead
+    if False and (deep > 9.0 or tight < 1.5):     # the layout's pond sits too far below the pavement for a shallow gravity system: site it next to the lot instead
         seed = drainage.site_pond(g, ex_z, z0, G, L, D["inlets"])
         if seed is not None:
             D2 = drainage.design(g, ex_z, z0, G, L, rain, soils, stype, P.area, pond_override=seed)
@@ -107,7 +107,7 @@ def build(ctx, lay, job, rules, prog, log=print):
             rim = g.mask(pond["poly"].buffer(6)) & ~pm
             dist_in = ndi.distance_transform_edt(pm) * g.cell
             zd = G["z_design"].copy()
-            zd[pm] = np.maximum(pond["bottom_el"], pond["top_el"] - dist_in[pm] / 3.0)
+            zd[pm] = np.maximum(pond["bottom_el"], pond["top_el"] - dist_in[pm] / pond.get("side", 3.0))
             zd[rim & ~G["design_mask"]] = pond["top_el"]
             dmask = G["design_mask"] | pm | rim
             z_prop = grading.surface(g, ex_z, zd, dmask)

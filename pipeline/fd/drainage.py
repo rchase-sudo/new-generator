@@ -230,45 +230,59 @@ def design(g, z_ex, z_prop, G, L, rain, soils, stype, parcel_area_sf, pond_overr
     ground_low = float(np.percentile(z_prop[rmask], 15)) if rmask.any() else float(np.nanmin(z_ex))
     ground_low = min(ground_low, float(np.percentile(z_ex[g.mask(pond_top.buffer(10))], 20))) if g.mask(pond_top.buffer(10)).any() else ground_low
     top_el = round(ground_low + 3.0, 1)
-    depth = 5.0
-    bottom = round(top_el - depth, 1)
-    # size: grow the footprint until the routed peaks are below pre-development
-    res = None
+    # the footprint is the concept layout's pond and does not change; volume comes from depth
+    from shapely.ops import polylabel
+    try:
+        inr = pond_top.exterior.distance(polylabel(pond_top, 1.0))
+    except Exception:  # noqa: BLE001
+        inr = 20.0
     d_total = {s: hydro.hydrograph(area_ac, cn_post, tc_post, rain["d24"][s], stype) for s in hydro.STORMS}
-    for grow in np.arange(0, 140, 4.0):
-        poly = pond_top.buffer(grow) if grow else pond_top
-        stage, area, stor = hydro.pond_geometry(poly, top_el, depth)
-        if stor[-1] < 1000:
-            continue
-        # orifice sized to pass the 2-yr pre-development peak at the 2-yr stage, then check the rest
-        ok = True
-        out = {}
-        for dia in (0.25, 0.33, 0.5, 0.67, 0.83, 1.0, 1.25, 1.5, 2.0):
-            ok = True
-            out = {}
-            for s in hydro.STORMS:
-                t, q = d_total[s]
-                hp, qp, qo, hs = hydro.route_pond(t, q, stage, stor, (bottom + 0.5, dia), (top_el - 1.5, 10.0))
-                out[s] = (hp, qp, float(q.max()))
-                if s <= 50 and qp > pre[s] * 1.0:
-                    ok = False
-            if ok:
+    res = None
+    last = None
+    # 3:1 earth slopes first; if the footprint is too narrow to go deep enough, steeper slopes / retaining walls
+    for side in (3.0, 2.0, 1.0):
+        max_depth = float(max(4.0, min(14.0, inr / side * 0.9)))
+        for depth in np.arange(4.0, max_depth + 0.01, 0.5):
+            bottom = round(top_el - depth, 1)
+            stage, area, stor = hydro.pond_geometry(pond_top, top_el, depth, side)
+            last = (depth, side)
+            if stor[-1] < 500:
+                continue
+            for dia in (0.25, 0.33, 0.5, 0.67, 0.83, 1.0, 1.25, 1.5, 2.0):
+                ok = True
+                out = {}
+                for s in hydro.STORMS:
+                    t, q = d_total[s]
+                    hp, qp, qo, hs = hydro.route_pond(t, q, stage, stor, (bottom + 0.5, dia), (top_el - 1.5, 10.0))
+                    out[s] = (hp, qp, float(q.max()))
+                    if s <= 50 and qp > pre[s] * 1.0:
+                        ok = False
+                if ok:
+                    break
+            if ok and out[100][0] <= top_el - 1.0:
+                res = {"poly": pond_top, "stage": stage, "stor": stor, "orifice_ft": dia, "out": out, "depth": float(depth), "side": side}
                 break
-        if ok and out[100][0] <= top_el - 1.0:
-            res = {"grow": grow, "poly": poly, "stage": stage, "stor": stor, "orifice_ft": dia, "out": out}
+        if res is not None:
             break
     if res is None:
-        warns.append("Detention could not fully attenuate post to pre-development peaks within the available footprint; enlarge the basin or reduce impervious area")
-        poly = pond_top.buffer(60)
-        stage, area, stor = hydro.pond_geometry(poly, top_el, depth)
+        depth, side = last or (4.0, 1.0)
+        bottom = round(top_el - depth, 1)
+        warns.append(f"Detention could not fully attenuate post to pre-development peaks within the layout's pond footprint at a {depth:.1f} ft depth; the footprint cannot change, so reduce impervious area or add underground storage")
+        stage, area, stor = hydro.pond_geometry(pond_top, top_el, depth, side)
         dia = 0.5
         out = {}
         for s in hydro.STORMS:
             t, q = d_total[s]
             hp, qp, qo, hs = hydro.route_pond(t, q, stage, stor, (bottom + 0.5, dia), (top_el - 1.5, 10.0))
             out[s] = (hp, qp, float(q.max()))
-        res = {"grow": 60, "poly": poly, "stage": stage, "stor": stor, "orifice_ft": dia, "out": out}
-    pond = {"poly": res["poly"], "top_el": top_el, "bottom_el": bottom, "depth_ft": depth, "orifice_in": round(res["orifice_ft"] * 12, 1),
+        res = {"poly": pond_top, "stage": stage, "stor": stor, "orifice_ft": dia, "out": out, "depth": float(depth), "side": side}
+    depth, side = res["depth"], res["side"]
+    bottom = round(top_el - depth, 1)
+    if side < 3.0:
+        warns.append(f"The concept pond footprint is too narrow for 3:1 slopes at the depth needed; interior slopes are {side:g}:1 (retaining walls / structural slopes) to hold the volume")
+    if depth > 8.0:
+        warns.append(f"The pond is {depth:.1f} ft deep to hold the required volume inside the concept footprint; provide fencing / safety bench and confirm geotechnical and groundwater conditions")
+    pond = {"poly": res["poly"], "top_el": top_el, "bottom_el": bottom, "depth_ft": depth, "footprint_fixed": True, "side": res["side"], "orifice_in": round(res["orifice_ft"] * 12, 1),
             "weir_crest": round(top_el - 1.5, 2), "weir_len_ft": 10.0, "top_area_sf": float(res["poly"].area), "storage_cf": float(res["stor"][-1]),
             "table": [{"storm": s, "pre_cfs": round(pre[s], 2), "post_cfs": round(res["out"][s][2], 2), "out_cfs": round(res["out"][s][1], 2),
                        "stage": round(res["out"][s][0], 2)} for s in hydro.STORMS]}
@@ -309,7 +323,7 @@ def storm_network(g, z_prop, D, L, rain, blocked_extra=None):
     # outfall point: on the pond rim nearest the first inlet cluster
     cent = unary_union([Point(p) for p in inlets]).centroid
     fes = nearest_points(pp.exterior, cent)[0]
-    structs = [{"id": "FES-1", "kind": "FES", "xy": (fes.x, fes.y), "rim": pond["top_el"], "inv_out": None, "inv_in": round(pond["bottom_el"] + 1.0, 2)}]
+    structs = [{"id": "FES-1", "kind": "FES", "xy": (fes.x, fes.y), "rim": pond["top_el"], "inv_out": None, "inv_in": round(max(pond["bottom_el"] + 1.0, pond["top_el"] - 3.0), 2)}]
     pipes = []
     order = sorted(range(len(inlets)), key=lambda k: math.hypot(inlets[k][0] - fes.x, inlets[k][1] - fes.y))
     net_lines = []

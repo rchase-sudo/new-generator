@@ -34,6 +34,7 @@ RED = "#d4222a"
 BLUE = "#1f4fd8"
 GREEN = "#1b8a3a"
 CYAN = "#0a8ea6"
+EXIST = "#828282"      # CAD colour 253: existing work that stays after development
 BROWN = "#8a5a2b"
 
 PX_W = SHEET_W / TB_W      # inches per title-block pixel
@@ -83,7 +84,7 @@ class Sheet:
         """Line width in points for a physical width in feet on the ground (pen weights are in points, so this is for ground-scale items)."""
         return ft * self.pt_per_ft
 
-    def txt(self, x, y, s, size=7.0, rot=0, ha="center", va="center", weight="normal", color=INK, halo=False, z=30, family=FONT, box=False, **kw):
+    def txt(self, x, y, s, size=7.0, rot=0, ha="center", va="center", weight="normal", color=INK, halo=False, z=30, family=FONT, box=True, **kw):
         t = self.ax.text(x, y, s, fontsize=size, rotation=rot, ha=ha, va=va, fontweight=weight, color=color, family=family, zorder=z, **kw)
         if halo:
             import matplotlib.patheffects as pe

@@ -296,7 +296,7 @@ def c4(meta, X):
     # flow arrows from the pavement
     pond = X["D"]["pond"]
     c = pond["poly"].centroid
-    S.txt(c.x, c.y, f"DETENTION POND\nTOP {pond['top_el']:.1f}  BOT {pond['bottom_el']:.1f}\nWEIR {pond['weir_crest']:.1f}\n3:1 SIDE SLOPES", 5.8, weight="bold", halo=True, z=30)
+    S.txt(c.x, c.y, f"DETENTION POND (CONCEPT FOOTPRINT)\nTOP {pond['top_el']:.1f}  BOT {pond['bottom_el']:.1f}  DEPTH {pond['depth_ft']:.1f}'\nWEIR {pond['weir_crest']:.1f}\n{pond.get('side', 3.0):g}:1 SIDE SLOPES", 5.8, weight="bold", halo=True, z=30)
     for s in X["net"]["structs"]:
         if s["kind"] in ("CB", "DMH"):
             S.ax.plot([s["xy"][0]], [s["xy"][1]], marker="s" if s["kind"] == "CB" else "o", ms=5, mfc="white", mec=INK, zorder=32)
