@@ -792,7 +792,7 @@ def _generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, p
 STEM_CELL = 6.0
 
 
-def _plan_stem(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, parking_setbacks_ft, drive_road, keep_bldgs, rules, steep=None, dem=None, reuse_pave=None):
+def _plan_stem(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, parking_setbacks_ft, drive_road, keep_bldgs, rules, steep=None, dem=None, reuse_pave=None, tie=False):
     """When the frontage is too narrow to build against, find the largest developable pod behind it and an access road
     (AIS wide) from the frontage to the pod. Returns {entry, angle, poly_sp, pod_sp, length_ft} or None.
     The path is the shortest route through land that is inside the side/rear setbacks and clear of wetlands, flood and
@@ -858,8 +858,11 @@ def _plan_stem(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, parking_setbacks_ft, 
             continue
         # sources: corridor cells right at a frontage line on the chosen road
         src = np.zeros_like(ok)
-        for ln in fl_lines:
-            src |= ok & (shapely.distance(ln, shapely.points(gx, gy)) <= AIS / 2 + cell * 1.6)
+        if tie and RPl is not None and not RPl.is_empty:      # tie into existing pavement instead of the public road
+            src = ok & shapely.contains_xy(RPl.buffer(cell), gx, gy)
+        else:
+            for ln in fl_lines:
+                src |= ok & (shapely.distance(ln, shapely.points(gx, gy)) <= AIS / 2 + cell * 1.6)
         if not src.any():
             print('stem: no start cells on the frontage')
             continue
@@ -910,9 +913,27 @@ def _plan_stem(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, parking_setbacks_ft, 
         cut = min(line.project(Point(c)) for g in getattr(inside, "geoms", [inside]) for c in g.coords)
         if cut > 4:
             line = substring(line, 0, cut)
-    if line.length < 12:
+    if line.length < (3 if tie else 12):
         print('stem: path too short', line.length)
         return None
+    if tie and RPl is not None and not RPl.is_empty:
+        # start where the line leaves the existing pavement; no flare, the pavement is the connection
+        ds = [i * 3.0 for i in range(int(line.length // 3.0) + 1)]
+        start = 0.0
+        for d_ in ds:
+            if RPl.buffer(1.0).contains(line.interpolate(d_)):
+                start = d_
+            else:
+                break
+        line = substring(line, max(0.0, start - 4.0), line.length)
+        if line.length < 3:
+            print('stem: tie path too short', line.length)
+            return None
+        L = line.length
+        a_pt, b_pt = line.interpolate(max(0.0, L - 40.0)), line.interpolate(L)
+        th = math.atan2(b_pt.y - a_pt.y, b_pt.x - a_pt.x)
+        return {"entry": fr.inv(b_pt).coords[0], "angle": th - math.pi / 2 + fr.a, "poly_sp": fr.inv(line.buffer(AIS / 2, cap_style=2, join_style=1)),
+                "pod_sp": fr.inv(pod.buffer(rho + 2)), "length_ft": L, "tie": True}
     sx, sy = line.coords[0]
     if not road.is_empty:
         probe = LineString([(sx, sy + 4), (sx, sy - 400)])
@@ -941,12 +962,24 @@ def parcel_poly_ext(P, y_r):
     return P.union(box(minx - 100, y_r - 5, maxx + 100, 0.0))
 
 
-def generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, parking_setbacks_ft=None, drive_road=None, keep_bldgs=None, steep=None, dem=None, reuse_pave=None, shared_stalls=0):
+def generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, parking_setbacks_ft=None, drive_road=None, keep_bldgs=None, steep=None, dem=None, reuse_pave=None, shared_stalls=0, tie_existing=True):
     """drive_road: key of the road the driveway must connect to (ec_drawing.road_key); None = longest frontage.
     keep_bldgs: footprints of existing buildings that stay; the layout treats them (plus clearance) like wetlands.
     reuse_pave: existing pavement that stays; new buildings and parking stay off it and the access road follows it.
     Tries the normal frontage layout first. If that fails, or has to shrink / drop buildings, it looks for a developable
     pod behind a narrow neck and lays the site out around an access road from the frontage to it, keeping the better."""
+    if reuse_pave and tie_existing:
+        # existing pavement stays: tie the new development into it (closest practical point) rather than the public road
+        try:
+            st = _plan_stem(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, parking_setbacks_ft, drive_road, keep_bldgs, rules or {}, steep=steep, dem=dem, reuse_pave=reuse_pave, tie=True)
+            if st:
+                alt = _generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, stem=st, rules=rules, parking_setbacks_ft=parking_setbacks_ft, drive_road=drive_road,
+                                keep_bldgs=keep_bldgs, steep=steep, reuse_pave=reuse_pave, shared_stalls=shared_stalls)
+                alt["metrics"]["warnings"].insert(0, f"Ties into the existing pavement with about {st['length_ft']:,.0f} ft of new drive")
+                alt["metrics"]["access"] = "existing_pavement"
+                return alt
+        except Exception as e:  # noqa: BLE001
+            print("tie-in layout failed:", repr(e))
     kw = dict(rules=rules, parking_setbacks_ft=parking_setbacks_ft, drive_road=drive_road, keep_bldgs=keep_bldgs, steep=steep, reuse_pave=reuse_pave, shared_stalls=shared_stalls)
     front, err = None, None
     try:

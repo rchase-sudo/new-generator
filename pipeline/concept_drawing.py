@@ -180,6 +180,8 @@ def _gradient(ax, g, view, c_hi, c_lo, z):
 def _view(sp, parcel, aerial, k_ft, aspect):
     minx, miny, maxx, maxy = aerial["extent"]
     dev = sp["dev"]
+    if sp.get("reuse") is not None and not sp["reuse"].is_empty:      # keep the existing pavement the site ties into in view
+        dev = dev.union(sp["reuse"])
     dx0, dy0, dx1, dy1 = dev.bounds
     size = max(dx1 - dx0, dy1 - dy0)
     pad = max(size * 0.75, 160 / k_ft)

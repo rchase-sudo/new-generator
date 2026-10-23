@@ -354,7 +354,7 @@ def step_layout(job_id):
         res = generate_layout(ctx["parcel_sp"], ctx["k"], ctx["rds"], ctx["wet"], ctx["fl"], setbacks, prog, rules=rules,
                               parking_setbacks_ft=psb, drive_road=rules.get("drive_road") or None,
                               keep_bldgs=[b["geom"] for b in keep], steep=steep, dem=dem,
-                              reuse_pave=[p["geom"] for p in pave_keep], shared_stalls=shared)
+                              reuse_pave=[p["geom"] for p in pave_keep], shared_stalls=shared, tie_existing=rules.get("tie_existing", True) is not False)
     except RuntimeError as e:
         dr = rules.get("drive_road")
         fr = {r["key"]: r["frontage_ft"] for r in (summary.get("front_roads") or [])}
