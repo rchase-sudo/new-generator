@@ -25,6 +25,14 @@ from pipeline.jobs import _extent_around  # noqa: E402
 ext = _extent_around(ctx["parcel_sp"], ctx["k"])
 bld = context.buildings(ext, ctx["epsg"])
 print("buildings:", bld if isinstance(bld, dict) else len(bld))
+pv = context.pavement(ext, ctx["epsg"])
+print("osm pavement:", pv if isinstance(pv, dict) else [(p["kind"], round(p["geom"].area * ctx["k"] ** 2)) for p in pv][:30])
+from pipeline import pavement as _pv  # noqa: E402
+from PIL import Image as _I  # noqa: E402
+import io as _io  # noqa: E402
+_a = dict(ctx["aerial"]); _a["image"] = _I.open(_io.BytesIO(_a["jpg"])).convert("RGB")
+_det = _pv.detect(_a, ctx["parcel_sp"], ctx["k"], ctx.get("bld"), osm=pv if isinstance(pv, list) else [])
+print("detected pavement:", [(d["id"], round(d["area_sf"]), d["kind"], d["est_stalls"]) for d in _det])
 if isinstance(bld, list):
     items = existing.prepare(bld, ctx["parcel_sp"], ctx["k"])
     for b in items:
