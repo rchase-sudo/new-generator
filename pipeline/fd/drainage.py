@@ -230,6 +230,20 @@ def design(g, z_ex, z_prop, G, L, rain, soils, stype, parcel_area_sf, pond_overr
     ground_low = float(np.percentile(z_prop[rmask], 15)) if rmask.any() else float(np.nanmin(z_ex))
     ground_low = min(ground_low, float(np.percentile(z_ex[g.mask(pond_top.buffer(10))], 20))) if g.mask(pond_top.buffer(10)).any() else ground_low
     top_el = round(ground_low + 3.0, 1)
+    # gravity: the outfall (pond top - 3 ft) has to sit below the lowest inlet's pipe; lower the pond top (excavate) when it does not
+    try:
+        rims = [float(g.at(z_prop, [x], [y])[0]) for x, y in inlets]
+        rims = [r_ for r_ in rims if np.isfinite(r_)]
+        if rims:
+            cpp = pond_top.centroid
+            lmax = max(math.hypot(x - cpp.x, y - cpp.y) for x, y in inlets) * 1.25
+            bound = min(rims) - 0.3 - 0.005 * lmax
+            lowered = round(max(ground_low - 4.0, min(top_el, bound)), 1)
+            if lowered < top_el:
+                warns.append(f"Pond top set {top_el - lowered:.1f} ft lower (bank {lowered:.1f}) so the storm sewer can drain to it by gravity")
+                top_el = lowered
+    except Exception:  # noqa: BLE001
+        pass
     # the footprint is the concept layout's pond and does not change; volume comes from depth
     from shapely.ops import polylabel
     try:
