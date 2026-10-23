@@ -18,7 +18,8 @@ PRELIM = ("PRELIMINARY — FOR PLANNING AND PERMIT-PREPARATION REVIEW ONLY. NOT 
 
 def _site_geom(X, extra=()):
     L = X["L"]
-    gs = [L["dev"], L["pond"], X["G"]["spine"].buffer(30), X["ER"]["lod"]] + list(extra)
+    ex = [e["geom"] for e in (L.get("existing") or []) if e["geom"].distance(L["dev"]) < 80]
+    gs = [L["dev"], L["pond"], X["G"]["spine"].buffer(30), X["ER"]["lod"]] + ex + list(extra)
     return unary_union([g for g in gs if g is not None and not g.is_empty])
 
 
@@ -95,7 +96,7 @@ def t1(meta, X):
     data = [["PROJECT DATA", ""], ["Parcel area", f"{f['parcel_ac']:.2f} ac"], ["Zoning", m.get("zone_line") or "—"],
             ["Proposed building", f"{f['bldg_sf']:,.0f} SF"], ["Parking provided", f"{f['stalls']} stalls ({f['ada']} ADA)"],
             ["Impervious (new)", f"{f['imp_sf']:,.0f} SF"], ["Disturbed area", f"{f['dist_ac']:.2f} ac"],
-            ["Detention", f"{f['pond_cf']:,.0f} CF"], ["Water / Sewer", "Public (assumed)"]]
+            ["Detention", f"{f['pond_cf']:,.0f} CF"], ["Water / Sewer", "Private well / septic" if X["U"].get("mode") == "onsite" else "Public (assumed, selected road)"]]
     table(S, W * 0.72, H - 4.4, [1.9, 3.1], data, size=7, row_h=0.28)
     # legend
     leg = [["LEGEND", ""], ["Property line", "heavy solid"], ["Building setback", "dash-dot"], ["Existing contour", "grey dashed"],
@@ -174,7 +175,6 @@ def c2(meta, X):
     draw.road_layers(S, X)
     draw.parcel_labels(S, X, X["parcel_sp"], X["frame"], dim=False)
     draw.constraints(S, X)
-    draw.existing_features(S, X)
     draw.proposed_base(S, X)
     _bldg_labels(S, X)
     # dimensions: building edges, drive width, stall depth
@@ -298,8 +298,8 @@ def c4(meta, X):
     c = pond["poly"].centroid
     S.txt(c.x, c.y, f"DETENTION POND\nTOP {pond['top_el']:.1f}  BOT {pond['bottom_el']:.1f}\nWEIR {pond['weir_crest']:.1f}\n3:1 SIDE SLOPES", 5.8, weight="bold", halo=True, z=30)
     for s in X["net"]["structs"]:
-        if s["kind"] == "CB":
-            S.ax.plot([s["xy"][0]], [s["xy"][1]], marker="s", ms=5, mfc="white", mec=INK, zorder=32)
+        if s["kind"] in ("CB", "DMH"):
+            S.ax.plot([s["xy"][0]], [s["xy"][1]], marker="s" if s["kind"] == "CB" else "o", ms=5, mfc="white", mec=INK, zorder=32)
     S.north_arrow(); S.scale_bar()
     ew = X["earthwork"]
     X0, Y0 = corner(S, 0.015, 0.97)
@@ -364,6 +364,9 @@ def c5(meta, X):
         if s["kind"] == "CB":
             S.ax.plot([x], [y], marker="s", ms=7, mfc="white", mec=INK, mew=1.2, zorder=32)
             S.txt(x + 6, y - 10, f"{s['id']}\nRIM {s['rim']:.2f}\nINV OUT {s['inv_out']:.2f}", 5.4, ha="left", halo=True, z=33)
+        elif s["kind"] == "DMH":
+            S.ax.plot([x], [y], marker="o", ms=7, mfc="white", mec=GREEN, mew=1.4, zorder=32)
+            S.txt(x + 6, y - 10, f"{s['id']}\nRIM {s['rim']:.2f}\nINV OUT {s['inv_out']:.2f}", 5.4, ha="left", halo=True, z=33)
         else:
             S.ax.plot([x], [y], marker="^", ms=8, mfc="white", mec=INK, mew=1.2, zorder=32)
             S.txt(x - 6, y + 12, f"{s['id']}\nINV IN {s['inv_in']:.2f}", 5.4, ha="right", halo=True, z=33)
@@ -384,11 +387,11 @@ def c5(meta, X):
         prow.append([f"P-{i}", f"{p['from']} → {p['to']}", f"{p['len']:.0f}'", f"{p['dia']}\"", f"{p['slope']*100:.2f}%", f"{p['q10']:.1f}", f"{p['cap']:.1f}", f"{p['inv_up']:.2f}", f"{p['inv_dn']:.2f}"])
     table(S, X0, y - 0.3 * S.scale, [0.5, 1.4, 0.5, 0.45, 0.6, 0.5, 0.5, 0.65, 0.65], prow, size=5.6, row_h=0.2)
     _legend(S, 0.015, 0.40, [("line", dict(color=GREEN, lw=1.8), "Storm sewer"), ("mark", dict(marker="s", mfc="white", mec=INK, mew=1.2, ms=7), "Catch basin"),
-                              ("mark", dict(marker="^", mfc="white", mec=INK, mew=1.2, ms=8), "Flared end section"), ("poly", dict(fc="#cfe4f5", ec=BLUE, lw=0.8), "Detention pond"),
+                              ("mark", dict(marker="o", mfc="white", mec=GREEN, mew=1.4, ms=7), "Storm manhole (all bends / joints)"), ("mark", dict(marker="^", mfc="white", mec=INK, mew=1.2, ms=8), "Flared end section"), ("poly", dict(fc="#cfe4f5", ec=BLUE, lw=0.8), "Detention pond"),
                               ("line", dict(color="#d94f4f", lw=0.9, ls=(0, (7, 3))), "Subcatchment")])
     notes = ["Hydrology: SCS TR-55 with SCS 24-hr Type " + X["stype"] + " rainfall; " + X["rain"]["source"] + ".",
              "Pond routed by modified Puls through a single orifice and rectangular emergency weir; post-development peaks are held at or below pre-development for the 2- through 50-year storms.",
-             "Storm sewer sized by Manning's equation for the 10-year storm, min. 2.5 fps, min. 2 ft cover (to be verified with final structure and pipe details).",
+             "Storm sewer sized by Manning's equation for the 10-year storm, min. 2.5 fps, min. 2 ft cover (to be verified with final structure and pipe details). Pipe runs are straight; every bend, junction and change of size is a catch basin or manhole.",
              "Pipes are HDPE unless noted; CB rims and inverts are preliminary."] + list(D["warnings"]) + list(net["warnings"])
     _apply_notes(S, notes, 0.015, 0.31, title="DRAINAGE NOTES", width=8.0)
     _prelim_note(S)
@@ -438,32 +441,65 @@ def c6(meta, X):
         rows.append([f"PVI {n}", f"{int(c['pvi_sta']//100)}+{c['pvi_sta']%100:05.2f}", f"{c['pvi_elev']:.2f}", f"{c['g1']:.2f}%", f"{c['g2']:.2f}%", f"{c['L']:.0f}'", f"{c['K']:.1f}"])
     table(S, W * 0.62 + 2.0, y0 + 4.6, [0.6, 0.9, 0.65, 0.75, 0.8, 0.6, 0.45], rows, size=5.6, row_h=0.22)
     S.txt(W * 0.62 + 2.0, y0 + 4.6 + 0.2, "VERTICAL CURVE DATA", 8, ha="left", weight="bold", z=61)
-    # storm profile
+    # storm profile: longest run from the farthest structure to the pond outfall
     net = X["net"]
-    byid = {s["id"]: s for s in net["structs"]}
+    byid = {s_["id"]: s_ for s_ in net["structs"]}
     y1 = y0 - 5.0
-    if net["pipes"]:
-        p = net["pipes"][0]
-        a, b = byid[p["from"]], byid[p["to"]]
-        s_ = np.array([0.0, p["len"]])
-        S.hscale = 20
-        fx2, fz2 = _profile(S, 1.3, y1, 6.0, 3.6, f"STORM SEWER {p['from']} – {p['to']}", s_,
-                            [(s_, [a["rim"], b["rim"]], dict(color=INK, lw=1.0)), (s_, [p["inv_up"], p["inv_dn"]], dict(color=GREEN, lw=1.8)),
-                             (s_, [p["inv_up"] + p["dia"] / 12, p["inv_dn"] + p["dia"] / 12], dict(color=GREEN, lw=1.0))], vex=5)
-        S.txt(fx2(p["len"] / 2), fz2(a["rim"]) + 0.3, f"{p['len']:.0f} LF – {p['dia']}\" {p['mat']} @ {p['slope']*100:.2f}%", 6, z=66)
-        S.txt(fx2(0), fz2(a["rim"]) + 0.2, f"{a['id']}  RIM {a['rim']:.2f}", 5.4, ha="left", z=66)
-        S.txt(fx2(p["len"]), fz2(b["rim"]) + 0.2, f"{b['id']}  RIM {b['rim']:.2f}", 5.4, ha="right", z=66)
-    # sewer profile
+    up_of = {p["from"]: p for p in net["pipes"]}
+    chains = []
+    for sid in byid:
+        if sid == "FES-1" or sid not in up_of:
+            continue
+        ch, cur = [], sid
+        while cur in up_of:
+            ch.append(up_of[cur])
+            cur = up_of[cur]["to"]
+        chains.append(ch)
+    if chains:
+        ch = max(chains, key=lambda c: sum(p["len"] for p in c))
+        sta = [0.0]
+        for p in ch:
+            sta.append(sta[-1] + p["len"])
+        ids = [ch[0]["from"]] + [p["to"] for p in ch]
+        S.hscale = 40
+        ser = [(np.array(sta), [byid[i]["rim"] for i in ids], dict(color=INK, lw=1.0))]
+        for n_, p in enumerate(ch):
+            ser.append((np.array([sta[n_], sta[n_ + 1]]), [p["inv_up"], p["inv_dn"]], dict(color=GREEN, lw=1.8)))
+            ser.append((np.array([sta[n_], sta[n_ + 1]]), [p["inv_up"] + p["dia"] / 12, p["inv_dn"] + p["dia"] / 12], dict(color=GREEN, lw=0.8)))
+        fx2, fz2 = _profile(S, 1.3, y1, 6.0, 3.6, f"STORM SEWER {ids[0]} – {ids[-1]}", np.array(sta), ser, vex=5)
+        for n_, p in enumerate(ch):
+            S.txt(fx2((sta[n_] + sta[n_ + 1]) / 2), fz2(min(p["inv_up"], p["inv_dn"])) - 0.22, f"{p['len']:.0f} LF {p['dia']}\" {p['mat']} @ {p['slope']*100:.2f}%", 5.2, color=GREEN, z=66)
+        for n_, i_ in enumerate(ids):
+            st_ = byid[i_]
+            S.ax.plot([fx2(sta[n_])] * 2, [fz2(st_["rim"]), fz2(st_.get("inv_out", st_.get("inv_in", st_["rim"] - 5)) if st_["kind"] != "FES" else st_["inv_in"])], color=INK, lw=0.7, zorder=65)
+            S.txt(fx2(sta[n_]), fz2(st_["rim"]) + 0.2, i_, 5.2, z=66)
+    # sewer profile (municipal) or septic hydraulic profile (on-site)
     U = X["U"]
     smh = U["smh"]
-    if len(smh) >= 2:
+    if U.get("mode") == "onsite":
+        bs = U["building_sewer"].length
+        tl = U["tank"].bounds[2] - U["tank"].bounds[0]
+        run = U["tank_to_field"].length if U.get("tank_to_field") is not None else 0
+        stp = np.array([0.0, bs, bs + tl, bs + tl + run])
+        zz = [U["inv_bldg"], U["inv_tank_in"], U["inv_tank_out"], U.get("trench_inv", U["inv_tank_out"])]
+        S.hscale = 20
+        fx3, fz3 = _profile(S, 8.6, y1, W - 8.6 - 1.0, 3.6, "SEPTIC SYSTEM HYDRAULIC PROFILE (BUILDING - TANK - DRAINFIELD)", stp, [(stp, zz, dict(color=BROWN, lw=1.8))], vex=5)
+        for lab, st_, z_ in (("BUILDING OUTLET", stp[0], zz[0]), ("TANK IN", stp[1], zz[1]), ("TANK OUT", stp[2], zz[2]), ("TRENCH INV.", stp[3], zz[3])):
+            S.txt(fx3(st_), fz3(z_) + 0.25, f"{lab}\n{z_:.2f}", 5.2, z=66)
+    elif len(smh) >= 2:
         s_ = np.array([m["sta"] for m in smh], float)
         S.hscale = 100
-        fx3, fz3 = _profile(S, 8.6, y1, W - 8.6 - 1.0, 3.6, "SANITARY SEWER PROFILE (ASSUMED CONNECTION DEPTH)", s_,
-                            [(s_, [m["rim"] for m in smh], dict(color=INK, lw=1.0)), (s_, [m["inv"] for m in smh], dict(color=BROWN, lw=1.8))], vex=10)
+        gz = []
+        grid = X["grid"]
+        Sl = U["sewer_main"]
+        gs_ = np.arange(0, Sl.length, 25.0)
+        gz = [float(grid.at(X["z_prop"], [Sl.interpolate(t).x], [Sl.interpolate(t).y])[0]) for t in gs_]
+        gz = [v if np.isfinite(v) else float(grid.at(X["ex_z"], [Sl.interpolate(t).x], [Sl.interpolate(t).y])[0]) for v, t in zip(gz, gs_)]
+        fx3, fz3 = _profile(S, 8.6, y1, W - 8.6 - 1.0, 3.6, "SANITARY SEWER PROFILE (FROM EXISTING ROAD MAIN, ASSUMED DEPTH)", np.concatenate([s_, gs_]),
+                            [(gs_, gz, dict(color=GREY, lw=1.0, ls=(0, (6, 3)))), (s_, [m["rim"] for m in smh], dict(color=INK, lw=0.8)), (s_, [m["inv"] for m in smh], dict(color=BROWN, lw=1.8))], vex=10)
         for m in smh:
             S.txt(fx3(m["sta"]), fz3(m["rim"]) + 0.25, f"{m['id']}\nRIM {m['rim']:.2f}\nINV {m['inv']:.2f}", 5.0, z=66)
-        S.txt(fx3(s_[len(s_)//2]), fz3(smh[len(smh)//2]["inv"]) - 0.35, f"8\" PVC SDR 35 @ {U['sewer_slope_pct']:.2f}%", 5.8, color=BROWN, z=66)
+        S.txt(fx3(s_[len(s_) // 2]), fz3(smh[len(smh) // 2]["inv"]) - 0.35, f"8\" PVC SDR 35 @ {U['sewer_slope_pct']:.2f}% (+0.1 ft drop per manhole)", 5.8, color=BROWN, z=66)
     S.txt(W * 0.5, 0.35, PRELIM, 6.0, color=GREY, z=60)
     return S
 
@@ -471,7 +507,10 @@ def c6(meta, X):
 # ======================================================================== C7 utilities
 def c7(meta, X):
     L, U = X["L"], X["U"]
-    ext = [U["water_main"].buffer(10), U["sewer_main"].buffer(10)]
+    onsite = U.get("mode") == "onsite"
+    ext = [U["corridor"].buffer(12), U["road_sewer"].buffer(15)] if onsite else [U["sewer_main"].buffer(12), U["water_main"].buffer(12), U["road_sewer"].buffer(15)]
+    if onsite:
+        ext += [Point(*U["well"]).buffer(110)] + [g for g in (U.get("field"), U.get("reserve")) if g is not None]
     S = _site(meta, X, "C7", "UTILITY PLAN", extra=ext, margin=40)
     draw.neighbor_buildings(S, X)
     draw.road_layers(S, X)
@@ -483,12 +522,20 @@ def c7(meta, X):
         c = g.intersection(vb)
         if not c.is_empty:
             S.line(c, **kw)
-    L_(U["water_main"], color=BLUE, lw=1.8, z=14)
-    for g in U["water_lat"]:
-        L_(g, color=BLUE, lw=1.2, z=14)
-    L_(U["sewer_main"], color=BROWN, lw=1.8, ls=(0, (9, 3)), z=14)
-    for g in U["sewer_lat"]:
-        L_(g, color=BROWN, lw=1.2, ls=(0, (9, 3)), z=14)
+    # existing mains in the selected road (assumed)
+    L_(U["road_water"], color=BLUE, lw=1.0, ls=(0, (6, 3)), z=5, alpha=0.6)
+    L_(U["road_sewer"], color=BROWN, lw=1.0, ls=(0, (6, 3)), z=5, alpha=0.6)
+    cpx, cpy = U["cp"]
+    if vb.contains(Point(cpx, cpy)):
+        S.ax.plot([cpx], [cpy], marker="|", ms=14, mew=1.5, color=INK, zorder=34)
+        S.txt(cpx + 8, cpy + 14, f"SERVICE CONNECTION AT PROPERTY LINE\n({U.get('road_key') or 'ROAD'})", 5.4, ha="left", halo=True, z=40)
+    if not onsite:
+        L_(U["water_main"], color=BLUE, lw=1.8, z=14)
+        for g in U["water_lat"]:
+            L_(g, color=BLUE, lw=1.2, z=14)
+        L_(U["sewer_main"], color=BROWN, lw=1.8, ls=(0, (9, 3)), z=14)
+        for g in U["sewer_lat"]:
+            L_(g, color=BROWN, lw=1.2, ls=(0, (9, 3)), z=14)
     L_(U["elec"], color=RED, lw=1.3, ls=(0, (2, 2)), z=14)
     for g in U["elec_lat"]:
         L_(g, color=RED, lw=1.0, ls=(0, (2, 2)), z=14)
@@ -502,35 +549,76 @@ def c7(meta, X):
     for x, y in U["valves"]:
         if vb.contains(Point(x, y)):
             S.ax.plot([x], [y], marker="D", ms=5, mfc=BLUE, mec=BLUE, zorder=33)
-            S.txt(x + 5, y - 8, "GV", 5.4, color=BLUE, ha="left", halo=True, z=34)
     for m in U["smh"]:
         x, y = m["xy"]
         if vb.contains(Point(x, y)):
-            S.ax.plot([x], [y], marker="o", ms=7, mfc="white", mec=BROWN, mew=1.4, zorder=33)
+            S.ax.plot([x], [y], marker="o", ms=7, mfc="white" if not m.get("existing") else "#f4e4d0", mec=BROWN, mew=1.4, zorder=33)
             S.txt(x + 6, y - 14, f"{m['id']}\nRIM {m['rim']:.2f}\nINV {m['inv']:.2f}", 5.2, ha="left", color=BROWN, halo=True, z=34)
     for x, y in U["xfmr"]:
         S.poly(box(x - 3, y - 3, x + 3, y + 3), fc=RED, ec=RED, z=33)
         S.txt(x, y + 9, "PAD XFMR", 5.2, color=RED, halo=True, z=34)
-    S.leader(U["tap"], (U["tap"][0] - 60, U["tap"][1] + 40), "CONNECT TO EXISTING MAINS (LOCATION / DEPTH ASSUMED — VERIFY)", 5.8, ha="right")
-    for sv in U["svc"]:
-        S.txt(sv["w_xy"][0], sv["w_xy"][1] + 12, f"WATER SVC {X['facts']['w_in']}\"", 5.2, color=BLUE, halo=True, z=34)
+    if onsite:
+        for nm, key, col, lab in (("field", "field", BROWN, "SEPTIC DRAINFIELD (PRIMARY)"), ("reserve", "reserve", GREY, "RESERVE AREA (100%)")):
+            g = U.get(key)
+            if g is not None:
+                S.poly(g, fc=(0.8, 0.65, 0.4, 0.18) if key == "field" else (0.8, 0.8, 0.8, 0.12), ec=col, lw=1.0, ls="-" if key == "field" else (0, (6, 3)), z=12)
+                c = g.centroid
+                S.txt(c.x, c.y + (g.bounds[3] - g.bounds[1]) * 0.28, lab, 5.4, color=col, halo=True, z=30)
+        for t in U.get("trenches") or []:
+            S.line(t, color=BROWN, lw=0.8, z=13)
+        S.poly(U["tank"], fc="#e9dccb", ec=BROWN, lw=1.2, z=14)
+        S.txt(U["tank_xy"][0], U["tank_xy"][1] - 12, f"{U['tank_gal']:,}-GAL SEPTIC TANK", 5.4, halo=True, z=34)
+        L_(U["building_sewer"], color=BROWN, lw=1.2, ls=(0, (9, 3)), z=14)
+        if U.get("tank_to_field") is not None:
+            L_(U["tank_to_field"], color=BROWN, lw=1.2, ls=(0, (9, 3)), z=14)
+            S.ax.plot([U["dbox"][0]], [U["dbox"][1]], marker="s", ms=5, mfc="white", mec=BROWN, zorder=34)
+            S.txt(U["dbox"][0] + 6, U["dbox"][1] + 8, "D-BOX" + (" / DOSING CHAMBER" if U.get("pump") else ""), 5.2, ha="left", halo=True, z=34)
+        wx, wy = U["well"]
+        S.poly(Point(wx, wy).buffer(U["well_ring"]), ec=BLUE, lw=0.6, ls=(0, (3, 3)), z=5)
+        S.ax.plot([wx], [wy], marker="o", ms=9, mfc="white", mec=BLUE, mew=1.6, zorder=34)
+        S.txt(wx + 7, wy + 9, "PRIVATE WELL (6\" DRILLED)\n100' SETBACK TO SEPTIC", 5.4, ha="left", color=BLUE, halo=True, z=40)
+        L_(U["well_line"], color=BLUE, lw=1.2, z=14)
+        cx_, cy_ = U["cistern_xy"]
+        S.poly(U["cistern"], fc="#d6e6f5", ec=BLUE, lw=1.0, z=12)
+        S.txt(cx_, cy_ + 12, f"{U['cistern_gal']:,}-GAL FIRE CISTERN", 5.2, color=BLUE, halo=True, z=34)
+    else:
+        S.leader(U["tap"], (U["tap"][0] + 40, U["tap"][1] - 70), "TAP EXISTING ROAD MAINS (LOCATION / DEPTH ASSUMED, VERIFY)", 5.8, ha="left")
     S.north_arrow(); S.scale_bar()
-    _legend(S, 0.015, 0.97, [("line", dict(color=BLUE, lw=1.8), "Water main (PVC C900)"), ("line", dict(color=BROWN, lw=1.8, ls=(0, (9, 3))), "Sanitary sewer (PVC SDR 35)"),
-                              ("line", dict(color=RED, lw=1.3, ls=(0, (2, 2))), "Underground electric"), ("line", dict(color="#e08a00", lw=1.3, ls=(0, (6, 2, 1, 2))), "Natural gas"),
-                              ("mark", dict(marker="*", mfc="white", mec=BLUE, mew=1.2, ms=9), "Fire hydrant"), ("mark", dict(marker="D", mfc=BLUE, mec=BLUE, ms=5), "Gate valve"),
-                              ("mark", dict(marker="o", mfc="white", mec=BROWN, mew=1.4, ms=7), "Sanitary manhole")], w=3.2)
-    X0, Y0 = corner(S, 0.015, 0.68)
-    rows = [["LATERAL", "LEN", "INV AT MAIN", "INV AT BLDG", "OK"]] + [[f"BLDG {r['bldg']}", f"{r['len']}'", f"{r['inv_main']:.2f}", f"{r['inv_bldg']:.2f}", "yes" if r["ok"] else "CHECK"] for r in U["sewer_lat_rows"]]
-    table(S, X0, Y0, [0.8, 0.5, 1.0, 1.0, 0.6], rows, size=5.6, row_h=0.2, title=None)
-    S.txt(X0, Y0 + 0.2 * S.scale, "SEWER LATERAL SCHEDULE", 7.4, ha="left", weight="bold", z=61)
-    X1, Y1 = corner(S, 0.015, 0.56)
-    table(S, X1, Y1, [2.1, 1.3], [["DESIGN DEMAND (PLANNING)", ""], ["Sewer", f"{U['sewer_gpd']:,.0f} gpd"], ["Water", f"{U['water_gpd']:,.0f} gpd"], ["Service size", f"{X['facts']['w_in']}\" water / 6\" sewer"]], size=6, row_h=0.2)
-    _apply_notes(S, ["Public water and sanitary sewer are ASSUMED to be available in the adjacent right-of-way. Obtain a will-serve letter and verify location, size, depth and capacity.",
-                     "Existing main invert is assumed at 8 ft below the road surface; sewer runs at the minimum slope shown. Deep structures or lift-station needs are flagged below.",
-                     "Water main 8\" minimum for fire flow; hydrants spaced per the fire plan (C8). Provide thrust restraint, backflow prevention and meter per utility standards.",
-                     "Dry utilities (electric, gas, communications) are schematic; coordinate routing, easements and transformer location with the providers.",
-                     "Maintain 10 ft horizontal / 18 in vertical separation between water and sewer."] + list(U["warnings"]) + list(U["notes"]),
-                 0.015, 0.46, title="UTILITY NOTES", width=7.6)
+    leg = [("line", dict(color=BLUE, lw=1.0, ls=(0, (6, 3))), "Existing water main in road (assumed)"), ("line", dict(color=BROWN, lw=1.0, ls=(0, (6, 3))), "Existing sewer in road (assumed)"),
+           ("line", dict(color=RED, lw=1.3, ls=(0, (2, 2))), "Underground electric"), ("line", dict(color="#e08a00", lw=1.3, ls=(0, (6, 2, 1, 2))), "Natural gas")]
+    if onsite:
+        leg += [("mark", dict(marker="o", mfc="white", mec=BLUE, mew=1.6, ms=9), "Private well"), ("line", dict(color=BROWN, lw=1.2, ls=(0, (9, 3))), "Building sewer / force line"),
+                ("poly", dict(fc=(0.8, 0.65, 0.4, 0.18), ec=BROWN, lw=0.8), "Septic drainfield")]
+    else:
+        leg += [("line", dict(color=BLUE, lw=1.8), "Water main (PVC C900)"), ("line", dict(color=BROWN, lw=1.8, ls=(0, (9, 3))), "Sanitary sewer (PVC SDR 35)"),
+                ("mark", dict(marker="*", mfc="white", mec=BLUE, mew=1.2, ms=9), "Fire hydrant"), ("mark", dict(marker="D", mfc=BLUE, mec=BLUE, ms=5), "Gate valve"),
+                ("mark", dict(marker="o", mfc="white", mec=BROWN, mew=1.4, ms=7), "Sanitary manhole (every bend / junction)")]
+    _legend(S, 0.015, 0.97, leg, w=3.4)
+    X0, Y0 = corner(S, 0.015, 0.66)
+    f = X["facts"]
+    if onsite:
+        rows = [["ON-SITE WATER & SEPTIC (PLANNING)", ""], ["Design flow", f"{U['flow_gpd']:,.0f} gpd"], ["Soil group / loading rate", f"{U['hsg']} / {U['loading_rate']} gpd/sf (assumed)"],
+                ["Trench bottom area", f"{U['bottom_sf']:,} SF"], ["Septic tank", f"{U['tank_gal']:,} gal"], ["Drainfield (+ equal reserve)", f"{U.get('field_sf', 0):,} SF each"],
+                ["Tank outlet / trench invert", f"{U['inv_tank_out']:.2f} / {U.get('trench_inv', 0):.2f}"], ["Fire water", f"{U['cistern_gal']:,} gal cistern"]]
+        table(S, X0, Y0, [2.3, 2.6], rows, size=5.6, row_h=0.2)
+    else:
+        rows = [["LATERAL", "LEN", "INV AT MAIN", "INV AT BLDG", "OK"]] + [[f"BLDG {r['bldg']}", f"{r['len']}'", f"{r['inv_main']:.2f}", f"{r['inv_bldg']:.2f}", "yes" if r["ok"] else "CHECK"] for r in U["sewer_lat_rows"]]
+        table(S, X0, Y0, [0.8, 0.5, 1.0, 1.0, 0.6], rows, size=5.6, row_h=0.2, title=None)
+        S.txt(X0, Y0 + 0.2 * S.scale, "SEWER LATERAL SCHEDULE", 7.4, ha="left", weight="bold", z=61)
+        X1, Y1 = corner(S, 0.015, 0.56)
+        table(S, X1, Y1, [2.1, 1.3], [["DESIGN DEMAND (PLANNING)", ""], ["Sewer", f"{U['sewer_gpd']:,.0f} gpd"], ["Water", f"{U['water_gpd']:,.0f} gpd"], ["Service size", f"{f['w_in']}\" water / 6\" sewer"]], size=6, row_h=0.2)
+    if onsite:
+        notes = ["No public water or sewer is assumed. Water is from a private drilled well; wastewater to a septic tank and soil drainfield with an equal reserve area. Soil loading rates are assumed from the hydrologic soil group.",
+                 "A percolation test, soil test pits (seasonal high water, restrictive layers), a licensed septic design and a well permit are required before this layout is relied on.",
+                 "Setbacks used: well 100 ft from the drainfield and reserve, 50 ft from the tank; drainfield 75 ft from wetlands and the detention pond, clear of paving and buildings.",
+                 "Electric and gas run in the service corridor from the selected main road, inside our property, then tap the road lines at the right-of-way."]
+    else:
+        notes = ["Public water and sanitary sewer are ASSUMED in the selected main road. Obtain a will-serve letter and verify the main location, size, depth and capacity.",
+                 "Lines run inside our own property from the property-line connection on the selected road, in a single corridor, and tap the road mains only at the right-of-way. Existing main invert is assumed 8 ft below the road surface.",
+                 "Every change of direction or junction in the sewer is a manhole; sewer drops 0.1 ft through each manhole and runs at 0.50%. Deep or shallow structures and lift-station needs are flagged below.",
+                 "Water main 8\" minimum for fire flow; hydrants spaced per the fire plan (C8). Provide thrust restraint, backflow prevention and meter per utility standards. Maintain 10 ft horizontal / 18 in vertical separation between water and sewer.",
+                 "Dry utilities (electric, gas, communications) are schematic; coordinate routing, easements and transformer location with the providers."]
+    _apply_notes(S, notes + list(U["warnings"]) + list(U["notes"]), 0.015, 0.29, title="UTILITY NOTES", width=7.6)
     S.call811()
     _prelim_note(S)
     return S
@@ -553,13 +641,16 @@ def c8(meta, X):
         if vb.contains(Point(x, y)):
             S.ax.plot([x], [y], marker="*", ms=9, mfc="white", mec=BLUE, mew=1.2, zorder=33)
             S.poly(Point(x, y).buffer(250), ec=BLUE, lw=0.6, ls=(0, (3, 3)), z=2)
+    if F.get("cistern") is not None:
+        S.poly(F["cistern"], fc="#d6e6f5", ec=BLUE, lw=1.0, z=12)
+        S.leader(F["cistern"].centroid.coords[0], (F["cistern"].centroid.x + 25, F["cistern"].centroid.y + 35), "FIRE WATER CISTERN\n+ DRY HYDRANT", 5.8)
     for x, y in F["fdc"]:
         S.ax.plot([x], [y], marker="s", ms=7, mfc=RED, mec=RED, zorder=33)
         S.leader((x, y), (x + 25, y - 30), "FIRE DEPT. CONNECTION", 5.8)
     S.north_arrow(); S.scale_bar()
     X0, Y0 = corner(S, 0.015, 0.97)
     table(S, X0, Y0, [2.3, 1.5], [["FIRE ACCESS SUMMARY", ""], ["Drive ≥ 22 ft clear", f"{F['lane_ok_pct']}% of length"], ["Min. centerline radius", f"{F['min_radius_ft']} ft"],
-                                    ["Dead-end length", f"{F['dead_end_ft']} ft"], ["Hydrants in plan", f"{len(F['hydrants'])}"], ["Hydrant coverage (dashed)", "250 ft radius"]], size=6, row_h=0.2)
+                                    ["Dead-end length", f"{F['dead_end_ft']} ft"], ["Water supply", "On-site cistern" if X["U"].get("mode") == "onsite" else f"{len(F['hydrants'])} hydrant(s)"], ["Hydrant coverage (dashed)", "250 ft radius"]], size=6, row_h=0.2)
     _legend(S, 0.015, 0.78, [("line", dict(color=RED, lw=1.4, ls=(0, (8, 3))), "Fire apparatus path (turning envelope)"), ("mark", dict(marker="*", mfc="white", mec=BLUE, mew=1.2, ms=9), "Fire hydrant"),
                               ("mark", dict(marker="s", mfc=RED, mec=RED, ms=7), "Fire dept. connection"), ("line", dict(color=BLUE, lw=0.6, ls=(0, (3, 3))), "250 ft hydrant reach")], w=3.1)
     _apply_notes(S, ["Fire apparatus access roads: 20 ft minimum, 22 ft or more shown here, 13 ft 6 in vertical clearance, designed for 75,000 lb loads (IFC 503).",

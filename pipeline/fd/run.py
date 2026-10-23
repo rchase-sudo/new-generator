@@ -94,8 +94,8 @@ def build(ctx, lay, job, rules, prog, log=print):
     G["lod_mask"] = ew["dist_mask"]
     G["z_prop"], G["z_design2"], G["design_mask2"] = z_prop, zd, dmask
     net = drainage.storm_network(g, z_prop, D, L, rain)
-    deep = max([s.get("rim", 0) - s.get("inv_out", 0) for s in net["structs"] if s["kind"] == "CB" and s.get("inv_out") is not None] or [0])
-    tight = min([s_.get("cover", 9.0) for s_ in net["structs"] if s_["kind"] == "CB"] or [9.0])
+    deep = max([s.get("rim", 0) - s.get("inv_out", 0) for s in net["structs"] if s["kind"] in ("CB", "DMH") and s.get("inv_out") is not None] or [0])
+    tight = min([s_.get("cover", 9.0) for s_ in net["structs"] if s_["kind"] in ("CB", "DMH")] or [9.0])
     if deep > 9.0 or tight < 1.5:     # the layout's pond sits too far below the pavement for a shallow gravity system: site it next to the lot instead
         seed = drainage.site_pond(g, ex_z, z0, G, L, D["inlets"])
         if seed is not None:
@@ -116,7 +116,9 @@ def build(ctx, lay, job, rules, prog, log=print):
             G["z_prop"], G["z_design2"], G["design_mask2"] = z_prop, zd, dmask
             net = drainage.storm_network(g, z_prop, D, L, rain)
     log(f"drainage {time.time() - t0:.1f}s")
-    U = site.utilities(g, z_prop, ex_z, G, L, road_all, prog, fr)
+    L["hsg"] = soils.get("hsg") or "B"
+    road_key = rules.get("drive_road") or (lay.get("metrics") or {}).get("drive_road")
+    U = site.utilities(g, z_prop, ex_z, G, L, road_all, prog, fr, road_key=road_key, mode=rules.get("design_utilities") or "municipal")
     FIRE = site.fire(g, G, L, U)
     LS = site.landscape(L, lat_ll[0])
     LT = site.lighting(g, G, L)

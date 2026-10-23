@@ -130,9 +130,9 @@ def corridor_route(g, a, b, blocked):
     ok[ij0] = ok[ij1] = True
     dist = {ij0: 0.0}
     prev = {}
-    pq = [(0.0, ij0)]
+    pq = [(0.0, 0.0, ij0)]
     while pq:
-        d, cur = heapq.heappop(pq)
+        _f, d, cur = heapq.heappop(pq)
         if cur == ij1:
             break
         if d > dist.get(cur, 1e18):
@@ -146,7 +146,7 @@ def corridor_route(g, a, b, blocked):
                 if nd < dist.get((jj, ii), 1e18):
                     dist[(jj, ii)] = nd
                     prev[(jj, ii)] = cur
-                    heapq.heappush(pq, (nd + 0.01 * h, (jj, ii)))
+                    heapq.heappush(pq, (nd + 0.01 * h, nd, (jj, ii)))
     if ij1 not in prev and ij1 != ij0:
         return None
     path = [ij1]
@@ -282,6 +282,18 @@ def design(g, z_ex, z_prop, G, L, rain, soils, stype, parcel_area_sf, pond_overr
             "roof_of": roof_of, "area_p": area_p, "area_r": area_r}
 
 
+def _bend_points(route, tol=8.0, min_seg=25.0):
+    """Vertices of the simplified route where the pipe would have to turn; short legs are merged so structures are not stacked."""
+    ls = route.simplify(tol)
+    pts = list(ls.coords)
+    out = [pts[0]]
+    for p in pts[1:-1]:
+        if math.hypot(p[0] - out[-1][0], p[1] - out[-1][1]) >= min_seg and math.hypot(p[0] - pts[-1][0], p[1] - pts[-1][1]) >= min_seg:
+            out.append(p)
+    out.append(pts[-1])
+    return out
+
+
 def storm_network(g, z_prop, D, L, rain, blocked_extra=None):
     """Storm sewer from each inlet to the pond. Returns {structures, pipes} with rim / invert data."""
     inlets = D["inlets"]
@@ -322,7 +334,18 @@ def storm_network(g, z_prop, D, L, rain, blocked_extra=None):
         # snap CB onto the pavement low point, structure rim from the proposed surface
         rim = float(g.at(z_prop, [x], [y])[0])
         structs.append({"id": cid, "kind": "CB", "xy": (x, y), "rim": round(rim, 2), "inlet": k})
-        pipes.append({"from": cid, "to": node_ids[ti], "line": route, "inlet": k})
+        # a pipe run is straight between structures: every bend gets a manhole (no joints in the pipe itself)
+        cs = _bend_points(route)
+        prev_id = cid
+        for q, (bx, by) in enumerate(cs[1:-1], 1):
+            dmh_no += 1
+            did = f"DMH-{dmh_no}"
+            structs.append({"id": did, "kind": "DMH", "xy": (bx, by), "rim": round(float(g.at(z_prop, [bx], [by])[0]), 2)})
+            pipes.append({"from": prev_id, "to": did, "line": LineString([cs[q - 1], (bx, by)]), "inlet": k if prev_id == cid else None})
+            node_pts.append((bx, by))
+            node_ids.append(did)
+            prev_id = did
+        pipes.append({"from": prev_id, "to": node_ids[ti], "line": LineString([cs[-2], cs[-1]]), "inlet": k if prev_id == cid else None})
         node_pts.append((x, y))
         node_ids.append(cid)
     # hydraulics, from the outlet upstream
@@ -332,6 +355,9 @@ def storm_network(g, z_prop, D, L, rain, blocked_extra=None):
     tcs = {}
     P1 = rain["d1"][10]
     for p in pipes:
+        if p["inlet"] is None:
+            p["q_local"] = 0.0
+            continue
         s = byk.get(p["inlet"])
         a_ac = (s["area_sf"] / 43560.0) if s else 0.1
         tc = max(10.0, s["tc"] if s else 10.0)
@@ -365,21 +391,22 @@ def storm_network(g, z_prop, D, L, rain, blocked_extra=None):
                     break
             else:
                 s_pipe, d = 0.03, pipe_dia(q, 0.03)
-            inv_up = inv_dn + s_pipe * L_ft
+            inv_up = inv_dn + s_pipe * L_ft + 0.1         # 0.1 ft drop through each structure
             p.update({"len": L_ft, "dia": d, "slope": s_pipe, "q10": q, "inv_dn": round(inv_dn, 2), "inv_up": round(inv_up, 2),
                       "cap": full_flow(d, s_pipe), "mat": "HDPE" if d <= 36 else "RCP"})
             up["inv_out"] = round(inv_up, 2)
             up["cover"] = round(up["rim"] - (inv_up + d / 12.0), 1)
+            up["dia_out"] = d
             set_inverts(p["from"], inv_up)
     set_inverts("FES-1", structs[0]["inv_in"])
     warns = []
     for s in structs:
-        if s["kind"] == "CB" and s.get("cover") is not None and s["cover"] < 2.0:
+        if s["kind"] in ("CB", "DMH") and s.get("cover") is not None and s["cover"] < 2.0:
             if s["cover"] < 0:
                 warns.append(f"{s['id']}: the pond outfall is higher than this inlet, so gravity drainage does not work as drawn; lower the pond, regrade, or add a pump / forebay (engineer to resolve)")
             else:
                 warns.append(f"{s['id']}: only {s['cover']} ft of cover over the outlet pipe; use RCP or raise grades")
-        if s["kind"] == "CB" and s.get("inv_out") is not None and s["rim"] - s["inv_out"] > 12:
+        if s["kind"] in ("CB", "DMH") and s.get("inv_out") is not None and s["rim"] - s["inv_out"] > 12:
             warns.append(f"{s['id']}: structure deeper than 12 ft")
     return {"structs": structs, "pipes": pipes, "warnings": warns}
 
