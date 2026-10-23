@@ -96,6 +96,8 @@ def write_dxf(ec_dxf, out_path, sp, labels, k_ft, existing=None, steep=None):
         ring(g, "P-STEEP", width=1.0 / k_ft)
     for e in existing or []:
         pv = e.get("kind") == "pavement"
+        if pv and e["action"] == "keep":
+            continue      # reused pavement is backend knowledge only; the drawing shows proposed work
         ring(e["geom"], "P-EXIST-PAVE" if (pv and e["action"] == "keep") else ("P-EXIST-KEEP" if e["action"] == "keep" else "P-EXIST-DEMO"), width=0.5 / k_ft)
         if e["action"] == "demo" and not pv:   # X through the footprint, the usual demolition mark
             for p in _polys(e["geom"]):
@@ -269,9 +271,7 @@ def write_sheet(pdf_path, png_path, parcel, env, wet, fl, rds, aerial, k_ft, sp,
 
     for e in existing or []:
         if e.get("kind") == "pavement":
-            if e["action"] == "keep":
-                _patch(ax, e["geom"], 5.4, facecolor=(0.78, 0.80, 0.83, 0.85), edgecolor="#6b7480", lw=lw_ft(0.9), ls=(0, (6, 3)))
-            else:
+            if e["action"] == "demo":
                 _patch(ax, e["geom"], 5.4, facecolor=(1, 0.2, 0.2, 0.18), edgecolor="#ff3b30", lw=lw_ft(0.9), ls=(0, (5, 3)), hatch="//")
             continue
         if e["action"] == "keep":
@@ -355,6 +355,8 @@ def write_sheet(pdf_path, png_path, parcel, env, wet, fl, rds, aerial, k_ft, sp,
     for e in existing or []:
         c = e["geom"].representative_point()
         if not (vx0 < c.x < vx1 and vy0 < c.y < vy1):
+            continue
+        if e.get("kind") == "pavement" and e["action"] == "keep":
             continue
         if e.get("kind") == "pavement":
             place([f"EXISTING PAVEMENT {e['id']}", "TO BE REMOVED" if e["action"] == "demo" else "TO REMAIN", f"{e['label']}, {e['sf']:,.0f} SF"], (c.x, c.y), e["geom"], LFS)
