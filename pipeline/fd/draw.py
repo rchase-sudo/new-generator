@@ -154,9 +154,14 @@ def proposed_base(S, X, labels=True, fill=True, existing=True):
         S.line(st, color=INK, lw=0.35, z=8)
     for a in L.get("ada") or []:
         S.poly(a, ec=BLUE, lw=0.6, z=8)
-    pond = X["D"]["pond"]["poly"]
+    P_ = X["D"]["pond"]
+    if P_.get("kind") == "chambers":
+        for b in P_["beds"]:
+            S.poly(b, fc=(0.55, 0.75, 0.92, 0.28), ec=BLUE, lw=1.0, ls=(0, (6, 2.5)), z=9)
+        return
+    pond = P_["poly"]
     S.poly(pond, ec=INK, lw=1.1, z=9)
-    S.poly(pond.buffer(-(X["D"]["pond"]["depth_ft"] * X["D"]["pond"].get("side", 3.0))), ec=INK, lw=0.6, z=9)
+    S.poly(pond.buffer(-(P_["depth_ft"] * P_.get("side", 3.0))), ec=INK, lw=0.6, z=9)
 
 
 def stationing(S, X, step=50.0, size=5.2):

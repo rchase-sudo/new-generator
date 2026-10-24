@@ -19,7 +19,7 @@ PRELIM = ("PRELIMINARY — FOR PLANNING AND PERMIT-PREPARATION REVIEW ONLY. NOT 
 def _site_geom(X, extra=()):
     L = X["L"]
     ex = [e["geom"] for e in (L.get("existing") or []) if e["geom"].distance(L["dev"]) < 80]
-    gs = [L["dev"], L["pond"], X["G"]["spine"].buffer(30), X["ER"]["lod"]] + ex + list(extra)
+    gs = [L["dev"], L["pond"], X["D"]["pond"]["poly"], X["G"]["spine"].buffer(30), X["ER"]["lod"]] + ex + list(extra)
     return unary_union([g for g in gs if g is not None and not g.is_empty])
 
 
@@ -203,7 +203,7 @@ def c2(meta, X):
     table(S, X0, Y0, [2.1, 1.7], [["SITE DATA", ""], ["Parcel area", f"{f['parcel_ac']:.2f} ac"], ["Proposed building", f"{f['bldg_sf']:,.0f} SF"],
                                     ["Parking provided", f"{f['stalls']} ({f['ada']} ADA)"], ["Parking ratio", f"{f['ratio']:.1f} / 1,000 SF"],
                                     ["New impervious", f"{f['imp_sf']:,.0f} SF"], ["Reused pavement", f"{f['reuse_sf']:,.0f} SF"],
-                                    ["Open space / landscape", f"{f['green_sf']:,.0f} SF"], ["Stormwater pond", f"{f['pond_ac']:.2f} ac top"]], size=6, row_h=0.2)
+                                    ["Open space / landscape", f"{f['green_sf']:,.0f} SF"], ["Underground detention" if X["D"]["pond"].get("kind") == "chambers" else "Stormwater pond", (f"{X['D']['pond']['top_area_sf']:,.0f} SF chambers" if X["D"]["pond"].get("kind") == "chambers" else f"{f['pond_ac']:.2f} ac top")]], size=6, row_h=0.2)
     _legend(S, 0.015, 0.74, [("line", dict(color=INK, lw=1.6), "Proposed building"), ("line", dict(color=INK, lw=1.2), "Proposed curb / edge of pavement"),
                               ("line", dict(color=INK, lw=0.8, ls=(0, (9, 4, 2, 4))), "Building setback line"), ("line", dict(color=INK, lw=2.0), "Property line")])
     _apply_notes(S, ["All dimensions are to face of curb unless noted.", "Parking stalls per concept layout; verify count and ADA requirements with the local code.",
@@ -256,7 +256,7 @@ def c3(meta, X):
         "Silt fence or filter sock to be maintained until the site is stabilized; inspect weekly and after each ½\" rain.",
         "Protect storm inlets and the pond outfall with approved inlet protection as they are built.",
         "Stabilize all disturbed areas within 7 days of final grade (seed and mulch, sod or pavement).",
-        "Pond to serve as a sediment basin during construction; clean out before final stabilization.",
+        ("Do not discharge construction runoff to the underground chambers: install them after the site is stabilized, and protect the inlets and outlet control manhole." if X["D"]["pond"].get("kind") == "chambers" else "Pond to serve as a sediment basin during construction; clean out before final stabilization."),
         ("Disturbance is ≥ 1 acre: an NPDES Construction General Permit / NOI and a SWPPP are required." if ER["npdes"] else "Disturbance is under 1 acre; confirm local erosion control permit requirements."),
         "Demolition: remove existing structures, slabs and utilities as marked; cap utilities at the main. Haul and dispose per local rules."],
         0.015, 0.70, title="EROSION CONTROL & DEMOLITION NOTES", width=7.4)
@@ -294,8 +294,13 @@ def c4(meta, X):
             S.txt(pt.x + 4, pt.y + 4, f"{z[i, j]:.2f}", 5.2, ha="left", halo=True, z=31)
     # flow arrows from the pavement
     pond = X["D"]["pond"]
-    c = pond["poly"].centroid
-    S.txt(c.x, c.y, f"DETENTION POND (CONCEPT FOOTPRINT)\nTOP {pond['top_el']:.1f}  BOT {pond['bottom_el']:.1f}  DEPTH {pond['depth_ft']:.1f}'\nWEIR {pond['weir_crest']:.1f}\n{pond.get('side', 3.0):g}:1 SIDE SLOPES", 5.8, weight="bold", halo=True, z=30)
+    if pond.get("kind") == "chambers":
+        for b in pond["beds"]:
+            c = b.centroid
+            S.txt(c.x, c.y, f"UNDERGROUND DETENTION\nTOP OF STONE {pond['stone_top_el']:.1f}  BOT {pond['bottom_el']:.1f}", 5.6, weight="bold", halo=True, z=30)
+    else:
+        c = pond["poly"].centroid
+        S.txt(c.x, c.y, f"DETENTION POND (CONCEPT FOOTPRINT)\nTOP {pond['top_el']:.1f}  BOT {pond['bottom_el']:.1f}  DEPTH {pond['depth_ft']:.1f}'\nWEIR {pond['weir_crest']:.1f}\n{pond.get('side', 3.0):g}:1 SIDE SLOPES", 5.8, weight="bold", halo=True, z=30)
     for s in X["net"]["structs"]:
         if s["kind"] in ("CB", "DMH"):
             S.ax.plot([s["xy"][0]], [s["xy"][1]], marker="s" if s["kind"] == "CB" else "o", ms=5, mfc="white", mec=INK, zorder=32)
@@ -344,12 +349,20 @@ def c5(meta, X):
                 c = g.representative_point()
                 S.txt(c.x, c.y + 20, f"{sc['id']}\n{sc['area_sf']/43560:.2f} AC  CN {sc['cn']:.0f}\nTc {sc['tc']:.0f} min", 6, color=col[sc["id"]], weight="bold", halo=True, z=30)
     pond = D["pond"]
-    S.poly(pond["poly"], fc="#cfe4f5", ec=BLUE, lw=1.2, z=9)
-    c = pond["poly"].centroid
-    S.txt(c.x, c.y, f"DETENTION POND\n{pond['storage_cf']:,.0f} CF\nTOP {pond['top_el']:.2f}\nBOT {pond['bottom_el']:.2f}", 6, weight="bold", halo=True, z=30)
+    chm = pond.get("kind") == "chambers"
+    if chm:
+        for k_, b in enumerate(pond["beds"], 1):
+            S.poly(b, fc="#cfe4f5", ec=BLUE, lw=1.2, ls=(0, (6, 2.5)), z=9)
+            c = b.centroid
+            S.txt(c.x, c.y, f"UNDERGROUND CHAMBER BED {k_}\n{b.area:,.0f} SF  ({b.area / 36.1:.0f} CHAMBERS)" + (f"\nTOTAL {pond['storage_cf']:,.0f} CF\nTOP OF STONE {pond['stone_top_el']:.2f}  BOT {pond['bottom_el']:.2f}" if k_ == 1 else ""), 5.8, weight="bold", halo=True, z=30)
+        c = pond["poly"].centroid
+    else:
+        S.poly(pond["poly"], fc="#cfe4f5", ec=BLUE, lw=1.2, z=9)
+        c = pond["poly"].centroid
+        S.txt(c.x, c.y, f"DETENTION POND\n{pond['storage_cf']:,.0f} CF\nTOP {pond['top_el']:.2f}\nBOT {pond['bottom_el']:.2f}", 6, weight="bold", halo=True, z=30)
     sc3 = [s for s in D["subcatchments"] if s["inlet"] is None]
     if sc3:
-        S.txt(c.x, c.y - 50, f"{sc3[0]['id']} (to pond): {sc3[0]['area_sf']/43560:.2f} AC  CN {sc3[0]['cn']:.0f}", 5.8, color=col[sc3[0]["id"]], weight="bold", halo=True, z=30)
+        S.txt(c.x, c.y - 50, f"{sc3[0]['id']} (to {'chambers' if chm else 'pond'}): {sc3[0]['area_sf']/43560:.2f} AC  CN {sc3[0]['cn']:.0f}", 5.8, color=col[sc3[0]["id"]], weight="bold", halo=True, z=30)
     byid = {s["id"]: s for s in net["structs"]}
     for p in net["pipes"]:
         S.line(p["line"], color=GREEN, lw=1.8, z=14)
@@ -377,8 +390,8 @@ def c5(meta, X):
     for r in pond["table"]:
         rows.append([f"{r['storm']}-yr", f"{r['pre_cfs']:.2f}", f"{r['post_cfs']:.2f}", f"{r['out_cfs']:.2f}", f"{r['stage']:.2f}"])
     y = table(S, X0, Y0, [0.8, 0.8, 0.9, 0.9, 0.9], rows, title=None, size=6, row_h=0.2)
-    S.txt(X0, Y0 + 0.2 * S.scale, "PRE / POST PEAK RUNOFF & POND ROUTING", 7.4, ha="left", weight="bold", z=61)
-    info = [["POND DATA", ""], ["Top / bottom", f"{pond['top_el']:.2f} / {pond['bottom_el']:.2f}"], ["Storage at top", f"{pond['storage_cf']:,.0f} CF"],
+    S.txt(X0, Y0 + 0.2 * S.scale, "PRE / POST PEAK RUNOFF & " + ("CHAMBER" if chm else "POND") + " ROUTING", 7.4, ha="left", weight="bold", z=61)
+    info = [["CHAMBER DATA" if chm else "POND DATA", ""], ["Grade / bottom" if chm else "Top / bottom", f"{pond['top_el']:.2f} / {pond['bottom_el']:.2f}"], ["Storage at top of stone" if chm else "Storage at top", f"{pond['storage_cf']:,.0f} CF"],
             ["Orifice", f"{pond['orifice_in']:.1f}\" dia."], ["Weir crest / length", f"{pond['weir_crest']:.2f} / {pond['weir_len_ft']:.0f} ft"],
             ["CN pre / post", f"{D['cn_pre']:.0f} / {D['cn_post']:.0f}"], ["Tc pre / post", f"{D['tc_pre']:.1f} / {D['tc_post']:.1f} min"], ["Soil group", D["hsg"]]]
     y = table(S, X0, y - 0.3 * S.scale, [1.8, 2.1], info, size=6, row_h=0.2)
@@ -387,7 +400,7 @@ def c5(meta, X):
         prow.append([f"P-{i}", f"{p['from']} → {p['to']}", f"{p['len']:.0f}'", f"{p['dia']}\"", f"{p['slope']*100:.2f}%", f"{p['q10']:.1f}", f"{p['cap']:.1f}", f"{p['inv_up']:.2f}", f"{p['inv_dn']:.2f}"])
     table(S, X0, y - 0.3 * S.scale, [0.5, 1.4, 0.5, 0.45, 0.6, 0.5, 0.5, 0.65, 0.65], prow, size=5.6, row_h=0.2)
     _legend(S, 0.015, 0.40, [("line", dict(color=GREEN, lw=1.8), "Storm sewer"), ("mark", dict(marker="s", mfc="white", mec=INK, mew=1.2, ms=7), "Catch basin"),
-                              ("mark", dict(marker="o", mfc="white", mec=GREEN, mew=1.4, ms=7), "Storm manhole (all bends / joints)"), ("mark", dict(marker="^", mfc="white", mec=INK, mew=1.2, ms=8), "Flared end section"), ("poly", dict(fc="#cfe4f5", ec=BLUE, lw=0.8), "Detention pond"),
+                              ("mark", dict(marker="o", mfc="white", mec=GREEN, mew=1.4, ms=7), "Storm manhole (all bends / joints)"), ("mark", dict(marker="^", mfc="white", mec=INK, mew=1.2, ms=8), "Flared end section"), ("poly", dict(fc="#cfe4f5", ec=BLUE, lw=0.8), "Underground chambers" if chm else "Detention pond"),
                               ("line", dict(color="#d94f4f", lw=0.9, ls=(0, (7, 3))), "Subcatchment")])
     notes = ["Hydrology: SCS TR-55 with SCS 24-hr Type " + X["stype"] + " rainfall; " + X["rain"]["source"] + ".",
              "Pond routed by modified Puls through a single orifice and rectangular emergency weir; post-development peaks are held at or below pre-development for the 2- through 50-year storms.",

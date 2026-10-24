@@ -82,11 +82,12 @@ def build(ctx, lay, job, rules, prog, log=print):
     D = drainage.design(g, ex_z, z0, G, L, rain, soils, stype, P.area)
     pond = D["pond"]
     # pond into the surface: bank at the top elevation, 3:1 inside to the floor, 6 ft berm top outside
-    pm = g.mask(pond["poly"])
-    rim = g.mask(pond["poly"].buffer(6)) & ~pm
+    chambers = pond.get("kind") == "chambers"          # underground: nothing to grade, the surface is the pavement already designed
+    pm = np.zeros(g.X.shape, bool) if chambers else g.mask(pond["poly"])
+    rim = np.zeros(g.X.shape, bool) if chambers else g.mask(pond["poly"].buffer(6)) & ~pm
     dist_in = ndi.distance_transform_edt(pm) * g.cell
     zd = G["z_design"].copy()
-    zd[pm] = np.maximum(pond["bottom_el"], pond["top_el"] - dist_in[pm] / pond.get("side", 3.0))
+    zd[pm] = np.maximum(pond["bottom_el"], pond["top_el"] - dist_in[pm] / max(pond.get("side", 3.0), 0.1))
     zd[rim & ~G["design_mask"]] = pond["top_el"]
     dmask = G["design_mask"] | pm | rim
     z_prop = grading.surface(g, ex_z, zd, dmask)

@@ -158,6 +158,165 @@ def corridor_route(g, a, b, blocked):
     return LineString(pts).simplify(CELL * 0.9)
 
 
+
+# ---------------------------------------------------------------------------------------------- underground chambers
+CH_STONE_BASE, CH_HT, CH_STONE_TOP, CH_COVER = 0.75, 5.0, 0.5, 2.0       # ft: stone under, chamber (MC-4500 class), stone over, cover to finished grade
+CH_SF_PER_UNIT = 36.1                                                      # installed footprint of one chamber with its stone (sf)
+CH_CF_PER_SF = 4.5                                                         # chamber + stone storage per sf of bed (MC-4500 class: 162.6 CF / 36.1 sf)
+
+
+def _max_rect(m):
+    """Largest all-True axis-aligned rectangle in a boolean grid: (area, i0, j0, i1, j1) with i = column, j = row, inclusive."""
+    h, w = m.shape
+    best = (0, 0, 0, 0, 0)
+    hs = np.zeros(w, int)
+    for r in range(h):
+        hs = np.where(m[r], hs + 1, 0)
+        stack = []
+        for c in range(w + 1):
+            cur = int(hs[c]) if c < w else 0
+            start = c
+            while stack and stack[-1][1] >= cur:
+                s0, hh = stack.pop()
+                area = hh * (c - s0)
+                if area > best[0]:
+                    best = (area, s0, r - hh + 1, c - 1, r)
+                start = s0
+            stack.append((start, cur))
+    return best
+
+
+def chamber_stage(A, bottom):
+    """Stage / storage tables for a chamber bed of footprint A (sf) with its stone base at `bottom`."""
+    hs = [0.0, CH_STONE_BASE, CH_STONE_BASE + CH_HT, CH_STONE_BASE + CH_HT + CH_STONE_TOP]
+    per = [0.4, (CH_CF_PER_SF - 0.4 * (CH_STONE_BASE + CH_STONE_TOP)) / CH_HT, 0.4]
+    stage, stor = [], []
+    for k in range(3):
+        for t in (0.0, 0.5, 1.0):
+            h = hs[k] + (hs[k + 1] - hs[k]) * t
+            if stage and abs(stage[-1] - (bottom + h)) < 1e-9:
+                continue
+            v = (stor[-1] if stor else 0.0) + (0.0 if not stage else per[k] * A * (bottom + h - stage[-1]))
+            stage.append(bottom + h)
+            stor.append(v)
+    return stage, stor
+
+
+def _chambers(g, z_prop, G, L, inlets, d_total, pre, warns):
+    """Underground detention (chambers in a stone bed) under pavement, clear of buildings. Footprint comes from the paved area."""
+    c = g.cell
+    pave = L["pave"]
+    blds = [b for b in L["bldgs"] if b is not None] + [b for b in (L.get("keep_bldgs") or []) if b is not None]
+    allowed_poly = pave.buffer(-2.0)
+    if blds:
+        allowed_poly = allowed_poly.difference(unary_union(blds).buffer(10.0))
+    allowed_poly = allowed_poly.intersection(L["parcel"].buffer(-10.0))
+    if L.get("wet") is not None and not L["wet"].is_empty:
+        allowed_poly = allowed_poly.difference(L["wet"].buffer(10.0))
+    base_mask = g.mask(allowed_poly) if not allowed_poly.is_empty else np.zeros(g.X.shape, bool)
+    rims = []
+    for x, y in inlets:
+        r_ = float(g.at(z_prop, [x], [y])[0])
+        if np.isfinite(r_):
+            rims.append(r_)
+    bound = (min(rims) - 0.3 - 0.005 * 150.0) if rims else float(np.nanmax(z_prop))
+    zfin = np.where(np.isfinite(z_prop), z_prop, 1e9)
+
+    def collect(m0, n_max=16):
+        m = m0.copy()
+        out = []
+        for _ in range(n_max):
+            area, i0, j0, i1, j1 = _max_rect(m)
+            if area == 0 or min(i1 - i0 + 1, j1 - j0 + 1) * c < 12.0 or area * c * c < 500.0:
+                break
+            out.append((i0, j0, i1, j1))
+            m[max(j0 - 1, 0):j1 + 2, max(i0 - 1, 0):i1 + 2] = False
+        return out
+
+    # prefer the lowest paved ground (the storm sewer has to reach the chambers by gravity); widen the search if the volume needs it
+    rects, thr_used = [], None
+    for thr in (bound, bound + 2.0, bound + 5.0, 1e9):
+        r_ = collect(base_mask & (zfin <= thr))
+        if sum((q[2] - q[0] + 1) * (q[3] - q[1] + 1) for q in r_) * c * c >= 500.0:
+            rects, thr_used = r_, thr
+            if sum((q[2] - q[0] + 1) * (q[3] - q[1] + 1) for q in rects) * c * c >= 6000.0:
+                break
+    if not rects:
+        raise RuntimeError("No paved area clear of buildings is large enough for underground detention chambers")
+    areas = [(q[2] - q[0] + 1) * (q[3] - q[1] + 1) * c * c for q in rects]
+    A_avail = float(sum(areas))
+    cells = np.zeros(g.X.shape, bool)
+    for (i0, j0, i1, j1) in rects:
+        cells[j0:j1 + 1, i0:i1 + 1] = True
+    top_el = round(float(np.nanmin(np.where(cells, z_prop, np.nan))), 2)
+    stone_top = top_el - CH_COVER
+    bottom = round(stone_top - (CH_STONE_BASE + CH_HT + CH_STONE_TOP), 2)
+    crest = round(bottom + CH_STONE_BASE + CH_HT - 0.25, 2)
+    res = None
+    last = None
+    for A in np.arange(400.0, A_avail + 1.0, 100.0):
+        stage, stor = chamber_stage(float(A), bottom)
+        last = float(A)
+        for dia in (0.25, 0.33, 0.5, 0.67, 0.83, 1.0, 1.25, 1.5, 2.0):
+            ok, out = True, {}
+            for st in hydro.STORMS:
+                t, q = d_total[st]
+                hp, qp, qo, hs_ = hydro.route_pond(t, q, stage, stor, (bottom + 0.3, dia), (crest, 10.0))
+                out[st] = (hp, qp, float(q.max()))
+                if st <= 50 and qp > pre[st]:
+                    ok = False
+            if ok:
+                break
+        if ok and out[100][0] <= bottom + CH_STONE_BASE + CH_HT + 0.2:
+            res = (float(A), dia, out, stage, stor)
+            break
+    if res is None:
+        A = A_avail
+        stage, stor = chamber_stage(A, bottom)
+        dia = 0.5
+        out = {}
+        for st in hydro.STORMS:
+            t, q = d_total[st]
+            hp, qp, qo, hs_ = hydro.route_pond(t, q, stage, stor, (bottom + 0.3, dia), (crest, 10.0))
+            out[st] = (hp, qp, float(q.max()))
+        res = (A, dia, out, stage, stor)
+        warns.append(f"The paved area clear of buildings ({A_avail:,.0f} SF) cannot hold enough chambers to bring post-development peaks down to pre-development; reduce impervious area or add storage elsewhere")
+    A, dia, out, stage, stor = res
+    # allocate the needed footprint across the beds, trimming the last one along its long side
+    beds, left = [], A
+    for (i0, j0, i1, j1), ar in sorted(zip(rects, areas), key=lambda t: -t[1]):
+        if left <= 50:
+            break
+        w_c, h_c = i1 - i0 + 1, j1 - j0 + 1
+        take = min(ar, left)
+        if take < ar:
+            if w_c >= h_c:
+                w_c = max(3, int(math.ceil(take / (c * c) / h_c)))
+                i1 = i0 + w_c - 1
+            else:
+                h_c = max(3, int(math.ceil(take / (c * c) / w_c)))
+                j1 = j0 + h_c - 1
+            take = w_c * h_c * c * c
+        x0, x1 = g.xs[i0] - c / 2, g.xs[i1] + c / 2
+        y0, y1 = g.ys[j0] - c / 2, g.ys[j1] + c / 2
+        from shapely.geometry import box as _box
+        beds.append(_box(x0, y0, x1, y1))
+        left -= take
+    A_real = float(sum(b.area for b in beds))
+    stage, stor = chamber_stage(A_real, bottom)
+    n_ch = int(round(A_real / CH_SF_PER_UNIT))
+    poly = unary_union(beds)
+    warns.append(f"No detention pond in the concept layout: stormwater is held in underground chambers (MC-4500 class, {n_ch} units in {len(beds)} bed{'s' if len(beds) != 1 else ''}, {A_real:,.0f} SF) "
+                 f"under the parking, clear of buildings ({CH_COVER:g} ft minimum cover to finished grade); size, manufacturer and traffic loading to be confirmed with the engineer of record")
+    if thr_used is not None and thr_used > bound + 0.01:
+        warns.append("The chambers could not all be placed at the low end of the paving, so part of the storm sewer reaches them with little fall")
+    pond = {"kind": "chambers", "poly": poly, "beds": beds, "n_chambers": n_ch, "top_el": top_el, "stone_top_el": round(stone_top, 2), "bottom_el": bottom,
+            "depth_ft": round(top_el - bottom, 2), "footprint_fixed": False, "side": 0.0, "orifice_in": round(dia * 12, 1), "weir_crest": crest, "weir_len_ft": 10.0,
+            "top_area_sf": float(A_real), "storage_cf": float(stor[-1]), "cover_ft": CH_COVER,
+            "table": [{"storm": st, "pre_cfs": round(pre[st], 2), "post_cfs": round(out[st][2], 2), "out_cfs": round(out[st][1], 2), "stage": round(out[st][0], 2)} for st in hydro.STORMS]}
+    return pond
+
+
 def design(g, z_ex, z_prop, G, L, rain, soils, stype, parcel_area_sf, pond_override=None):
     """G: grading result; L: local geometries. Returns the stormwater design dict (JSON-safe parts + geometries)."""
     warns = []
@@ -219,6 +378,13 @@ def design(g, z_ex, z_prop, G, L, rain, soils, stype, parcel_area_sf, pond_overr
     for s in hydro.STORMS:
         t, q = hydro.hydrograph(area_ac, cn_pre_area, tc_pre, rain["d24"][s], stype)
         pre[s] = q.max()
+    if pond0 is None or pond0.is_empty:
+        d_tot = {st: hydro.hydrograph(area_ac, cn_post, tc_post, rain["d24"][st], stype) for st in hydro.STORMS}
+        pond = _chambers(g, z_prop, G, L, inlets, d_tot, pre, warns)
+        imp = float(sum(s_["pave_sf"] + s_["roof_sf"] for s_ in sc))
+        return {"inlets": inlets, "subcatchments": sc, "cells": cells, "area_ac": area_ac, "cn_post": cn_post, "cn_pre": cn_pre_area, "tc_pre": tc_pre, "tc_post": tc_post,
+                "pond": pond, "impervious_sf": imp, "bypass_sf": area_g_bypass, "hsg": hsg, "warnings": warns, "rain": rain, "stype": stype,
+                "roof_of": roof_of, "area_p": area_p, "area_r": area_r}
     # pond geometry
     top_polys = polys(pond0)
     pond_top = max(top_polys, key=lambda p: p.area) if top_polys else None
@@ -336,8 +502,13 @@ def storm_network(g, z_prop, D, L, rain, blocked_extra=None):
         blocked |= blocked_extra
     # outfall point: on the pond rim nearest the first inlet cluster
     cent = unary_union([Point(p) for p in inlets]).centroid
-    fes = nearest_points(pp.exterior, cent)[0]
-    structs = [{"id": "FES-1", "kind": "FES", "xy": (fes.x, fes.y), "rim": pond["top_el"], "inv_out": None, "inv_in": round(max(pond["bottom_el"] + 1.0, pond["top_el"] - 3.0), 2)}]
+    chambers = pond.get("kind") == "chambers"
+    fes = nearest_points(pp.boundary, cent)[0]
+    if chambers:
+        # the sewer enters the chamber bed through its header (crown about 3 ft under the lowest finished grade over the bed)
+        structs = [{"id": "FES-1", "kind": "FES", "xy": (fes.x, fes.y), "rim": pond["top_el"], "inv_out": None, "inv_in": round(pond["top_el"] - 3.5, 2), "label": "CHAMBER INLET"}]
+    else:
+        structs = [{"id": "FES-1", "kind": "FES", "xy": (fes.x, fes.y), "rim": pond["top_el"], "inv_out": None, "inv_in": round(max(pond["bottom_el"] + 1.0, pond["top_el"] - 3.0), 2)}]
     pipes = []
     order = sorted(range(len(inlets)), key=lambda k: math.hypot(inlets[k][0] - fes.x, inlets[k][1] - fes.y))
     net_lines = []
@@ -428,15 +599,83 @@ def storm_network(g, z_prop, D, L, rain, blocked_extra=None):
             set_inverts(p["from"], inv_up)
     set_inverts("FES-1", structs[0]["inv_in"])
     warns = []
+    if chambers:
+        _chamber_outlet(g, z_prop, D, L, pond, structs, pipes, blocked, dmh_no, warns)
     for s in structs:
         if s["kind"] in ("CB", "DMH") and s.get("cover") is not None and s["cover"] < 2.0:
             if s["cover"] < 0:
-                warns.append(f"{s['id']}: the pond outfall is higher than this inlet, so gravity drainage does not work as drawn; lower the pond, regrade, or add a pump / forebay (engineer to resolve)")
+                warns.append(f"{s['id']}: the chamber inlet is higher than this inlet, so gravity drainage does not work as drawn; move the chambers downhill, regrade, or add a pump (engineer to resolve)" if chambers else f"{s['id']}: the pond outfall is higher than this inlet, so gravity drainage does not work as drawn; lower the pond, regrade, or add a pump / forebay (engineer to resolve)")
             else:
                 warns.append(f"{s['id']}: only {s['cover']} ft of cover over the outlet pipe; use RCP or raise grades")
         if s["kind"] in ("CB", "DMH") and s.get("inv_out") is not None and s["rim"] - s["inv_out"] > 12:
             warns.append(f"{s['id']}: structure deeper than 12 ft")
     return {"structs": structs, "pipes": pipes, "warnings": warns}
+
+
+def _chamber_outlet(g, z_prop, D, L, pond, structs, pipes, blocked, dmh_no, warns):
+    """Outlet control manhole beside the chamber bed and a gravity discharge pipe to a flared end at the low side of the property."""
+    pp = pond["poly"]
+    cent = pp.centroid
+    ring = L["parcel"].buffer(-3.0).boundary
+    best, bd = None, 1e18
+    for s_ in np.arange(0, ring.length, 10.0):
+        p = ring.interpolate(s_)
+        dist = math.hypot(p.x - cent.x, p.y - cent.y)
+        if dist > 600:
+            continue
+        zz = float(g.at(z_prop, [p.x], [p.y])[0])
+        if not np.isfinite(zz):
+            continue
+        sc_ = zz + 0.004 * dist
+        if sc_ < bd:
+            best, bd = (p.x, p.y, zz), sc_
+    if best is None:
+        warns.append("No discharge point could be found on the low side of the property for the chamber outlet")
+        return
+    dx, dy, dz = best
+    fes1 = Point(structs[0]["xy"])
+    target = Point(dx, dy)
+    o, od = None, 1e18
+    for s_ in np.arange(0, pp.boundary.length, 5.0):
+        p = pp.boundary.interpolate(s_)
+        if p.distance(fes1) >= 30.0 and p.distance(target) < od:
+            o, od = p, p.distance(target)
+    if o is None:
+        o = nearest_points(pp.boundary, target)[0]
+    route = corridor_route(g, (o.x, o.y), (dx, dy), blocked)
+    if route is None:
+        route = LineString([(o.x, o.y), (dx, dy)])
+    cs = _bend_points(route)
+    q100 = max(pond["table"][-1]["out_cfs"], 0.1)
+    s_pipe = 0.01
+    d = pipe_dia(q100, s_pipe)
+    inv = pond["bottom_el"] + 0.0          # low-flow orifice at the bed floor; the outlet pipe leaves the control manhole at that level
+    ocs = {"id": "OCS-1", "kind": "DMH", "xy": (o.x, o.y), "rim": round(float(g.at(z_prop, [o.x], [o.y])[0]), 2), "label": "OUTLET CONTROL MH"}
+    chain = [ocs]
+    for k, (bx, by) in enumerate(cs[1:-1], 1):
+        dmh_no += 1
+        chain.append({"id": f"DMH-{dmh_no}", "kind": "DMH", "xy": (bx, by), "rim": round(float(g.at(z_prop, [bx], [by])[0]), 2)})
+    fes2 = {"id": "FES-2", "kind": "FES", "xy": (dx, dy), "rim": round(dz, 2), "inv_out": None}
+    chain.append(fes2)
+    for a_, b_ in zip(chain, chain[1:]):
+        ln = LineString([a_["xy"], b_["xy"]])
+        L_ft = ln.length
+        inv_up = inv
+        inv_dn = round(inv_up - s_pipe * L_ft, 2)
+        pipes.append({"from": a_["id"], "to": b_["id"], "line": ln, "inlet": None, "q_local": 0.0, "len": L_ft, "dia": d, "slope": s_pipe, "q10": q100,
+                      "inv_up": round(inv_up, 2), "inv_dn": inv_dn, "cap": full_flow(d, s_pipe), "mat": "HDPE" if d <= 36 else "RCP", "outlet": True})
+        a_["inv_out"] = round(inv_up, 2)
+        a_["dia_out"] = d
+        a_["cover"] = round(a_["rim"] - (inv_up + d / 12.0), 1)
+        b_["inv_in"] = inv_dn
+        inv = inv_dn - 0.1
+    structs.extend(chain)
+    dn = fes2["inv_in"]
+    if dn < dz - 2.0:
+        warns.append(f"Chamber outlet: the discharge pipe reaches the low side of the property at invert {dn:.1f}, {dz - dn:.1f} ft below the ground there; "
+                     "gravity discharge needs a lower discharge point (ditch, swale or downstream storm sewer) or a pumped outlet (engineer to resolve)")
+    if pond["table"] and pond["table"][-1]["stage"] > pond["weir_crest"] + 0.01:
+        warns.append("The 100-yr event rises above the chamber overflow crest; the overflow weir in the control manhole carries the excess")
 
 
 def site_pond(g, z_ex, z_prop, G, L, inlets, area_sf=9000.0, depth_below=5.0):
