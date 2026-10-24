@@ -65,6 +65,25 @@ if sys.argv[1].startswith("design:"):   # build the preliminary plan set for an 
     print(json.dumps({k: j.get(k) for k in ("design_status", "design_error", "design")}, indent=1, default=str))
     sys.exit(0 if j.get("design_status") == "completed" else 1)
 
+if sys.argv[1].startswith("render:"):   # re-render an approved job (3D model -> Nano Banana) and save the images under test_runs
+    job_id = sys.argv[1].split(":", 1)[1]
+    print(api(action="render", job_id=job_id))
+    t0 = time.time(); last = None
+    time.sleep(6)
+    while time.time() - t0 < 1500:
+        j = api(action="status", job_id=job_id)
+        if j.get("render_status") != last:
+            last = j.get("render_status"); print(f"[{int(time.time()-t0):4d}s] render {last} {j.get('render_error') or ''}", flush=True)
+        if last in ("completed", "failed"):
+            break
+        time.sleep(10)
+    out = os.path.join("test_runs", job_id)
+    os.makedirs(out, exist_ok=True)
+    import requests as _rq
+    for name, url in ((j.get("files") or {}).get("render") or {}).items():
+        open(os.path.join(out, name), "wb").write(_rq.get(url, timeout=120).content)
+    sys.exit(0 if last == "completed" else 1)
+
 if sys.argv[1].startswith("package:"):   # build the due diligence package for an existing rendered job
     job_id = sys.argv[1].split(":", 1)[1]
     out = os.path.join("test_runs", job_id)
