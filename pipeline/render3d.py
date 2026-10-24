@@ -183,7 +183,12 @@ def prepare(work, parcel_sp, k_ft, aerial, rds, lay, program=None, seed=3):
     el = math.radians(33)
     cam_xy = -n_in * dist * math.cos(el) + t_al * dist * 0.28
     # the lot: only this area may change in the photoreal pass (parcel + the driveway out to the road)
-    lot = unary_union([parcel_sp, sp["drive"]] if sp.get("drive") is not None else [parcel_sp]).buffer(0)
+    # only the developed area (plus a margin and the driveway), never the whole parcel: on a long parcel the rest stays
+    # exactly as the model draws it (woods), so the photoreal pass cannot invent buildings or parking there
+    lot_parts = [dev.buffer(30 / k_ft).intersection(parcel_sp.buffer(5 / k_ft))]
+    if sp.get("drive") is not None:
+        lot_parts.append(sp["drive"].buffer(6 / k_ft))
+    lot = unary_union(lot_parts).buffer(0)
     scene = {
         "lot": Wg(lot),
         "ground": {"corners": [W(minx, miny), W(maxx, miny), W(maxx, maxy), W(minx, maxy)]},
