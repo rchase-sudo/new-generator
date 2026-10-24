@@ -180,7 +180,7 @@ def prepare(work, parcel_sp, k_ft, aerial, rds, lay, program=None, seed=3):
     dx0, dy0, dx1, dy1 = dev.bounds
     S = max(dx1 - dx0, dy1 - dy0) * mpu
     dist = 1.75 * S + 45.0
-    el = math.radians(33)
+    el = math.radians(40)           # steep enough that no horizon shows: the frame is all ground, like a real drone shot
     cam_xy = -n_in * dist * math.cos(el) + t_al * dist * 0.28
     # the lot: only this area may change in the photoreal pass (parcel + the driveway out to the road)
     # only the developed area (plus a margin and the driveway), never the whole parcel: on a long parcel the rest stays
@@ -201,7 +201,7 @@ def prepare(work, parcel_sp, k_ft, aerial, rds, lay, program=None, seed=3):
         "ornamental": orn,
         "camera": {"pos": [round(float(cam_xy[0]), 2), round(float(cam_xy[1]), 2), round(dist * math.sin(el), 2)],
                    "target": [0.0, 0.0, 0.0], "lens": 32},
-        "sun": {"az_deg": (math.degrees(math.atan2(-n_in[0], -n_in[1])) + 35) % 360, "el_deg": 38},
+        "sun": {"az_deg": (math.degrees(math.atan2(-n_in[0], -n_in[1])) + 35) % 360, "el_deg": 24}              # low golden-hour sun: long soft shadows,
         "program": (program or {}).get("use"),
     }
     with open(os.path.join(work, "scene.json"), "w") as f:

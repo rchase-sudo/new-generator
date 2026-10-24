@@ -429,7 +429,7 @@ def step_render(job_id):
     work = tempfile.mkdtemp()
     render3d.prepare(work, ctx["parcel_sp"], k, aer, rds, lay, job.get("program"))
     supa.update_job(job_id, render_status="rendering")
-    out = render3d.render(work, width=1600, height=1000, samples=64)
+    out = render3d.render(work, width=1800, height=1200, samples=64)
     key = supa.upload(job_id, out, "model_front.png")
     supa.upload(job_id, out.replace(".png", "_mask.json"), "model_front_mask.json")
     outputs = supa.get_job(job_id).get("outputs") or {}
@@ -452,8 +452,19 @@ def step_render_composite(job_id):
     raw_name = next((n for n in ("render_raw.png", "render_raw.jpg") if n in ((job.get("outputs") or {}).get("render") or {})), None)
     if not raw_name:
         raise RuntimeError("Nano Banana output missing")
+    raw = Image.open(io.BytesIO(supa.download(job_id, raw_name))).convert("RGB")
+    if not os.environ.get("RENDER_LOT_ONLY"):
+        # the whole frame is the photoreal pass (like the Pocahontas render): surroundings included, no seam with the 3D model texture
+        path = os.path.join(tempfile.mkdtemp(), "render.jpg")
+        raw.save(path, quality=94)
+        key = supa.upload(job_id, path, "render.jpg")
+        outputs = supa.get_job(job_id).get("outputs") or {}
+        outputs["render"] = {**(outputs.get("render") or {}), "render.jpg": key}
+        outputs["render"].pop("render.png", None)
+        supa.update_job(job_id, outputs=outputs, render_status="completed", render_error=None)
+        return
     base = Image.open(io.BytesIO(supa.download(job_id, "model_front.png"))).convert("RGB")
-    raw = Image.open(io.BytesIO(supa.download(job_id, raw_name))).convert("RGB").resize(base.size, Image.LANCZOS)
+    raw = raw.resize(base.size, Image.LANCZOS)
     m = _json.loads(supa.download(job_id, "model_front_mask.json"))
     sx, sy = base.size[0] / m["w"], base.size[1] / m["h"]
     shapes = [_Poly([(x * sx, y * sy) for x, y in m["lot"][0]]).buffer(0)] if m.get("lot") else []
