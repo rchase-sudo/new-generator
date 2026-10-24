@@ -201,7 +201,7 @@ def prepare(work, parcel_sp, k_ft, aerial, rds, lay, program=None, seed=3):
         "ornamental": orn,
         "camera": {"pos": [round(float(cam_xy[0]), 2), round(float(cam_xy[1]), 2), round(dist * math.sin(el), 2)],
                    "target": [0.0, 0.0, 0.0], "lens": 32},
-        "sun": {"az_deg": (math.degrees(math.atan2(-n_in[0], -n_in[1])) + 35) % 360, "el_deg": 24}              # low golden-hour sun: long soft shadows,
+        "sun": {"az_deg": (math.degrees(math.atan2(-n_in[0], -n_in[1])) + 35) % 360, "el_deg": 24},   # low golden-hour sun: long soft shadows
         "program": (program or {}).get("use"),
     }
     with open(os.path.join(work, "scene.json"), "w") as f:
