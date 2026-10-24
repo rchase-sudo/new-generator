@@ -549,11 +549,21 @@ def erosion(g, G, L, util, D, net, spine):
         big = max(polys(lawn), key=lambda p: p.area) if polys(lawn) else None
     else:
         big = None
-    out["stockpile"] = None
-    if big is not None and big.area > 5000:
+    if big is None or big.area <= 5000:
+        # no big lawn inside the disturbance: use the largest open piece of the LOD, else stage beside the entrance
+        try:
+            open_ = lod.difference(unary_union([L["pave"]] + [b for b in L["bldgs"] if b is not None]))
+            cand = [p for p in polys(open_) if p.area > 900]
+            big = max(cand, key=lambda p: p.area) if cand else None
+        except Exception:  # noqa: BLE001
+            big = None
+    if big is not None:
         c = big.representative_point()
-        out["stockpile"] = box(c.x - 25, c.y - 15, c.x + 25, c.y + 15)
-        out["washout"] = box(c.x + 30, c.y - 6, c.x + 42, c.y + 6)
+    else:
+        c = Point(a.x, a.y)
+        c = affinity.translate(Point(a.x, a.y), 70 * math.cos(math.radians(ang + 90)), 70 * math.sin(math.radians(ang + 90)))
+    out["stockpile"] = box(c.x - 25, c.y - 15, c.x + 25, c.y + 15)
+    out["washout"] = box(c.x + 30, c.y - 6, c.x + 42, c.y + 6)
     out["inlet_prot"] = [s["xy"] for s in net["structs"] if s["kind"] == "CB"]
     out["npdes"] = out["lod_ac"] >= 1.0
     return out
