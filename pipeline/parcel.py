@@ -22,7 +22,6 @@ REGRID = "https://app.regrid.com/api/v2"
 # discovered on demand and cached in Supabase (county_sources).
 STATEWIDE = {
     "NH": ["https://nhgeodata.unh.edu/nhgeodata/rest/services/CAD/ParcelMosaic/MapServer",
-           "https://granit24a.sr.unh.edu/nhgeodata/rest/services/CAD/ParcelMosaic/MapServer",
            "https://granit24a.sr.unh.edu/hosting/rest/services/Hosted/CAD_ParcelMosaic/FeatureServer"],
     "VA": ["https://vginmaps.vdem.virginia.gov/arcgis/rest/services/VA_Base_Layers/VA_Parcels/FeatureServer/0"],
 }
@@ -213,12 +212,15 @@ def _resolve_layer(url):
     """A statewide entry may be a service root: find its parcel polygon layer (name match, else the first polygon layer)."""
     if re.search(r"/\d+/?$", url):
         return url
-    lyr = find_layer(url)
+    try:
+        lyr = find_layer(url)
+    except Exception:  # noqa: BLE001
+        lyr = None
     if lyr:
         return lyr
-    for i in range(0, 4):
+    for i in range(0, 3):
         try:
-            js = get(f"{url.rstrip('/')}/{i}", params={"f": "json"}, timeout=30).json()
+            js = get(f"{url.rstrip('/')}/{i}", params={"f": "json"}, timeout=15).json()
             if js.get("geometryType") == "esriGeometryPolygon":
                 return f"{url.rstrip('/')}/{i}"
         except Exception:  # noqa: BLE001
