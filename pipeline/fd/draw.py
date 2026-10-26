@@ -113,7 +113,7 @@ def constraints(S, X, setback=True):
             S.txt(r.x, r.y, "FEMA SFHA (1% ANNUAL CHANCE FLOODPLAIN)", 5.2, color=BLUE, halo=True, z=21)
 
 
-def contours(S, X, which="ex", labels=True, color=GREY, alpha=0.9):
+def contours(S, X, which="ex", labels=True, color=GREY, alpha=0.9, heavy=False):
     g = X["grid"]
     z = X["ex_z"] if which == "ex" else X["z_prop"]
     key = "_c_" + which
@@ -137,7 +137,7 @@ def contours(S, X, which="ex", labels=True, color=GREY, alpha=0.9):
         if not pr:
             S.line(ln, color=GREY, lw=0.9 if idx else 0.45, ls=(0, (7, 2.5)) if idx else (0, (4, 3)), z=2, alpha=alpha)
         else:
-            S.line(ln, color="#000000", lw=2.0 if idx else 1.15, z=14)
+            S.line(ln, color="#000000" if heavy else "#3a3a3a", lw=(2.0 if idx else 1.15) if heavy else (0.9 if idx else 0.45), z=14 if heavy else 6)
     if not labels:
         return
     vb = box(*S.view).buffer(-25)

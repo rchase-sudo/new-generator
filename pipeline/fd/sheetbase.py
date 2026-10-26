@@ -43,7 +43,7 @@ STD_SCALES = [10, 20, 30, 40, 50, 60, 80, 100, 150, 200, 300, 400, 500]
 
 
 class Sheet:
-    def __init__(self, meta, no, title, view_center, scale=None, fit_geom=None, rotate_north=0.0, margin_ft=40, right_notes=True, scale_text=None):
+    def __init__(self, meta, no, title, view_center, scale=None, fit_geom=None, rotate_north=0.0, margin_ft=40, right_notes=True, scale_text=None, panel=False, panel_w=8.6):
         """meta: project info dict. view_center ft (x,y). scale: ft per inch, or None to fit `fit_geom`."""
         self.meta = meta
         self.no, self.title = no, title
@@ -63,18 +63,29 @@ class Sheet:
             sp.set_visible(False)
         self.W_in = (x1 - x0) * PX_W
         self.H_in = (y1 - y0) * PX_H
+        self.panel, self.PW = bool(panel), panel_w
+        fit_w = self.W_in - (panel_w if panel else 0)
         if scale is None and fit_geom is not None:
             minx, miny, maxx, maxy = fit_geom.bounds
-            need = max((maxx - minx + 2 * margin_ft) / self.W_in, (maxy - miny + 2 * margin_ft) / self.H_in)
+            need = max((maxx - minx + 2 * margin_ft) / fit_w, (maxy - miny + 2 * margin_ft) / self.H_in)
             scale = next((s for s in STD_SCALES if s >= need), STD_SCALES[-1])
             view_center = ((minx + maxx) / 2, (miny + maxy) / 2)
         self.scale = scale or 40
         self.scale_text = scale_text
         cx, cy = view_center
         hw, hh = self.W_in * self.scale / 2, self.H_in * self.scale / 2
+        if self.panel:
+            cx += (self.PW * self.scale) / 2          # site sits in the left region; the panel takes the right
         self.ax.set_xlim(cx - hw, cx + hw)
         self.ax.set_ylim(cy - hh, cy + hh)
         self.view = (cx - hw, cy - hh, cx + hw, cy + hh)
+        self.left_view = (self.view[0], self.view[1], self.view[2] - (self.PW * self.scale if self.panel else 0), self.view[3])
+        if self.panel:
+            self.px = self.view[2] - (self.PW - 0.3) * self.scale
+            self.cur = self.view[3] - 0.35 * self.scale
+            self.ax.add_patch(Rectangle((self.view[2] - self.PW * self.scale, self.view[1]), self.PW * self.scale, self.view[3] - self.view[1],
+                                        fc="white", ec="none", zorder=58))
+            self.ax.plot([self.view[2] - self.PW * self.scale] * 2, [self.view[1], self.view[3]], color=INK, lw=1.4, zorder=59)
         self.pt_per_ft = 72.0 / self.scale            # 1 ft on the drawing in points
         self.north = rotate_north
         self._chrome()
@@ -178,7 +189,7 @@ class Sheet:
         self.T(cx, 1090, "Project:", 7, "center", family=FONT_T)
         y = 1110
         for i, ln in enumerate(m["project_lines"][:6]):
-            self.T(cx, y, ln, 9.5 if i == 0 else 7.6, "center", weight="bold" if i == 0 else "normal", family=FONT_T)
+            self.T(cx, y, ln, 9.5 if i == 0 else 7.6, "center", weight="bold" if i == 0 else "normal", family="DejaVu Serif" if i == 0 else FONT_T)
             y += 19 if i == 0 else 15
         if m.get("zone_line"):
             self.T(cx, y + 8, m["zone_line"], 6.4, "center")
@@ -202,15 +213,15 @@ class Sheet:
         rule(1450)
         self.T(cx, 1470, "Sheet Title:", 6.4, "center", family=FONT_T)
         for i, ln in enumerate(textwrap.wrap(self.title, 24)[:2]):
-            self.T(cx, 1492 + i * 17, ln, 10.5, "center", weight="bold", family=FONT_T)
+            self.T(cx, 1492 + i * 17, ln, 10.5, "center", weight="bold", family="DejaVu Serif")
         self.T(cx, 1590, self.no, 30, "center", weight="bold", family=FONT_T)
         # drawing name (vertical, left margin)
         self.bg.text(70, 760, f"Drawing: {m['job_no']} {self.title}, Layout: {self.title} - {self.no}", fontsize=5.0, rotation=90, ha="center", va="center", family=FONT, color="#444", zorder=5)
         self.bg.text(2290, 1632, f"© FORMA DESIGNS {m['year']} — PRELIMINARY, NOT FOR CONSTRUCTION", fontsize=4.2, ha="left", va="top", family=FONT, color="#555", zorder=5)
 
     # ---------------------------------------------------------- annotation blocks
-    def north_arrow(self, xy_frac=(0.94, 0.12), size_in=1.5):
-        x0, y0, x1, y1 = self.view
+    def north_arrow(self, xy_frac=(0.90, 0.12), size_in=1.5):
+        x0, y0, x1, y1 = self.left_view
         cx = x0 + (x1 - x0) * xy_frac[0]
         cy = y0 + (y1 - y0) * xy_frac[1]
         L = size_in * self.scale / 2
@@ -228,7 +239,7 @@ class Sheet:
         self.txt(cx - ux * L * 1.25 - px * L * 0.5, cy - uy * L * 1.25 - py * L * 0.5, "NAD 83 / MAG. N. N/A", 4.2, rot=self.north - 90, z=52)
 
     def scale_bar(self, xy_frac=(0.55, 0.035)):
-        x0, y0, x1, y1 = self.view
+        x0, y0, x1, y1 = self.left_view
         seg = {10: 10, 20: 10, 30: 30, 40: 20, 50: 25, 60: 30, 80: 40, 100: 50}.get(self.scale, self.scale * 0.8)
         n = 3
         bx = x0 + (x1 - x0) * xy_frac[0]
@@ -242,28 +253,35 @@ class Sheet:
         self.txt(bx + n * seg / 2, by + h + 0.16 * self.scale, f'SCALE:  1" = {self.scale:g}\'', 6.8, z=52)
 
     def text_block(self, xy_frac, title, items, width_in=8.6, size=5.8, title_size=11, numbered=True):
-        """Notes block anchored at its top-left (fraction of the drawing area)."""
+        """Notes block anchored at its top-left (fraction of the drawing area; in panel mode, at the panel cursor)."""
         x0, y0, x1, y1 = self.view
         X = x0 + (x1 - x0) * xy_frac[0]
         Y = y0 + (y1 - y0) * xy_frac[1]
         ftin = self.scale
+        if self.panel:
+            X, Y, width_in, size, title_size = self.px, self.cur, self.PW - 0.9, 6.3, 12
         self.txt(X, Y, title, title_size, ha="left", va="top", weight="bold", z=60, family=FONT)
         y = Y - 0.26 * ftin
-        chars = int(width_in / (size * 0.52 / 72))
+        chars = int(width_in / (size * 0.64 / 72))
         for n, it in enumerate(items, 1):
             lines_ = textwrap.wrap(it.upper(), chars) or [""]
             lab = f"{n}." if numbered else "•"
             self.txt(X, y, lab, size, ha="left", va="top", z=60)
             for k, ln in enumerate(lines_):
                 self.txt(X + 0.22 * ftin, y - k * size * 1.35 / 72 * ftin, ln, size, ha="left", va="top", z=60)
-            y -= (len(lines_) * size * 1.35 / 72 + 0.07) * ftin
+            y -= (len(lines_) * size * 1.35 / 72 + 0.09) * ftin
+        if self.panel:
+            self.cur = y - 0.3 * ftin
         return y
 
     def call811(self, xy_frac=(0.80, 0.12)):
+        self._811 = True
         x0, y0, x1, y1 = self.view
         X = x0 + (x1 - x0) * xy_frac[0]
         Y = y0 + (y1 - y0) * xy_frac[1]
         r = 0.5 * self.scale
+        if self.panel:
+            X, Y = x1 - self.PW * self.scale / 2, y0 + 0.9 * self.scale
         self.ax.add_patch(plt.Circle((X, Y), r, fc="white", ec=RED, lw=2.4, zorder=60))
         self.txt(X, Y + 0.08 * self.scale, "811", 17, weight="bold", z=61)
         self.txt(X, Y - 0.22 * self.scale, "CALL BEFORE\nYOU DIG", 5.4, weight="bold", z=61, linespacing=1.0)

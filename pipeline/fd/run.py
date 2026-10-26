@@ -68,9 +68,11 @@ def build(ctx, lay, job, rules, prog, log=print):
     lat_ll = lat_lon
     out = {"frame": fr, "grid": g, "L": L, "ex_z": ex_z, "lat": lat_lon[0], "lon": lat_lon[1]}
 
-    # ---- grading
+    # ---- grading (wetlands and streams are never regraded)
+    wm = g.mask(L["wet"].buffer(2.0)) if L.get("wet") is not None and not L["wet"].is_empty else None
+    out["wet_warnings"] = []
     G = grading.run(L, ex_z, g, road_all)
-    z0 = grading.surface(g, ex_z, G["z_design"], G["design_mask"])
+    z0 = grading.surface(g, ex_z, G["z_design"], G["design_mask"], protect=wm)
     ew0 = grading.earthwork(g, ex_z, z0)
     G["lod_mask"] = ew0["dist_mask"]
     log(f"grading base {time.time() - t0:.1f}s")
@@ -90,7 +92,7 @@ def build(ctx, lay, job, rules, prog, log=print):
     zd[pm] = np.maximum(pond["bottom_el"], pond["top_el"] - dist_in[pm] / max(pond.get("side", 3.0), 0.1))
     zd[rim & ~G["design_mask"]] = pond["top_el"]
     dmask = G["design_mask"] | pm | rim
-    z_prop = grading.surface(g, ex_z, zd, dmask)
+    z_prop = grading.surface(g, ex_z, zd, dmask, protect=wm)
     ew = grading.earthwork(g, ex_z, z_prop)
     G["lod_mask"] = ew["dist_mask"]
     G["z_prop"], G["z_design2"], G["design_mask2"] = z_prop, zd, dmask
@@ -111,11 +113,19 @@ def build(ctx, lay, job, rules, prog, log=print):
             zd[pm] = np.maximum(pond["bottom_el"], pond["top_el"] - dist_in[pm] / pond.get("side", 3.0))
             zd[rim & ~G["design_mask"]] = pond["top_el"]
             dmask = G["design_mask"] | pm | rim
-            z_prop = grading.surface(g, ex_z, zd, dmask)
+            z_prop = grading.surface(g, ex_z, zd, dmask, protect=wm)
             ew = grading.earthwork(g, ex_z, z_prop)
             G["lod_mask"] = ew["dist_mask"]
             G["z_prop"], G["z_design2"], G["design_mask2"] = z_prop, zd, dmask
             net = drainage.storm_network(g, z_prop, D, L, rain)
+    if wm is not None:
+        raw = grading.surface(g, ex_z, G["z_design2"], G["design_mask2"])
+        hit_d = float((G["design_mask2"] & wm).sum() * g.cell ** 2)
+        hit_s = float(((np.abs(raw - ex_z) > 0.1) & wm & ~G["design_mask2"]).sum() * g.cell ** 2)
+        if hit_d > 200:
+            out["wet_warnings"].append(f"About {hit_d:,.0f} SF of proposed pavement, building or pond lies in a mapped wetland. Move it out or obtain a wetland permit before this layout is relied on.")
+        if hit_s > 200:
+            out["wet_warnings"].append(f"Cut and fill slopes would reach about {hit_s:,.0f} SF of mapped wetland. Grading is held at the wetland edge, so a retaining wall or steeper slope is needed there. No regrading of the wetland or stream is proposed.")
     log(f"drainage {time.time() - t0:.1f}s")
     L["hsg"] = soils.get("hsg") or "B"
     road_key = rules.get("drive_road") or (lay.get("metrics") or {}).get("drive_road")

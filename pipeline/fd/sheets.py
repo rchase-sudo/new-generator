@@ -8,12 +8,25 @@ from shapely.ops import unary_union
 
 from . import draw, notes as N
 from .base import lines, polys
-from .draw import corner, table
+from .draw import corner
+from .draw import table as _dtable
 from .sheetbase import BLUE, BROWN, CYAN, GREEN, GREY, INK, LGREY, RED, Sheet
 
 PRELIM = ("PRELIMINARY — FOR PLANNING AND PERMIT-PREPARATION REVIEW ONLY. NOT SEALED, NOT FOR CONSTRUCTION. Existing conditions are "
           "compiled from public GIS data and have not been field surveyed; a licensed surveyor and the engineer of record must verify "
           "before any design is relied on.")
+
+
+def table(S, X0, Y0, col_w, rows, title=None, size=5.2, row_h=0.19, **kw):
+    """Grid table; on panel sheets it goes at the panel cursor, scaled to the panel width."""
+    if not getattr(S, "panel", False):
+        return _dtable(S, X0, Y0, col_w, rows, title=title, size=size, row_h=row_h, **kw)
+    k = (S.PW - 0.6) / sum(col_w)
+    col_w = [c * k for c in col_w]
+    top = S.cur - (0.32 * S.scale if title else 0)
+    y = _dtable(S, S.px, top, col_w, rows, title=title, size=max(size, 6.8), row_h=max(row_h, 0.26), **kw)
+    S.cur = y - 0.4 * S.scale
+    return y
 
 
 def _site_geom(X, extra=()):
@@ -24,20 +37,26 @@ def _site_geom(X, extra=()):
 
 
 def _site(meta, X, no, title, extra=(), margin=45, **kw):
-    return Sheet(meta, no, title, (0, 0), fit_geom=_site_geom(X, extra), margin_ft=margin, **kw)
+    return Sheet(meta, no, title, (0, 0), fit_geom=_site_geom(X, extra), margin_ft=margin, panel=True, rotate_north=X["frame"].north_deg, **kw)
 
 
 def _legend(S, fx, fy, items, title="LEGEND", w=2.7):
-    """items: [(kind, style, label)] kind in line|poly|text. Drawn as a boxed legend at a fraction of the view."""
-    X0, Y0 = corner(S, fx, fy)
+    """items: [(kind, style, label)] kind in line|poly|mark. Boxed legend; on panel sheets it sits at the panel cursor."""
     sc = S.scale
-    rh = 0.2 * sc
-    S.ax.add_patch(draw.plt_rect(X0, Y0 - (len(items) + 1.1) * rh, w * sc, (len(items) + 1.1) * rh, "white"))
-    S.ax.plot([X0, X0 + w * sc, X0 + w * sc, X0, X0], [Y0, Y0, Y0 - (len(items) + 1.1) * rh, Y0 - (len(items) + 1.1) * rh, Y0], color=INK, lw=0.8, zorder=62)
-    S.txt(X0 + 0.08 * sc, Y0 - 0.5 * rh, title, 8, ha="left", weight="bold", z=63)
+    if S.panel:
+        X0, Y0, w, rh, fs = S.px, S.cur, S.PW - 0.6, 0.27 * sc, 6.8
+    else:
+        X0, Y0 = corner(S, fx, fy)
+        rh, fs = 0.2 * sc, 5.6
+    hgt = (len(items) + 1.3) * rh
+    S.ax.add_patch(draw.plt_rect(X0, Y0 - hgt, w * sc, hgt, "white"))
+    S.ax.plot([X0, X0 + w * sc, X0 + w * sc, X0, X0], [Y0, Y0, Y0 - hgt, Y0 - hgt, Y0], color=INK, lw=0.9, zorder=62)
+    S.txt(X0 + 0.1 * sc, Y0 - 0.55 * rh, title, 9 if S.panel else 8, ha="left", weight="bold", z=63)
+    S.ax.plot([X0, X0 + w * sc], [Y0 - 1.1 * rh] * 2, color=INK, lw=0.6, zorder=63)
+    sw = 0.9 if S.panel else 0.55
     for i, (kind, st, lab) in enumerate(items):
-        y = Y0 - (i + 1.6) * rh
-        x1, x2 = X0 + 0.1 * sc, X0 + 0.65 * sc
+        y = Y0 - (i + 1.8) * rh
+        x1, x2 = X0 + 0.12 * sc, X0 + (0.12 + sw) * sc
         if kind == "line":
             S.ax.plot([x1, x2], [y, y], zorder=63, **st)
         elif kind == "poly":
@@ -45,12 +64,17 @@ def _legend(S, fx, fy, items, title="LEGEND", w=2.7):
             S.ax.add_patch(Rectangle((x1, y - rh * 0.3), x2 - x1, rh * 0.6, zorder=63, **st))
         elif kind == "mark":
             S.ax.plot([(x1 + x2) / 2], [y], zorder=63, linestyle="none", **st)
-        S.txt(X0 + 0.75 * sc, y, lab, 5.6, ha="left", z=63)
+        S.txt(x2 + 0.12 * sc, y, lab, fs, ha="left", z=63)
+    if S.panel:
+        S.cur = Y0 - hgt - 0.4 * sc
 
 
 def _prelim_note(S, fx=0.02, fy=0.06):
-    x, y = corner(S, fx, fy)
+    x0, y0, x1, y1 = S.left_view
+    x, y = x0 + (x1 - x0) * fx, y0 + (y1 - y0) * fy
     S.txt(x, y, "PRELIMINARY — NOT SEALED — NOT FOR CONSTRUCTION", 9, ha="left", weight="bold", color=RED, z=60)
+    if S.panel and not getattr(S, "_811", False):
+        S.call811()
 
 
 def _apply_notes(S, items, fx, fy, title="GENERAL NOTES", width=8.6):
@@ -74,52 +98,62 @@ def t1(meta, X):
     S.ax.set_xlim(0, W)
     S.ax.set_ylim(0, H)
     S.view = (0, 0, W, H)
+    S.left_view = S.view
     S.north = 0
     m = meta
-    S.txt(W * 0.5, H - 1.0, "PRELIMINARY CIVIL SITE PLANS", 36, weight="bold", family="Carlito")
-    S.txt(W * 0.5, H - 1.85, m["project_lines"][0], 26, weight="bold", family="Carlito")
-    for i, ln in enumerate(m["project_lines"][1:4]):
-        S.txt(W * 0.5, H - 2.5 - i * 0.42, ln, 15, family="Carlito")
+    S.ax.plot([0.5, W - 0.5], [H - 3.35, H - 3.35], color=INK, lw=2.4, zorder=5)
+    S.txt(W * 0.5, H - 0.95, "PRELIMINARY CIVIL SITE PLANS", 38, weight="bold", family="DejaVu Serif", box=False)
+    S.txt(W * 0.5, H - 1.75, m["project_lines"][0].upper(), 24, weight="bold", family="DejaVu Serif", box=False)
+    S.txt(W * 0.5, H - 2.35, "  |  ".join(m["project_lines"][1:4]), 14, box=False)
+    if m.get("zone_line"):
+        S.txt(W * 0.5, H - 2.85, m["zone_line"].upper(), 11, weight="bold", box=False)
+    lx, lw_ = 0.7, 6.0
+    cx0, cw = 7.2, W - 7.2 - 9.3
+    rx, rw = W - 8.9, 8.4
+    top = H - 3.9
     # aerial with subject lot
     if m.get("site_img") is not None:
-        ax0, ay0, aw, ah = W * 0.30, 0.8, W * 0.40, H * 0.52
+        ah = min(cw * 0.78, H - 3.9 - 1.6)
+        ax0, ay0, aw = cx0, top - ah, cw
         S.ax.imshow(m["site_img"], extent=(ax0, ax0 + aw, ay0, ay0 + ah), zorder=3, aspect="auto")
-        S.ax.plot([ax0, ax0 + aw, ax0 + aw, ax0, ax0], [ay0, ay0, ay0 + ah, ay0 + ah, ay0], color=INK, lw=1.2, zorder=4)
+        S.ax.plot([ax0, ax0 + aw, ax0 + aw, ax0, ax0], [ay0, ay0, ay0 + ah, ay0 + ah, ay0], color=INK, lw=1.6, zorder=4)
         pts = [(ax0 + fx * aw, ay0 + fy * ah) for fx, fy in m["site_poly"]]
-        S.ax.plot([p[0] for p in pts] + [pts[0][0]], [p[1] for p in pts] + [pts[0][1]], color="#ffd400", lw=2.4, zorder=5)
-        S.txt(ax0 + aw / 2, ay0 + ah + 0.25, "SITE LOCATION — SUBJECT PARCEL OUTLINED", 10, weight="bold")
-    # sheet index
-    rows = [["SHEET", "TITLE"]] + [[n, t] for n, t in m["index"]]
-    table(S, 0.9, H - 4.4, [0.8, 4.4], rows, title="SHEET INDEX", size=7, row_h=0.28)
-    # project data
-    f = X["facts"]
-    data = [["PROJECT DATA", ""], ["Parcel area", f"{f['parcel_ac']:.2f} ac"], ["Zoning", m.get("zone_line") or "—"],
-            ["Proposed building", f"{f['bldg_sf']:,.0f} SF"], ["Parking provided", f"{f['stalls']} stalls ({f['ada']} ADA)"],
-            ["Impervious (new)", f"{f['imp_sf']:,.0f} SF"], ["Disturbed area", f"{f['dist_ac']:.2f} ac"],
-            ["Detention", f"{f['pond_cf']:,.0f} CF"], ["Water / Sewer", "Private well / septic" if X["U"].get("mode") == "onsite" else "Public (assumed, selected road)"]]
-    table(S, W * 0.72, H - 4.4, [1.9, 3.1], data, size=7, row_h=0.28)
-    # legend
+        S.ax.plot([p[0] for p in pts] + [pts[0][0]], [p[1] for p in pts] + [pts[0][1]], color="#ffd400", lw=2.6, zorder=5)
+        S.txt(ax0 + aw / 2, ay0 - 0.3, "SITE LOCATION - SUBJECT PARCEL OUTLINED", 10, weight="bold", box=False)
+        S.txt(ax0 + aw / 2, ay0 - 0.6, "Aerial imagery: " + m.get("aerial_src", "NAIP") + ". Not to scale.", 7, color=GREY, box=False)
+    # left column: sheet index + legend
+    rows = [["SHEET", "TITLE"]] + [[n, t_] for n, t_ in m["index"]]
+    y = table(S, lx, top - 0.35, [0.9, 5.1], rows, title="SHEET INDEX", size=8, row_h=0.34)
     leg = [["LEGEND", ""], ["Property line", "heavy solid"], ["Building setback", "dash-dot"], ["Existing contour", "grey dashed"],
-           ["Proposed contour", "solid"], ["Storm sewer", "—SD—  (CB, FES)"], ["Sanitary sewer", "—SS—  (SMH)"], ["Water main", "—W—  (HYD, GV)"],
-           ["Electric / Gas", "—E—   —G—"], ["Silt fence / sock", "—SF—"]]
-    table(S, 0.9, H - 9.0, [2.0, 3.2], leg, size=7, row_h=0.28)
-    # notes + approval box
-    _apply_notes(S, N.t1(meta, X), 0.72, 0.52, title="NOTES", width=9.0)
-    ax, ay = W * 0.72, 0.8
-    S.ax.add_patch(draw.plt_rect(ax, ay, 5.0, 2.2, "white"))
-    S.ax.plot([ax, ax + 5, ax + 5, ax, ax], [ay, ay, ay + 2.2, ay + 2.2, ay], color=INK, lw=0.8, zorder=62)
-    S.txt(ax + 2.5, ay + 1.95, "AGENCY APPROVAL", 9, weight="bold", z=63)
-    for i, lab in enumerate(["REVIEWED BY: ______________________", "DATE: ________________", "APPROVED: ____________________"]):
-        S.txt(ax + 0.2, ay + 1.4 - i * 0.45, lab, 7, ha="left", z=63)
+           ["Proposed contour", "heavy black, labeled"], ["Storm sewer", "SD (CB, FES)"], ["Sanitary sewer", "SS (SMH)"], ["Water main", "W (HYD, GV)"],
+           ["Electric / Gas", "E / G"], ["Silt fence / sock", "SF"]]
+    y = table(S, lx, y - 0.9, [2.4, 3.6], leg, size=8, row_h=0.34)
+    f = X["facts"]
+    data = [["PROJECT DATA", ""], ["Parcel area", f"{f['parcel_ac']:.2f} ac"], ["Zoning", (m.get("zone_line") or "-").replace("Zoning: ", "")],
+            ["Proposed building", f"{f['bldg_sf']:,.0f} SF"], ["Parking provided", f"{f['stalls']} stalls ({f['ada']} ADA)"],
+            ["New impervious", f"{f['imp_sf']:,.0f} SF"], ["Disturbed area", f"{f['dist_ac']:.2f} ac"],
+            ["Detention", f"{f['pond_cf']:,.0f} CF"], ["Water / Sewer", "Private well / septic" if X["U"].get("mode") == "onsite" else "Public (assumed)"]]
+    y = table(S, lx, y - 0.9, [2.4, 3.6], data, size=8, row_h=0.34)
+    # right column: notes + approval box
+    S.text_block((rx / W, (H - 3.9) / H), "NOTES", N.t1(meta, X), width_in=rw)
+    ax, ay, bw, bh = rx, 0.9, rw, 2.6
+    S.ax.add_patch(draw.plt_rect(ax, ay, bw, bh, "white"))
+    S.ax.plot([ax, ax + bw, ax + bw, ax, ax], [ay, ay, ay + bh, ay + bh, ay], color=INK, lw=1.0, zorder=62)
+    S.ax.plot([ax, ax + bw], [ay + bh - 0.6, ay + bh - 0.6], color=INK, lw=0.8, zorder=62)
+    S.txt(ax + bw / 2, ay + bh - 0.3, "AGENCY APPROVAL", 11, weight="bold", z=63, box=False)
+    for i, lab in enumerate(["REVIEWED BY:", "DATE:", "APPROVED:"]):
+        yy = ay + bh - 1.15 - i * 0.55
+        S.txt(ax + 0.2, yy, lab, 8, ha="left", z=63, box=False)
+        S.ax.plot([ax + 2.0, ax + bw - 0.3], [yy - 0.12, yy - 0.12], color=INK, lw=0.6, zorder=63)
     S.call811((0.5), ) if False else None
-    S.txt(W * 0.5, 0.35, PRELIM, 6.0, color=GREY, z=60)
+    S.txt(W * 0.5, 0.4, PRELIM, 6.5, color=GREY, z=60, box=False)
     return S
 
 
 # ======================================================================== C1 existing conditions
 def c1(meta, X):
     L = X["L"]
-    S = Sheet(meta, "C1", "EXISTING CONDITIONS PLAN", (0, 0), fit_geom=L["parcel"].buffer(60), margin_ft=40)
+    S = Sheet(meta, "C1", "EXISTING CONDITIONS PLAN", (0, 0), fit_geom=L["parcel"].buffer(60), margin_ft=40, panel=True, rotate_north=X["frame"].north_deg)
     draw.neighbor_buildings(S, X)
     draw.road_layers(S, X)
     draw.contours(S, X, "ex")
@@ -235,7 +269,6 @@ def c3(meta, X):
                               ("poly", dict(fc=(0.5, 0.4, 0.2, 0.25), ec=BROWN, lw=0.8), "Construction entrance"), ("mark", dict(marker="s", mfc="none", mec=BROWN, mew=1.4, ms=6), "Inlet protection"),
                               ("poly", dict(fc=(1, .2, .2, .08), ec=RED, lw=0.8), "Demolition"), ("line", dict(color=GREY, lw=0.9, ls=(0, (7, 2.5))), "Existing contour")])
     _apply_notes(S, N.c3(meta, X), 0.015, 0.70, title="NOTES", width=7.4)
-    S.call811()
     _prelim_note(S)
     return S
 
@@ -246,7 +279,7 @@ def c4(meta, X):
     S = _site(meta, X, "C4", "GRADING & PAVING PLAN")
     draw.road_layers(S, X)
     draw.contours(S, X, "ex", labels=False)
-    draw.contours(S, X, "pr", labels=True)
+    draw.contours(S, X, "pr", labels=True, heavy=True)
     draw.parcel_labels(S, X, X["parcel_sp"], X["frame"], dim=False)
     draw.proposed_base(S, X, fill=False)
     for p in polys(X["ER"]["lod"]):
@@ -360,8 +393,7 @@ def c5(meta, X):
     rows = [["STORM", "PRE (cfs)", "POST (cfs)", "OUT (cfs)", "STAGE (ft)"]]
     for r in pond["table"]:
         rows.append([f"{r['storm']}-yr", f"{r['pre_cfs']:.2f}", f"{r['post_cfs']:.2f}", f"{r['out_cfs']:.2f}", f"{r['stage']:.2f}"])
-    y = table(S, X0, Y0, [0.8, 0.8, 0.9, 0.9, 0.9], rows, title=None, size=6, row_h=0.2)
-    S.txt(X0, Y0 + 0.2 * S.scale, "PRE / POST PEAK RUNOFF & " + ("CHAMBER" if chm else "POND") + " ROUTING", 7.4, ha="left", weight="bold", z=61)
+    y = table(S, X0, Y0, [0.8, 0.8, 0.9, 0.9, 0.9], rows, title="PRE / POST PEAK RUNOFF & " + ("CHAMBER" if chm else "POND") + " ROUTING", size=6, row_h=0.2)
     info = [["CHAMBER DATA" if chm else "POND DATA", ""], ["Grade / bottom" if chm else "Top / bottom", f"{pond['top_el']:.2f} / {pond['bottom_el']:.2f}"], ["Storage at top of stone" if chm else "Storage at top", f"{pond['storage_cf']:,.0f} CF"],
             ["Orifice", f"{pond['orifice_in']:.1f}\" dia."], ["Weir crest / length", f"{pond['weir_crest']:.2f} / {pond['weir_len_ft']:.0f} ft"],
             ["CN pre / post", f"{D['cn_pre']:.0f} / {D['cn_post']:.0f}"], ["Tc pre / post", f"{D['tc_pre']:.1f} / {D['tc_post']:.1f} min"], ["Soil group", D["hsg"]]]
@@ -603,7 +635,6 @@ def c7(meta, X):
                  "Water main 8\" minimum for fire flow; hydrant spacing per the local fire marshal. Provide thrust restraint, backflow prevention and meter per utility standards. Maintain 10 ft horizontal / 18 in vertical separation between water and sewer.",
                  "Dry utilities (electric, gas, communications) are schematic; coordinate routing, easements and transformer location with the providers."]
     _apply_notes(S, N.c6(meta, X, notes + list(U["warnings"]) + list(U["notes"])), 0.015, 0.29, title="NOTES", width=7.6)
-    S.call811()
     _prelim_note(S)
     return S
 
@@ -669,8 +700,7 @@ def c9(meta, X):
         n = LS["counts"].get(kind, 0)
         if n:
             rows.append([code, bot, com, size, str(n)])
-    table(S, X0, Y0, [0.5, 1.7, 1.2, 0.9, 0.4], rows, size=5.8, row_h=0.22)
-    S.txt(X0, Y0 + 0.2 * S.scale, "PLANT SCHEDULE", 8, ha="left", weight="bold", z=61)
+    table(S, X0, Y0, [0.5, 1.7, 1.2, 0.9, 0.4], rows, size=5.8, row_h=0.22, title="PLANT SCHEDULE")
     _apply_notes(S, N.c8(meta, X, [f"Landscaped / open area is approximately {LS['landscape_sf']:,.0f} SF; turf (sod) to all disturbed areas not paved or planted.", "Provide irrigation to all planting beds and turf; protect existing trees where practicable."]), 0.015, 0.74, title="NOTES", width=7.0)
     _prelim_note(S)
     return S

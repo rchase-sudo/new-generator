@@ -193,7 +193,7 @@ def run(L, ex_z, grid, road_local, spec=None):
             "ffe": ffe, "pave_mask": pave_mask, "bmask": allb, "walk_mask": walk_mask, "warnings": warns}
 
 
-def surface(g, ex_z, z_design, design_mask, pond=None):
+def surface(g, ex_z, z_design, design_mask, pond=None, protect=None):
     """Full proposed surface: design cells as set; everything else follows the existing ground clamped to 3:1 from the
     nearest design cell (cut and fill slopes daylight into the existing grade)."""
     z = ex_z.copy()
@@ -207,6 +207,8 @@ def surface(g, ex_z, z_design, design_mask, pond=None):
     band = (~design_mask) & (dft < 80)
     out = np.where(band, soft, out)
     out = np.where(design_mask, z_design, out)
+    if protect is not None and protect.any():
+        out = np.where(protect & ~design_mask, ex_z, out)      # never regrade a wetland or stream: ground stays as it is
     return out
 
 

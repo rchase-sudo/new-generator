@@ -82,7 +82,8 @@ def c4(meta, X):
             "Slab finished floor is set 0.5 ft above the highest adjacent pavement. Verify with architectural plans.",
             "Cut and fill slopes shall be 3H:1V maximum. Stabilize with 4\" of loam and seed, or sod.",
             "Earthwork quantities are from a 5 ft grid surface and are not adjusted for shrink, swell, topsoil stripping or pavement sections.",
-            "Proposed contours are shown with heavy lines at a 2 ft interval (10 ft index). Existing contours are shown light and dashed."]
+            "Proposed contours are shown with heavy lines at a 2 ft interval (10 ft index). Existing contours are shown light and dashed.",
+            "No grading, fill or disturbance is proposed within any mapped wetland or stream. Existing ground is held at the wetland boundary."] + list(X.get("wet_warnings") or [])
 
 
 def c5(meta, X, extra=()):
