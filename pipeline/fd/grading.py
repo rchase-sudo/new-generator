@@ -207,18 +207,63 @@ def surface(g, ex_z, z_design, design_mask, pond=None, protect=None):
     band = (~design_mask) & (dft < 80)
     out = np.where(band, soft, out)
     out = np.where(design_mask, z_design, out)
-    if protect is not None and protect.any():
-        out = np.where(protect & ~design_mask, ex_z, out)      # never regrade a wetland or stream: ground stays as it is
+    return taper_protect(g, out, ex_z, protect, design_mask)
+
+
+def taper_protect(g, z, ex_z, protect, design_mask, ramp=20.0):
+    """Never regrade a wetland or stream: inside it the ground stays as it is, and the proposed grading eases back to the
+    existing ground over `ramp` ft outside it (a smooth transition, not a cliff, so contours stay clean)."""
+    if protect is None or not protect.any():
+        return z
+    d = ndi.distance_transform_edt(~protect) * g.cell
+    w = np.clip(d / ramp, 0.0, 1.0)
+    w = w * w * (3 - 2 * w)
+    out = ex_z + (z - ex_z) * w
+    out = np.where(design_mask & ~protect, z, out)
+    return np.where(protect & ~design_mask, ex_z, out)
+
+
+def pond_surface(g, zd, poly, top_el, bottom_el, side, berm=6.0):
+    """Pond basin written into the design surface from the EXACT pond outline (not the 5 ft raster): the bank falls at 1:side
+    from the top elevation to the floor, with a level berm outside. Returns (zd, pond_mask, rim_mask)."""
+    import shapely
+    zd = zd.copy()
+    x0, y0, x1, y1 = poly.buffer(berm + 2).bounds
+    sel = (g.X >= x0) & (g.X <= x1) & (g.Y >= y0) & (g.Y <= y1)
+    pts = shapely.points(g.X[sel], g.Y[sel])
+    inside = shapely.contains(poly, pts)
+    dist = shapely.distance(pts, poly.boundary)
+    pm = np.zeros(g.X.shape, bool)
+    rim = np.zeros(g.X.shape, bool)
+    pm[sel] = inside
+    rim[sel] = (~inside) & (dist <= berm)
+    zz = np.full(g.X.shape, np.nan)
+    zz[sel] = np.where(inside, np.maximum(bottom_el, top_el - dist / max(side, 0.1)), top_el)
+    zd[pm] = zz[pm]
+    return zd, pm, rim, zz
+
+
+def smooth_around(g, z, keep, zone, sigma=1.6, passes=2):
+    """Relax the daylight slopes around the pond: smooth z inside `zone` but never inside `keep` (cells whose elevation is set)."""
+    out = z.copy()
+    for _ in range(passes):
+        sm = ndi.gaussian_filter(out, sigma)
+        out = np.where(zone & ~keep, sm, out)
     return out
 
 
-def contour_lines(g, z, interval=2.0, index=10.0, clip=None):
+def contour_lines(g, z, interval=2.0, index=10.0, clip=None, fine=1):
     lo, hi = np.nanmin(z), np.nanmax(z)
     lv = np.arange(math.ceil(lo / interval) * interval, hi, interval)
     if not len(lv):
         return []
+    xs, ys = g.xs, g.ys
+    if fine > 1:        # cubic upsample so a smooth surface gives smooth contours rather than 5 ft grid steps
+        z = ndi.zoom(np.where(np.isfinite(z), z, np.nanmean(z)), fine, order=3)
+        xs = np.linspace(g.xs[0], g.xs[-1], z.shape[1])
+        ys = np.linspace(g.ys[0], g.ys[-1], z.shape[0])
     fig = plt.figure()
-    cs = plt.contour(g.xs, g.ys, z, levels=lv)
+    cs = plt.contour(xs, ys, z, levels=lv)
     out = []
     for lev, segs in zip(cs.levels, cs.allsegs):
         for s in segs:
@@ -228,7 +273,7 @@ def contour_lines(g, z, interval=2.0, index=10.0, clip=None):
             if clip is not None:
                 ln = ln.intersection(clip)
             for q in lines(ln):
-                if q.length > 6:
+                if q.length > (30 if fine > 1 else 6):
                     out.append((float(lev), q, abs(lev / index - round(lev / index)) < 1e-6))
     plt.close(fig)
     return out

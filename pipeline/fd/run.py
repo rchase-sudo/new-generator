@@ -85,14 +85,18 @@ def build(ctx, lay, job, rules, prog, log=print):
     pond = D["pond"]
     # pond into the surface: bank at the top elevation, 3:1 inside to the floor, 6 ft berm top outside
     chambers = pond.get("kind") == "chambers"          # underground: nothing to grade, the surface is the pavement already designed
-    pm = np.zeros(g.X.shape, bool) if chambers else g.mask(pond["poly"])
-    rim = np.zeros(g.X.shape, bool) if chambers else g.mask(pond["poly"].buffer(6)) & ~pm
-    dist_in = ndi.distance_transform_edt(pm) * g.cell
-    zd = G["z_design"].copy()
-    zd[pm] = np.maximum(pond["bottom_el"], pond["top_el"] - dist_in[pm] / max(pond.get("side", 3.0), 0.1))
-    zd[rim & ~G["design_mask"]] = pond["top_el"]
+    if chambers:
+        pm = np.zeros(g.X.shape, bool)
+        rim = np.zeros(g.X.shape, bool)
+        zd = G["z_design"].copy()
+    else:       # the basin is written from the exact pond outline so the bank contours are smooth, not raster steps
+        zd, pm, rim, _zz = grading.pond_surface(g, G["z_design"], pond["poly"], pond["top_el"], pond["bottom_el"], pond.get("side", 3.0))
+        zd[rim & ~G["design_mask"]] = pond["top_el"]
     dmask = G["design_mask"] | pm | rim
     z_prop = grading.surface(g, ex_z, zd, dmask, protect=wm)
+    if not chambers:
+        z_prop = grading.smooth_around(g, z_prop, dmask, g.mask(pond["poly"].buffer(80)))
+        z_prop = grading.taper_protect(g, z_prop, ex_z, wm, dmask)
     ew = grading.earthwork(g, ex_z, z_prop)
     G["lod_mask"] = ew["dist_mask"]
     G["z_prop"], G["z_design2"], G["design_mask2"] = z_prop, zd, dmask

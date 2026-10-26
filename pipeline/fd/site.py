@@ -82,6 +82,7 @@ def _service_corridor(g, L, road_sel, road_all, targets):
     for e in (L.get("existing") or []):
         if e.get("kind") != "pavement" and e.get("action") == "keep":
             base |= g.mask(e["geom"].buffer(8))
+    bkeep = unary_union([b.buffer(2) for b in bl])
     routes = {}
     used = None
     s_cp = ring.project(cp)
@@ -99,9 +100,15 @@ def _service_corridor(g, L, road_sel, road_all, targets):
             r = corridor_route(g, (a_in.x, a_in.y), (t.x, t.y), blocked)
             if r is not None:
                 break
+        if r is None:       # tighter fallback: only buildings, pond and wetland stay blocked (never run a line under a building)
+            tight = g.mask(unary_union([b.buffer(2) for b in bl]))
+            for k_ in ("pond", "wet"):
+                if L.get(k_) is not None and not L[k_].is_empty:
+                    tight |= g.mask(L[k_])
+            r = corridor_route(g, (a_in.x, a_in.y), (t.x, t.y), tight)
         if r is None:
             r = LineString([(a_in.x, a_in.y), (t.x, t.y)])
-        bp = _bend_points(r)
+        bp = _bend_points(r, keepout=bkeep)
         r = LineString([(a.x, a.y)] + bp) if a.distance(Point(bp[0])) > 0.5 else LineString(bp)
         routes[name] = r
         used = r if used is None else unary_union([used, r])

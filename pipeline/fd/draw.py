@@ -118,7 +118,7 @@ def contours(S, X, which="ex", labels=True, color=GREY, alpha=0.9, heavy=False):
     z = X["ex_z"] if which == "ex" else X["z_prop"]
     key = "_c_" + which
     if key not in X:
-        X[key] = grading.contour_lines(g, z, 2.0, 10.0, clip=box(*S.view).buffer(300))
+        X[key] = grading.contour_lines(g, z, 2.0, 10.0, clip=box(*S.view).buffer(300), fine=1 if which == "ex" else 3)
     pr = which != "ex"
     if pr and "_c_prc" not in X:
         zone = X["ER"]["lod"].buffer(12)

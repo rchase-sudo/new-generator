@@ -476,16 +476,30 @@ def design(g, z_ex, z_prop, G, L, rain, soils, stype, parcel_area_sf, pond_overr
             "roof_of": roof_of, "area_p": area_p, "area_r": area_r}
 
 
-def _bend_points(route, tol=8.0, min_seg=25.0):
-    """Vertices of the simplified route where the pipe would have to turn; short legs are merged so structures are not stacked."""
-    ls = route.simplify(tol)
-    pts = list(ls.coords)
-    out = [pts[0]]
-    for p in pts[1:-1]:
-        if math.hypot(p[0] - out[-1][0], p[1] - out[-1][1]) >= min_seg and math.hypot(p[0] - pts[-1][0], p[1] - pts[-1][1]) >= min_seg:
-            out.append(p)
-    out.append(pts[-1])
-    return out
+def _bend_points(route, tol=8.0, min_seg=25.0, keepout=None):
+    """Vertices of the simplified route where the pipe would have to turn; short legs are merged so structures are not stacked.
+    keepout (shapely geometry, e.g. building footprints): no leg of the result may cross it. If the coarse simplification
+    cuts a corner through it, the tolerance and the merge length are tightened until every leg is clear."""
+    def build(t, m):
+        pts = list(route.simplify(t).coords)
+        out = [pts[0]]
+        for p in pts[1:-1]:
+            if math.hypot(p[0] - out[-1][0], p[1] - out[-1][1]) >= m and math.hypot(p[0] - pts[-1][0], p[1] - pts[-1][1]) >= m:
+                out.append(p)
+        out.append(pts[-1])
+        return out
+
+    def clear(pts):
+        return keepout is None or keepout.is_empty or LineString(pts).intersection(keepout).length < 0.5
+
+    out = build(tol, min_seg)
+    if clear(out):
+        return out
+    for t, m in ((4.0, 15.0), (2.0, 8.0), (1.0, 4.0), (0.5, 0.0)):
+        out = build(t, m)
+        if clear(out):
+            return out
+    return list(route.coords)
 
 
 def storm_network(g, z_prop, D, L, rain, blocked_extra=None):
@@ -494,6 +508,7 @@ def storm_network(g, z_prop, D, L, rain, blocked_extra=None):
     pond = D["pond"]
     pp = pond["poly"]
     # pipe corridor: not under buildings, not in the pond, inside the parcel margin
+    bkeep = unary_union([b.buffer(2) for b in L["bldgs"]])
     blocked = g.mask(unary_union([b.buffer(6) for b in L["bldgs"]]))
     blocked |= g.mask(pp.buffer(-1))
     if L.get("wet") is not None and not L["wet"].is_empty:
@@ -528,13 +543,15 @@ def storm_network(g, z_prop, D, L, rain, blocked_extra=None):
         a = (x, y)
         b = node_pts[ti]
         route = corridor_route(g, a, b, blocked)
+        if route is None:       # tighter fallback: only the buildings themselves stay blocked
+            route = corridor_route(g, a, b, g.mask(bkeep))
         if route is None:
             route = LineString([a, b])
         # snap CB onto the pavement low point, structure rim from the proposed surface
         rim = float(g.at(z_prop, [x], [y])[0])
         structs.append({"id": cid, "kind": "CB", "xy": (x, y), "rim": round(rim, 2), "inlet": k})
         # a pipe run is straight between structures: every bend gets a manhole (no joints in the pipe itself)
-        cs = _bend_points(route)
+        cs = _bend_points(route, keepout=bkeep)
         prev_id = cid
         for q, (bx, by) in enumerate(cs[1:-1], 1):
             dmh_no += 1
@@ -642,10 +659,13 @@ def _chamber_outlet(g, z_prop, D, L, pond, structs, pipes, blocked, dmh_no, warn
             o, od = p, p.distance(target)
     if o is None:
         o = nearest_points(pp.boundary, target)[0]
+    bkeep = unary_union([b.buffer(2) for b in L["bldgs"]])
     route = corridor_route(g, (o.x, o.y), (dx, dy), blocked)
     if route is None:
+        route = corridor_route(g, (o.x, o.y), (dx, dy), g.mask(bkeep))
+    if route is None:
         route = LineString([(o.x, o.y), (dx, dy)])
-    cs = _bend_points(route)
+    cs = _bend_points(route, keepout=bkeep)
     q100 = max(pond["table"][-1]["out_cfs"], 0.1)
     s_pipe = 0.01
     d = pipe_dia(q100, s_pipe)
