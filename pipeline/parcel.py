@@ -21,6 +21,9 @@ REGRID = "https://app.regrid.com/api/v2"
 # Statewide parcel layers (ArcGIS REST, queryable; each is validated at query time and skipped on failure). Add more as states come up; county layers are
 # discovered on demand and cached in Supabase (county_sources).
 STATEWIDE = {
+    "NH": ["https://nhgeodata.unh.edu/nhgeodata/rest/services/CAD/ParcelMosaic/MapServer",
+           "https://granit24a.sr.unh.edu/nhgeodata/rest/services/CAD/ParcelMosaic/MapServer",
+           "https://granit24a.sr.unh.edu/hosting/rest/services/Hosted/CAD_ParcelMosaic/FeatureServer"],
     "VA": ["https://vginmaps.vdem.virginia.gov/arcgis/rest/services/VA_Base_Layers/VA_Parcels/FeatureServer/0"],
 }
 
@@ -206,9 +209,30 @@ def _pick(attrs, keys):
     return None
 
 
+def _resolve_layer(url):
+    """A statewide entry may be a service root: find its parcel polygon layer (name match, else the first polygon layer)."""
+    if re.search(r"/\d+/?$", url):
+        return url
+    lyr = find_layer(url)
+    if lyr:
+        return lyr
+    for i in range(0, 4):
+        try:
+            js = get(f"{url.rstrip('/')}/{i}", params={"f": "json"}, timeout=30).json()
+            if js.get("geometryType") == "esriGeometryPolygon":
+                return f"{url.rstrip('/')}/{i}"
+        except Exception:  # noqa: BLE001
+            continue
+    return url
+
+
 def arcgis_search(layer_urls, listing, lat, lon, epsg, half_m=700, corridor_ll=None):
     out = []
     for url in layer_urls:
+        try:
+            url = _resolve_layer(url)
+        except Exception:  # noqa: BLE001
+            continue
         try:
             feats = arcgis_query_polygon(url, corridor_ll) if corridor_ll is not None else arcgis_query_envelope(url, lat, lon, half_m)
         except Exception:  # noqa: BLE001
