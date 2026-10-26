@@ -119,26 +119,48 @@ def contours(S, X, which="ex", labels=True, color=GREY, alpha=0.9):
     key = "_c_" + which
     if key not in X:
         X[key] = grading.contour_lines(g, z, 2.0, 10.0, clip=box(*S.view).buffer(300))
+    pr = which != "ex"
+    if pr and "_c_prc" not in X:
+        zone = X["ER"]["lod"].buffer(12)
+        out = []
+        for lev, ln, idx in X[key]:
+            c = ln.intersection(zone)
+            if c.is_empty:
+                continue
+            for part in (c.geoms if hasattr(c, "geoms") else [c]):
+                if part.geom_type == "LineString" and part.length > 8:
+                    out.append((lev, part, idx))
+        X["_c_prc"] = out
+    if pr:
+        key = "_c_prc"
     for lev, ln, idx in X[key]:
-        if which == "ex":
+        if not pr:
             S.line(ln, color=GREY, lw=0.9 if idx else 0.45, ls=(0, (7, 2.5)) if idx else (0, (4, 3)), z=2, alpha=alpha)
         else:
-            S.line(ln, color=INK, lw=0.95 if idx else 0.45, z=6)
+            S.line(ln, color="#000000", lw=2.0 if idx else 1.15, z=14)
     if not labels:
         return
     vb = box(*S.view).buffer(-25)
     for lev, ln, idx in X[key]:
-        if not idx or ln.length < 70:
+        if not pr and (not idx or ln.length < 70):
             continue
-        for frac in (0.5,):
+        if pr and ln.length < 45:
+            continue
+        # proposed: label every contour, repeated every ~220 ft; existing: index contours only, once
+        n = max(1, int(ln.length // 220)) if pr else 1
+        fr = [(k + 0.5) / n for k in range(n)]
+        for frac in fr:
             p = ln.interpolate(frac, normalized=True)
             if not vb.contains(p):
                 continue
-            q = ln.interpolate(min(frac + 0.02, 1.0), normalized=True)
+            q = ln.interpolate(min(frac + 0.015, 1.0), normalized=True)
             a = math.degrees(math.atan2(q.y - p.y, q.x - p.x))
             if a > 90 or a < -90:
                 a += 180
-            S.txt(p.x, p.y, f"{lev:g}", 5.4, rot=a, color=GREY if which == "ex" else INK, halo=True, z=7)
+            if pr:
+                S.txt(p.x, p.y, f"{lev:g}", 6.4, rot=a, color="#000000", weight="bold", halo=True, z=40)
+            else:
+                S.txt(p.x, p.y, f"{lev:g}", 5.4, rot=a, color=GREY, halo=True, z=7)
 
 
 def proposed_base(S, X, labels=True, fill=True, existing=True):

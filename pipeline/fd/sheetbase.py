@@ -241,7 +241,7 @@ class Sheet:
             self.txt(bx + i * seg, by - 0.12 * self.scale, f"{i * seg:g}", 6.5, z=52)
         self.txt(bx + n * seg / 2, by + h + 0.16 * self.scale, f'SCALE:  1" = {self.scale:g}\'', 6.8, z=52)
 
-    def text_block(self, xy_frac, title, items, width_in=8.6, size=5.2, title_size=11, numbered=True):
+    def text_block(self, xy_frac, title, items, width_in=8.6, size=5.8, title_size=11, numbered=True):
         """Notes block anchored at its top-left (fraction of the drawing area)."""
         x0, y0, x1, y1 = self.view
         X = x0 + (x1 - x0) * xy_frac[0]
@@ -251,7 +251,7 @@ class Sheet:
         y = Y - 0.26 * ftin
         chars = int(width_in / (size * 0.52 / 72))
         for n, it in enumerate(items, 1):
-            lines_ = textwrap.wrap(it, chars) or [""]
+            lines_ = textwrap.wrap(it.upper(), chars) or [""]
             lab = f"{n}." if numbered else "•"
             self.txt(X, y, lab, size, ha="left", va="top", z=60)
             for k, ln in enumerate(lines_):
