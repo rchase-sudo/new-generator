@@ -427,6 +427,8 @@ def step_redraw(job_id, hide_demo=True, out_dir=None):
     fl = ctx["fl"] if isinstance(ctx["fl"], list) else []
     ex = [e for e in (lay.get("existing") or []) if not (hide_demo and e.get("action") == "demo")]
     out = out_dir or tempfile.mkdtemp()
+    with open(os.path.join(out, "existing_conditions.dxf"), "wb") as f:       # the existing-conditions DXF is the base the proposed layers are added to
+        f.write(supa.download(job_id, "existing_conditions.dxf"))
     write_concept_sheet(os.path.join(out, "concept_plan.pdf"), os.path.join(out, "concept_plan.png"), ctx["parcel_sp"], env, wet, fl, rds,
                         ctx["aerial"], ctx["k"], lay["sp"], lay["labels"], title, lay["metrics"], prog, rules, project=project, existing=ex,
                         topo=dem, steep=steep)
