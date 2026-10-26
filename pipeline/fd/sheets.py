@@ -24,7 +24,7 @@ def table(S, X0, Y0, col_w, rows, title=None, size=5.2, row_h=0.19, **kw):
     k = (S.PW - 0.6) / sum(col_w)
     col_w = [c * k for c in col_w]
     top = S.cur - (0.32 * S.scale if title else 0)
-    y = _dtable(S, S.px, top, col_w, rows, title=title, size=max(size, 6.8), row_h=max(row_h, 0.26), **kw)
+    y = _dtable(S, S.px, top, col_w, rows, title=title, size=max(size, 7.6), row_h=max(row_h, 0.3), **kw)
     S.cur = y - 0.4 * S.scale
     return y
 
@@ -44,7 +44,7 @@ def _legend(S, fx, fy, items, title="LEGEND", w=2.7):
     """items: [(kind, style, label)] kind in line|poly|mark. Boxed legend; on panel sheets it sits at the panel cursor."""
     sc = S.scale
     if S.panel:
-        X0, Y0, w, rh, fs = S.px, S.cur, S.PW - 0.6, 0.27 * sc, 6.8
+        X0, Y0, w, rh, fs = S.px, S.cur, S.PW - 0.6, 0.31 * sc, 7.6
     else:
         X0, Y0 = corner(S, fx, fy)
         rh, fs = 0.2 * sc, 5.6
@@ -619,8 +619,7 @@ def c7(meta, X):
         table(S, X0, Y0, [2.3, 2.6], rows, size=5.6, row_h=0.2)
     else:
         rows = [["LATERAL", "LEN", "INV AT MAIN", "INV AT BLDG", "OK"]] + [[f"BLDG {r['bldg']}", f"{r['len']}'", f"{r['inv_main']:.2f}", f"{r['inv_bldg']:.2f}", "yes" if r["ok"] else "CHECK"] for r in U["sewer_lat_rows"]]
-        table(S, X0, Y0, [0.8, 0.5, 1.0, 1.0, 0.6], rows, size=5.6, row_h=0.2, title=None)
-        S.txt(X0, Y0 + 0.2 * S.scale, "SEWER LATERAL SCHEDULE", 7.4, ha="left", weight="bold", z=61)
+        table(S, X0, Y0, [0.8, 0.5, 1.0, 1.0, 0.6], rows, size=5.6, row_h=0.2, title="SEWER LATERAL SCHEDULE")
         X1, Y1 = corner(S, 0.015, 0.56)
         table(S, X1, Y1, [2.1, 1.3], [["DESIGN DEMAND (PLANNING)", ""], ["Sewer", f"{U['sewer_gpd']:,.0f} gpd"], ["Water", f"{U['water_gpd']:,.0f} gpd"], ["Service size", f"{f['w_in']}\" water / 6\" sewer"]], size=6, row_h=0.2)
     if onsite:

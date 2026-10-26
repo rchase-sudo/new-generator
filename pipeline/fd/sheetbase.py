@@ -259,7 +259,7 @@ class Sheet:
         Y = y0 + (y1 - y0) * xy_frac[1]
         ftin = self.scale
         if self.panel:
-            X, Y, width_in, size, title_size = self.px, self.cur, self.PW - 0.9, 6.3, 12
+            X, Y, width_in, size, title_size = self.px, self.cur, self.PW - 0.9, 7.4, 13
         self.txt(X, Y, title, title_size, ha="left", va="top", weight="bold", z=60, family=FONT)
         y = Y - 0.26 * ftin
         chars = int(width_in / (size * 0.64 / 72))
