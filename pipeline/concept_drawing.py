@@ -58,6 +58,31 @@ BLDG_H = 22.0                # ft, for shadow length
 
 
 # ---------------------------------------------------------------- DXF
+def _clip_demo(existing, sp, k_ft):
+    """Existing work marked for demolition is only flagged where the proposed development does not replace it: a red
+    demolition overlay on top of the proposed buildings and pavement is noise on the layout plan."""
+    if not existing:
+        return existing
+    parts = [sp.get(n) for n in ("bldgs", "pave", "pond", "walk", "drive")]
+    flat = []
+    for p in parts:
+        flat += list(p) if isinstance(p, (list, tuple)) else ([p] if p is not None else [])
+    flat = [g for g in flat if g is not None and not g.is_empty]
+    if not flat:
+        return existing
+    prop = unary_union(flat).buffer(2.0 / k_ft)
+    out = []
+    for e in existing:
+        if e.get("action") != "demo":
+            out.append(e)
+            continue
+        g = e["geom"].difference(prop)
+        if g.is_empty or g.area < 0.35 * e["geom"].area:
+            continue
+        out.append(dict(e, geom=g, sf=round(e.get("sf", 0) * g.area / e["geom"].area, -1)))
+    return out
+
+
 def write_dxf(ec_dxf, out_path, sp, labels, k_ft, existing=None, steep=None):
     doc = ezdxf.readfile(ec_dxf)
     for n, c in P_LAYERS.items():
@@ -94,6 +119,7 @@ def write_dxf(ec_dxf, out_path, sp, labels, k_ft, existing=None, steep=None):
         ring(sp["pond"], "P-POND", width=0.3 / k_ft)
     for g in steep or []:
         ring(g, "P-STEEP", width=1.0 / k_ft)
+    existing = _clip_demo(existing, sp, k_ft)
     for e in existing or []:
         pv = e.get("kind") == "pavement"
         if pv and e["action"] == "keep":
@@ -269,6 +295,7 @@ def write_sheet(pdf_path, png_path, parcel, env, wet, fl, rds, aerial, k_ft, sp,
             _patch(ax, extra, 9.7, facecolor="none", edgecolor=C_DARK, lw=lw_ft(1.1), joinstyle="miter")
             _patch(ax, affinity.translate(extra, 0.8 / k_ft, -0.8 / k_ft).difference(extra).intersection(b), 9.65, facecolor=(0.18, 0.23, 0.29, 0.6), edgecolor="none")
 
+    existing = _clip_demo(existing, sp, k_ft)
     for e in existing or []:
         if e.get("kind") == "pavement":
             if e["action"] == "demo":
