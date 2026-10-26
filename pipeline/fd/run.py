@@ -129,7 +129,10 @@ def build(ctx, lay, job, rules, prog, log=print):
     log(f"drainage {time.time() - t0:.1f}s")
     L["hsg"] = soils.get("hsg") or "B"
     road_key = rules.get("drive_road") or (lay.get("metrics") or {}).get("drive_road")
-    U = site.utilities(g, z_prop, ex_z, G, L, road_all, prog, fr, road_key=road_key, mode=rules.get("design_utilities") or "municipal")
+    mode0 = rules.get("design_utilities") or "municipal"
+    has_sewer = bool(rules["design_sewer"]) if "design_sewer" in rules else mode0 == "municipal"
+    has_water = bool(rules["design_water"]) if "design_water" in rules else mode0 == "municipal"
+    U = site.utilities(g, z_prop, ex_z, G, L, road_all, prog, fr, road_key=road_key, mode=mode0, has_sewer=has_sewer, has_water=has_water)
     FIRE = site.fire(g, G, L, U)
     LS = site.landscape(L, lat_ll[0])
     LT = site.lighting(g, G, L)

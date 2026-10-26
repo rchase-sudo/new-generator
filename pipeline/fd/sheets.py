@@ -132,7 +132,7 @@ def t1(meta, X):
     data = [["PROJECT DATA", ""], ["Parcel area", f"{f['parcel_ac']:.2f} ac"], ["Zoning", (m.get("zone_line") or "-").replace("Zoning: ", "")],
             ["Proposed building", f"{f['bldg_sf']:,.0f} SF"], ["Parking provided", f"{f['stalls']} stalls ({f['ada']} ADA)"],
             ["New impervious", f"{f['imp_sf']:,.0f} SF"], ["Disturbed area", f"{f['dist_ac']:.2f} ac"],
-            ["Detention", f"{f['pond_cf']:,.0f} CF"], ["Water / Sewer", "Private well / septic" if X["U"].get("mode") == "onsite" else "Public (assumed)"]]
+            ["Detention", f"{f['pond_cf']:,.0f} CF"], ["Water / Sewer", N.util_short(X["U"])]]
     y = table(S, lx, y - 0.9, [2.4, 3.6], data, size=8, row_h=0.34)
     # right column: notes + approval box
     S.text_block((rx / W, (H - 3.9) / H), "NOTES", N.t1(meta, X), width_in=rw)
@@ -523,10 +523,18 @@ def c6(meta, X):
 # ======================================================================== C7 utilities
 def c7(meta, X):
     L, U = X["L"], X["U"]
-    onsite = U.get("mode") == "onsite"
-    ext = [U["corridor"].buffer(12), U["road_sewer"].buffer(15)] if onsite else [U["sewer_main"].buffer(12), U["water_main"].buffer(12), U["road_sewer"].buffer(15)]
-    if onsite:
-        ext += [Point(*U["well"]).buffer(110)] + [g for g in (U.get("field"), U.get("reserve")) if g is not None]
+    msew = bool(U.get("has_sewer", U.get("mode") != "onsite"))      # municipal sewer / water, or private (septic / well)
+    mwat = bool(U.get("has_water", U.get("mode") != "onsite"))
+    septic, well = not msew, not mwat
+    ext = [U["corridor"].buffer(12), U["road_sewer"].buffer(15)]
+    if msew:
+        ext.append(U["sewer_main"].buffer(12))
+    if mwat:
+        ext.append(U["water_main"].buffer(12))
+    if well:
+        ext.append(Point(*U["well"]).buffer(110))
+    if septic:
+        ext += [g for g in (U.get("field"), U.get("reserve")) if g is not None]
     S = _site(meta, X, "C6", "UTILITY PLAN", extra=ext, margin=40)
     draw.neighbor_buildings(S, X)
     draw.road_layers(S, X)
@@ -539,16 +547,19 @@ def c7(meta, X):
         if not c.is_empty:
             S.line(c, **kw)
     # existing mains in the selected road (assumed)
-    L_(U["road_water"], color=BLUE, lw=1.0, ls=(0, (6, 3)), z=5, alpha=0.6)
-    L_(U["road_sewer"], color=BROWN, lw=1.0, ls=(0, (6, 3)), z=5, alpha=0.6)
+    if mwat:
+        L_(U["road_water"], color=BLUE, lw=1.0, ls=(0, (6, 3)), z=5, alpha=0.6)
+    if msew:
+        L_(U["road_sewer"], color=BROWN, lw=1.0, ls=(0, (6, 3)), z=5, alpha=0.6)
     cpx, cpy = U["cp"]
     if vb.contains(Point(cpx, cpy)):
         S.ax.plot([cpx], [cpy], marker="|", ms=14, mew=1.5, color=INK, zorder=34)
         S.txt(cpx + 8, cpy + 14, f"SERVICE CONNECTION AT PROPERTY LINE\n({U.get('road_key') or 'ROAD'})", 5.4, ha="left", halo=True, z=40)
-    if not onsite:
+    if mwat:
         L_(U["water_main"], color=BLUE, lw=1.8, z=14)
         for g in U["water_lat"]:
             L_(g, color=BLUE, lw=1.2, z=14)
+    if msew:
         L_(U["sewer_main"], color=BROWN, lw=1.8, ls=(0, (9, 3)), z=14)
         for g in U["sewer_lat"]:
             L_(g, color=BROWN, lw=1.2, ls=(0, (9, 3)), z=14)
@@ -573,7 +584,7 @@ def c7(meta, X):
     for x, y in U["xfmr"]:
         S.poly(box(x - 3, y - 3, x + 3, y + 3), fc=RED, ec=RED, z=33)
         S.txt(x, y + 9, "PAD XFMR", 5.2, color=RED, halo=True, z=34)
-    if onsite:
+    if septic:
         for nm, key, col, lab in (("field", "field", BROWN, "SEPTIC DRAINFIELD (PRIMARY)"), ("reserve", "reserve", GREY, "RESERVE AREA (100%)")):
             g = U.get(key)
             if g is not None:
@@ -589,50 +600,73 @@ def c7(meta, X):
             L_(U["tank_to_field"], color=BROWN, lw=1.2, ls=(0, (9, 3)), z=14)
             S.ax.plot([U["dbox"][0]], [U["dbox"][1]], marker="s", ms=5, mfc="white", mec=BROWN, zorder=34)
             S.txt(U["dbox"][0] + 6, U["dbox"][1] + 8, "D-BOX" + (" / DOSING CHAMBER" if U.get("pump") else ""), 5.2, ha="left", halo=True, z=34)
+    if well:
         wx, wy = U["well"]
         S.poly(Point(wx, wy).buffer(U["well_ring"]), ec=BLUE, lw=0.6, ls=(0, (3, 3)), z=5)
         S.ax.plot([wx], [wy], marker="o", ms=9, mfc="white", mec=BLUE, mew=1.6, zorder=34)
-        S.txt(wx + 7, wy + 9, "PRIVATE WELL (6\" DRILLED)\n100' SETBACK TO SEPTIC", 5.4, ha="left", color=BLUE, halo=True, z=40)
+        S.txt(wx + 7, wy + 9, "PRIVATE WELL (6\" DRILLED)" + ("\n100' SETBACK TO SEPTIC" if septic else ""), 5.4, ha="left", color=BLUE, halo=True, z=40)
         L_(U["well_line"], color=BLUE, lw=1.2, z=14)
         cx_, cy_ = U["cistern_xy"]
         S.poly(U["cistern"], fc="#d6e6f5", ec=BLUE, lw=1.0, z=12)
         S.txt(cx_, cy_ + 12, f"{U['cistern_gal']:,}-GAL FIRE CISTERN", 5.2, color=BLUE, halo=True, z=34)
-    else:
-        S.leader(U["tap"], (U["tap"][0] + 40, U["tap"][1] - 70), "TAP EXISTING ROAD MAINS (LOCATION / DEPTH ASSUMED, VERIFY)", 5.8, ha="left")
+    if msew or mwat:
+        what = "ROAD MAINS" if (msew and mwat) else ("ROAD SEWER" if msew else "ROAD WATER MAIN")
+        S.leader(U["tap"], (U["tap"][0] + 40, U["tap"][1] - 70), f"TAP EXISTING {what} (LOCATION / DEPTH ASSUMED, VERIFY)", 5.8, ha="left")
     S.north_arrow(); S.scale_bar()
-    leg = [("line", dict(color=BLUE, lw=1.0, ls=(0, (6, 3))), "Existing water main in road (assumed)"), ("line", dict(color=BROWN, lw=1.0, ls=(0, (6, 3))), "Existing sewer in road (assumed)"),
-           ("line", dict(color=RED, lw=1.3, ls=(0, (2, 2))), "Underground electric"), ("line", dict(color="#e08a00", lw=1.3, ls=(0, (6, 2, 1, 2))), "Natural gas")]
-    if onsite:
-        leg += [("mark", dict(marker="o", mfc="white", mec=BLUE, mew=1.6, ms=9), "Private well"), ("line", dict(color=BROWN, lw=1.2, ls=(0, (9, 3))), "Building sewer / force line"),
-                ("poly", dict(fc=(0.8, 0.65, 0.4, 0.18), ec=BROWN, lw=0.8), "Septic drainfield")]
-    else:
-        leg += [("line", dict(color=BLUE, lw=1.8), "Water main (PVC C900)"), ("line", dict(color=BROWN, lw=1.8, ls=(0, (9, 3))), "Sanitary sewer (PVC SDR 35)"),
-                ("mark", dict(marker="*", mfc="white", mec=BLUE, mew=1.2, ms=9), "Fire hydrant"), ("mark", dict(marker="D", mfc=BLUE, mec=BLUE, ms=5), "Gate valve"),
+    leg = [("line", dict(color=RED, lw=1.3, ls=(0, (2, 2))), "Underground electric"), ("line", dict(color="#e08a00", lw=1.3, ls=(0, (6, 2, 1, 2))), "Natural gas")]
+    if mwat:
+        leg += [("line", dict(color=BLUE, lw=1.0, ls=(0, (6, 3))), "Existing water main in road (assumed)"), ("line", dict(color=BLUE, lw=1.8), "Water main (PVC C900)"),
+                ("mark", dict(marker="*", mfc="white", mec=BLUE, mew=1.2, ms=9), "Fire hydrant"), ("mark", dict(marker="D", mfc=BLUE, mec=BLUE, ms=5), "Gate valve")]
+    if msew:
+        leg += [("line", dict(color=BROWN, lw=1.0, ls=(0, (6, 3))), "Existing sewer in road (assumed)"), ("line", dict(color=BROWN, lw=1.8, ls=(0, (9, 3))), "Sanitary sewer (PVC SDR 35)"),
                 ("mark", dict(marker="o", mfc="white", mec=BROWN, mew=1.4, ms=7), "Sanitary manhole (every bend / junction)")]
+    if well:
+        leg += [("mark", dict(marker="o", mfc="white", mec=BLUE, mew=1.6, ms=9), "Private well")]
+    if septic:
+        leg += [("line", dict(color=BROWN, lw=1.2, ls=(0, (9, 3))), "Building sewer / force line"), ("poly", dict(fc=(0.8, 0.65, 0.4, 0.18), ec=BROWN, lw=0.8), "Septic drainfield")]
     _legend(S, 0.015, 0.97, leg, w=3.4)
     X0, Y0 = corner(S, 0.015, 0.66)
     f = X["facts"]
-    if onsite:
-        rows = [["ON-SITE WATER & SEPTIC (PLANNING)", ""], ["Design flow", f"{U['flow_gpd']:,.0f} gpd"], ["Soil group / loading rate", f"{U['hsg']} / {U['loading_rate']} gpd/sf (assumed)"],
-                ["Trench bottom area", f"{U['bottom_sf']:,} SF"], ["Septic tank", f"{U['tank_gal']:,} gal"], ["Drainfield (+ equal reserve)", f"{U.get('field_sf', 0):,} SF each"],
-                ["Tank outlet / trench invert", f"{U['inv_tank_out']:.2f} / {U.get('trench_inv', 0):.2f}"], ["Fire water", f"{U['cistern_gal']:,} gal cistern"]]
+    if septic or well:
+        rows = [["ON-SITE " + ("WATER & SEPTIC" if septic and well else "SEPTIC" if septic else "WATER") + " (PLANNING)", ""], ["Design flow", f"{(U.get('flow_gpd', U['sewer_gpd']) if septic else U['water_gpd']):,.0f} gpd"]]
+        if septic:
+            rows += [["Soil group / loading rate", f"{U['hsg']} / {U['loading_rate']} gpd/sf (assumed)"], ["Trench bottom area", f"{U['bottom_sf']:,} SF"], ["Septic tank", f"{U['tank_gal']:,} gal"],
+                     ["Drainfield (+ equal reserve)", f"{U.get('field_sf', 0):,} SF each"], ["Tank outlet / trench invert", f"{U['inv_tank_out']:.2f} / {U.get('trench_inv', 0):.2f}"]]
+        if well:
+            rows += [["Fire water", f"{U['cistern_gal']:,} gal cistern"]]
         table(S, X0, Y0, [2.3, 2.6], rows, size=5.6, row_h=0.2)
-    else:
+    if msew:
         rows = [["LATERAL", "LEN", "INV AT MAIN", "INV AT BLDG", "OK"]] + [[f"BLDG {r['bldg']}", f"{r['len']}'", f"{r['inv_main']:.2f}", f"{r['inv_bldg']:.2f}", "yes" if r["ok"] else "CHECK"] for r in U["sewer_lat_rows"]]
         table(S, X0, Y0, [0.8, 0.5, 1.0, 1.0, 0.6], rows, size=5.6, row_h=0.2, title="SEWER LATERAL SCHEDULE")
-        X1, Y1 = corner(S, 0.015, 0.56)
-        table(S, X1, Y1, [2.1, 1.3], [["DESIGN DEMAND (PLANNING)", ""], ["Sewer", f"{U['sewer_gpd']:,.0f} gpd"], ["Water", f"{U['water_gpd']:,.0f} gpd"], ["Service size", f"{f['w_in']}\" water / 6\" sewer"]], size=6, row_h=0.2)
-    if onsite:
-        notes = ["No public water or sewer is assumed. Water is from a private drilled well; wastewater to a septic tank and soil drainfield with an equal reserve area. Soil loading rates are assumed from the hydrologic soil group.",
-                 "A percolation test, soil test pits (seasonal high water, restrictive layers), a licensed septic design and a well permit are required before this layout is relied on.",
-                 "Setbacks used: well 100 ft from the drainfield and reserve, 50 ft from the tank; drainfield 75 ft from wetlands and the detention pond, clear of paving and buildings.",
-                 "Electric and gas run in the service corridor from the selected main road, inside our property, then tap the road lines at the right-of-way."]
+    if msew or mwat:
+        dem = [["DESIGN DEMAND (PLANNING)", ""]]
+        if msew:
+            dem.append(["Sewer", f"{U['sewer_gpd']:,.0f} gpd"])
+        if mwat:
+            dem.append(["Water", f"{U['water_gpd']:,.0f} gpd"])
+        dem.append(["Service size", " / ".join(x for x in ([f"{f['w_in']}\" water"] if mwat else []) + (["6\" sewer"] if msew else []))])
+        table(S, X0, Y0, [2.1, 1.3], dem, size=6, row_h=0.2)
+    notes = []
+    if msew and mwat:
+        notes += ["Public water and sanitary sewer are ASSUMED in the selected main road. Obtain a will-serve letter and verify the main location, size, depth and capacity."]
+    elif msew:
+        notes += ["Public sanitary sewer is ASSUMED in the selected main road; water is from a private drilled well. Obtain a sewer will-serve letter and verify the main location, size, depth and capacity."]
+    elif mwat:
+        notes += ["Public water is ASSUMED in the selected main road; wastewater is treated by a private septic system. Obtain a water will-serve letter and verify the main location, size, depth and capacity."]
     else:
-        notes = ["Public water and sanitary sewer are ASSUMED in the selected main road. Obtain a will-serve letter and verify the main location, size, depth and capacity.",
-                 "Lines run inside our own property from the property-line connection on the selected road, in a single corridor, and tap the road mains only at the right-of-way. Existing main invert is assumed 8 ft below the road surface.",
-                 "Every change of direction or junction in the sewer is a manhole; sewer drops 0.1 ft through each manhole and runs at 0.50%. Deep or shallow structures and lift-station needs are flagged below.",
-                 "Water main 8\" minimum for fire flow; hydrant spacing per the local fire marshal. Provide thrust restraint, backflow prevention and meter per utility standards. Maintain 10 ft horizontal / 18 in vertical separation between water and sewer.",
-                 "Dry utilities (electric, gas, communications) are schematic; coordinate routing, easements and transformer location with the providers."]
+        notes += ["No public water or sewer is assumed. Water is from a private drilled well; wastewater to a septic tank and soil drainfield with an equal reserve area. Soil loading rates are assumed from the hydrologic soil group."]
+    if msew or mwat:
+        notes += ["Lines run inside our own property from the property-line connection on the selected road, in a single corridor, and tap the road mains only at the right-of-way. Existing main invert is assumed 8 ft below the road surface."]
+    if msew:
+        notes += ["Every change of direction or junction in the sewer is a manhole; sewer drops 0.1 ft through each manhole and runs at 0.50%. Deep or shallow structures and lift-station needs are flagged below."]
+    if mwat:
+        notes += ["Water main 8\" minimum for fire flow; hydrant spacing per the local fire marshal. Provide thrust restraint, backflow prevention and meter per utility standards." + (" Maintain 10 ft horizontal / 18 in vertical separation between water and sewer." if msew else "")]
+    if septic or well:
+        notes += ["A percolation test, soil test pits (seasonal high water, restrictive layers), a licensed septic design and a well permit are required before this layout is relied on."] if (septic and well) else \
+                 (["A percolation test, soil test pits (seasonal high water, restrictive layers) and a licensed septic design are required before this layout is relied on."] if septic else
+                  ["A drilled well permit, a well yield test and a water quality test are required before this layout is relied on."])
+        notes += ["Setbacks used: " + ("well 100 ft from the drainfield and reserve, 50 ft from the tank; " if (septic and well) else "") + ("drainfield 75 ft from wetlands and the detention pond, clear of paving and buildings." if septic else "well clear of the development area and the floodplain.")]
+    notes += ["Dry utilities (electric, gas, communications) are schematic; coordinate routing, easements and transformer location with the providers."]
     _apply_notes(S, N.c6(meta, X, notes + list(U["warnings"]) + list(U["notes"])), 0.015, 0.29, title="NOTES", width=7.6)
     _prelim_note(S)
     return S

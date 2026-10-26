@@ -125,10 +125,15 @@ def _road_mains(rl, cp, side_pt):
     return seg, wmain
 
 
-def utilities(g, z_prop, ex_z, G, L, road_all, prog, fr, road_key=None, mode="municipal"):
+def utilities(g, z_prop, ex_z, G, L, road_all, prog, fr, road_key=None, mode="municipal", has_sewer=None, has_water=None):
     """Service corridor from the selected main road, inside our own property only, then the tap into the road mains."""
     sp = G["spine"]
-    out = {"warnings": [], "notes": [], "mode": mode}
+    if has_sewer is None:
+        has_sewer = mode == "municipal"
+    if has_water is None:
+        has_water = mode == "municipal"
+    out = {"warnings": [], "notes": [], "mode": "municipal" if (has_sewer and has_water) else ("onsite" if not (has_sewer or has_water) else "mixed"),
+           "has_sewer": bool(has_sewer), "has_water": bool(has_water)}
     bl = L["bldgs"]
     P = L["parcel"]
     road_sel = _sel_road(L, road_key)
@@ -159,41 +164,70 @@ def utilities(g, z_prop, ex_z, G, L, road_all, prog, fr, road_key=None, mode="mu
         out["elec_lat"].append(LineString([a, c]))
         a2, c2 = nearest_points(out["gas"], b)
         out["gas_lat"].append(LineString([a2, c2]))
-    if mode != "municipal":
-        out.update({"water_main": None, "sewer_main": None, "tap": (ex_pt.x, ex_pt.y), "water_lat": [], "sewer_lat": [], "svc": [], "hydrants": [], "valves": [],
-                    "smh": [], "sewer_lat_rows": [], "sewer_slope_pct": 0.0})
-        out.update(onsite(g, z_prop, ex_z, G, L, gpd, R))
-        return out
-    # --- sanitary sewer: from the existing manhole in the road, along the corridor, to the building
-    S = LineString([(ex_pt.x, ex_pt.y)] + list(R.coords))
-    out["sewer_main"] = S
     out["tap"] = (ex_pt.x, ex_pt.y)
+    out.update({"water_main": None, "sewer_main": None, "water_lat": [], "sewer_lat": [], "svc": [], "hydrants": [], "valves": [],
+                "smh": [], "sewer_lat_rows": [], "sewer_slope_pct": 0.0})
+    if not (has_sewer and has_water):
+        # any service that is NOT municipal is private: septic (no sewer) and / or a well + fire cistern (no water)
+        ons = onsite(g, z_prop, ex_z, G, L, gpd, R, septic=not has_sewer)
+        septic_keys = ("flow_gpd", "loading_rate", "bottom_sf", "hsg", "tank_gal", "field", "reserve", "trenches", "field_sf", "tank", "tank_xy", "building_sewer",
+                       "dbox", "tank_to_field", "inv_bldg", "inv_tank_in", "inv_tank_out", "trench_inv", "field_ground", "pump")
+        well_keys = ("well_ring", "well", "well_line", "cistern", "cistern_xy", "cistern_gal", "hydrants")
+        drop = (septic_keys if has_sewer else ()) + (well_keys if has_water else ())
+        for k_, v_ in ons.items():
+            if k_ in ("warnings", "notes") or k_ in drop:
+                continue
+            out[k_] = v_
+        for w_ in ons["warnings"]:
+            wl_ = w_.lower()
+            if has_sewer and any(t in wl_ for t in ("septic", "drainfield", "dosing")):
+                continue
+            if has_water and any(t in wl_ for t in ("well", "cistern")):
+                continue
+            out["warnings"].append(w_)
+        for n_ in ons["notes"]:
+            if has_sewer:
+                n_ = "Private well: a drilled well permit, a well yield test and a water quality test are required."
+            elif has_water:
+                n_ = "Private septic: soil loading rates are ASSUMED from the hydrologic soil group. A percolation test, test pits (seasonal high water table, restrictive layers) and a licensed designer's septic plan are required."
+            out["notes"].append(n_)
+            if has_sewer or has_water:
+                break
+        if not has_sewer and not has_water:
+            return out
     wc = routes["water"]
     wtap = nearest_points(wroad, Point(wc.coords[0]))[0]
-    W = LineString([(wtap.x, wtap.y)] + list(wc.coords))
-    out["water_main"] = W
+    S = LineString([(ex_pt.x, ex_pt.y)] + list(R.coords)) if has_sewer else None
+    W = LineString([(wtap.x, wtap.y)] + list(wc.coords)) if has_water else None
+    out["sewer_main"], out["water_main"] = S, W
     wl, sl, svc, jpos = [], [], [], []
     for n, b in enumerate(bl, 1):
-        a = nearest_points(W, b)
-        wl.append(LineString([a[0], a[1]]))
-        c = nearest_points(S, b)
-        sl.append(LineString([c[0], c[1]]))
-        svc.append({"bldg": n, "w_xy": (a[1].x, a[1].y), "s_xy": (c[1].x, c[1].y)})
-        jpos.append(S.project(c[0]))
+        a = nearest_points(W, b) if W is not None else None
+        if a is not None:
+            wl.append(LineString([a[0], a[1]]))
+        c = nearest_points(S, b) if S is not None else None
+        if c is not None:
+            sl.append(LineString([c[0], c[1]]))
+            jpos.append(S.project(c[0]))
+        svc.append({"bldg": n, "w_xy": (a[1].x, a[1].y) if a else None, "s_xy": (c[1].x, c[1].y) if c else None})
     out["water_lat"], out["sewer_lat"], out["svc"] = wl, sl, svc
     # hydrants: within 250 ft along the main and 150 ft of every building face
-    hyd = []
-    s = 60.0
-    while s < W.length:
-        hyd.append(W.interpolate(s))
-        s += 250.0
-    if not hyd:
-        hyd.append(W.interpolate(min(W.length, 40.0)))
-    for b in bl:
-        if all(h.distance(b) > 150 for h in hyd):
-            hyd.append(nearest_points(W, b)[0])
-    out["hydrants"] = [(h.x, h.y) for h in hyd]
-    out["valves"] = [(wtap.x, wtap.y)] + [(l.coords[0][0], l.coords[0][1]) for l in wl]
+    if has_water:
+        hyd = []
+        s = 60.0
+        while s < W.length:
+            hyd.append(W.interpolate(s))
+            s += 250.0
+        if not hyd:
+            hyd.append(W.interpolate(min(W.length, 40.0)))
+        for b in bl:
+            if all(h.distance(b) > 150 for h in hyd):
+                hyd.append(nearest_points(W, b)[0])
+        out["hydrants"] = [(h.x, h.y) for h in hyd]
+        out["valves"] = [(wtap.x, wtap.y)] + [(l.coords[0][0], l.coords[0][1]) for l in wl]
+    if not has_sewer:
+        out["notes"].append(f"Water service corridor enters the site from {road_key or 'the nearest road'} at the property line and stays inside the parcel; the water main taps the road main there.")
+        return out
     # manholes: at the tap, at every bend, at lateral junctions, at least every 300 ft, and at the end
     cs = list(S.coords)
     stas = [0.0]
@@ -238,11 +272,12 @@ def utilities(g, z_prop, ex_z, G, L, road_all, prog, fr, road_key=None, mode="mu
         if inv_b_have < inv_b_req - 0.01:
             out["warnings"].append(f"Building {k + 1}: sewer lateral invert {inv_b_req:.1f} is above the building outlet {inv_b_have:.1f}; pump or deeper main required")
     out["sewer_lat_rows"] = lat_rows
-    out["notes"].append(f"Service corridor enters the site from {road_key or 'the nearest road'} at the property line and stays inside the parcel; water and sewer tap the road mains there.")
+    out["notes"].append(f"Service corridor enters the site from {road_key or 'the nearest road'} at the property line and stays inside the parcel; " +
+                        ("water and sewer tap the road mains there." if has_water else "the sewer taps the road main there."))
     return out
 
 
-def onsite(g, z_prop, ex_z, G, L, gpd, R):
+def onsite(g, z_prop, ex_z, G, L, gpd, R, septic=True):
     """Private water well and septic system (tank + conventional drainfield + reserve area)."""
     out = {"warnings": [], "notes": []}
     P, bl, dev = L["parcel"], L["bldgs"], L["dev"]
@@ -353,15 +388,16 @@ def onsite(g, z_prop, ex_z, G, L, gpd, R):
         wallow &= ~g.mask(unary_union(keepx).buffer(20))
     if L.get("flood") is not None and not L["flood"].is_empty:
         wallow &= ~g.mask(L["flood"])
-    if out.get("field") is not None:
+    if septic and out.get("field") is not None:
         wallow &= ~g.mask(unary_union([out["field"], out["reserve"]]).buffer(100))
-    wallow &= ~g.mask(out["tank"].buffer(50))
+    if septic:
+        wallow &= ~g.mask(out["tank"].buffer(50))
     jj, ii = np.nonzero(wallow)
     out["well_ring"] = 100.0
     if len(ii):
         d = np.hypot(g.xs[ii] - bc.x, g.ys[jj] - bc.y)
         z = np.nan_to_num(ex_z[jj, ii], nan=0.0)
-        zf0 = out.get("field_ground", float(np.nanmean(ex_z[g.mask(P)])))
+        zf0 = out.get("field_ground", float(np.nanmean(ex_z[g.mask(P)]))) if septic else float(np.nanmean(ex_z[g.mask(P)]))
         cost = d - 4.0 * (z - zf0)
         k = int(np.argmin(cost))
         w = (float(g.xs[ii[k]]), float(g.ys[jj[k]]))
@@ -414,7 +450,7 @@ def fire(g, G, L, util):
     out["truck_envelope"] = (_off(sp, 6.5), _off(sp, -6.5))
     out["hydrants"] = util["hydrants"]
     out["cistern"] = util.get("cistern")
-    if util.get("mode") == "onsite":
+    if not util.get("has_water", util.get("mode") != "onsite"):
         out["warnings"].append("No public water main: fire flow is from an on-site cistern (30,000 gal assumed); confirm the required volume (NFPA 1142 / sprinkler demand) with the fire marshal")
     out["fdc"] = [nearest_points(sp, b)[1] for b in L["bldgs"]]
     out["fdc"] = [(p.x, p.y) for p in out["fdc"]]

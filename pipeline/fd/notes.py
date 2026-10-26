@@ -2,6 +2,22 @@
 (town standards, 811, TBM, erosion control, rims at finish grade, ...) follow the order used on a typical civil plan set."""
 
 
+def util_short(U):
+    w, s = U.get("has_water", U.get("mode") != "onsite"), U.get("has_sewer", U.get("mode") != "onsite")
+    return ("Public water" if w else "Well") + " / " + ("public sewer" if s else "septic") + (" (assumed)" if (w or s) else "")
+
+
+def util_desc(U):
+    w, s = U.get("has_water", U.get("mode") != "onsite"), U.get("has_sewer", U.get("mode") != "onsite")
+    if w and s:
+        return "assumed to be public water and sanitary sewer in the adjacent right-of-way; main location, depth and capacity must be confirmed with the utility."
+    if not (w or s):
+        return "by private well and septic system."
+    if w:
+        return "assumed to be public water in the adjacent right-of-way with a private septic system; the main location, depth and capacity must be confirmed with the utility."
+    return "assumed to be public sanitary sewer in the adjacent right-of-way with a private well; the main location, depth and capacity must be confirmed with the utility."
+
+
 def subject(meta, X):
     pl = meta.get("project_lines") or []
     place = ", ".join(pl[1:3]) if len(pl) > 1 else "THE SUBJECT PARCEL"
@@ -31,7 +47,7 @@ def t1(meta, X):
             f"Zoning: {meta.get('zone_line') or 'verify with the municipality'}. Dimensional requirements shown on the Site Development Plan are assumed and must be confirmed with the zoning official.",
             "Topography is from USGS 3DEP lidar (NAVD 88). Buildings are from OSM / Microsoft footprints, wetlands from the National Wetlands Inventory and flood zones from FEMA. None of it is a field survey.",
             "Horizontal datum is NAD 83 and vertical datum is NAVD 88 unless otherwise noted. A field survey is required before final design.",
-            "Utility service is " + ("by private well and septic system." if X["U"].get("mode") == "onsite" else "assumed to be public water and sanitary sewer in the adjacent right-of-way; main location, depth and capacity must be confirmed with the utility."),
+            "Utility service is " + util_desc(X["U"]),
             "Rainfall depths: " + X["rain"]["source"] + ". Soil group: " + X["soils"]["source"] + ".",
             STD_811, STD_DISCREP, STD_PRELIM]
 
