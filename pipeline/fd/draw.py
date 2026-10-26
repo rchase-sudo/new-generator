@@ -122,6 +122,9 @@ def contours(S, X, which="ex", labels=True, color=GREY, alpha=0.9, heavy=False):
     pr = which != "ex"
     if pr and "_c_prc" not in X:
         zone = X["ER"]["lod"].buffer(12)
+        wet = X["L"].get("wet")
+        if wet is not None and not wet.is_empty:      # nothing is graded in a wetland or stream: no proposed contours there (existing ones show)
+            zone = zone.difference(wet.buffer(2.5))
         out = []
         for lev, ln, idx in X[key]:
             c = ln.intersection(zone)
