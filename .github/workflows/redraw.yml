@@ -1,0 +1,31 @@
+name: Redraw concept plan
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id: {description: "Job id (layout is NOT re-run)", required: true}
+
+jobs:
+  redraw:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq fonts-liberation fonts-crosextra-carlito || true
+      - run: pip install -r requirements.txt
+      - run: python scripts/redraw.py "${{ inputs.job_id }}" 2>&1 | tee redraw.log
+      - name: Publish preview to test-runs branch
+        if: always()
+        run: |
+          cp redraw.log test_runs/ 2>/dev/null || true
+          git config user.name "forma-ci"; git config user.email "forma-ci@users.noreply.github.com"
+          git fetch origin test-runs || true
+          git checkout -B test-runs
+          git add -f test_runs
+          git commit -m "redraw ${{ inputs.job_id }}" || exit 0
+          git push -f origin test-runs

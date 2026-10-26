@@ -404,6 +404,40 @@ def step_layout(job_id):
                     summary={**(job.get("summary") or {}), **summary}, layout=res["metrics"], outputs=outputs)
 
 
+def step_redraw(job_id, hide_demo=True, out_dir=None):
+    """Re-draw the concept plan images from the stored layout geometry WITHOUT re-running the layout, so the plan, the DXF and the
+    3D model all keep exactly the same layout. layout.pkl and the stored layout metrics are never touched."""
+    job = supa.get_job(job_id)
+    ctx = _load_ctx(job_id)
+    lay = pickle.loads(supa.download(job_id, "layout.pkl"))
+    rules, prog, setbacks = job.get("zoning") or {}, job.get("program") or {}, job.get("setbacks") or {"front": 25, "side": 10, "rear": 10}
+    from . import topo as topo_mod
+    dem = ctx.get("topo")
+    thr = rules.get("max_slope_pct", topo_mod.DEFAULT_MAX_SLOPE)
+    steep = topo_mod.steep_polys(dem, ctx["parcel_sp"], thr) if dem else []
+    L = job.get("listing") or {}
+    title = [x for x in [L.get("street_address") and f"{L.get('lot') + ', ' if L.get('lot') else ''}{L.get('street_address')}",
+                         ", ".join(x for x in [L.get("city"), L.get("state")] if x),
+                         L.get("county") and (L["county"] if "county" in L["county"].lower() else f"{L['county']} County")] if x]
+    project = [prog.get("use") or "Development"] + title
+    rds = ctx["rds"] if isinstance(ctx["rds"], list) else []
+    edges = classify_edges(ctx["parcel_sp"], [r["centerline"] for r in rds if r["class"] != "service"], ctx["k"])
+    env = envelope(ctx["parcel_sp"], edges, setbacks, ctx["k"])
+    wet = ctx["wet"] if isinstance(ctx["wet"], list) else []
+    fl = ctx["fl"] if isinstance(ctx["fl"], list) else []
+    ex = [e for e in (lay.get("existing") or []) if not (hide_demo and e.get("action") == "demo")]
+    out = out_dir or tempfile.mkdtemp()
+    write_concept_sheet(os.path.join(out, "concept_plan.pdf"), os.path.join(out, "concept_plan.png"), ctx["parcel_sp"], env, wet, fl, rds,
+                        ctx["aerial"], ctx["k"], lay["sp"], lay["labels"], title, lay["metrics"], prog, rules, project=project, existing=ex,
+                        topo=dem, steep=steep)
+    write_concept_dxf(os.path.join(out, "existing_conditions.dxf"), os.path.join(out, "concept_layout.dxf"), lay["sp"], lay["labels"], ctx["k"], existing=ex, steep=steep)
+    if out_dir is None:
+        up = {n: supa.upload(job_id, os.path.join(out, n)) for n in ("concept_plan.pdf", "concept_plan.png", "concept_layout.dxf")}
+        outputs = {**(job.get("outputs") or {}), "layout": up}
+        supa.update_job(job_id, outputs=outputs)
+    return out
+
+
 def step_render(job_id):
     """3D model of the approved layout (Blender, same build as the Pocahontas Trail model) -> front aerial view
     -> handed to the `pipeline-banana` edge function for the Nano Banana photoreal pass."""
