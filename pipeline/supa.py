@@ -2,6 +2,7 @@
 import datetime as dt
 import mimetypes
 import os
+import time
 
 import requests
 
@@ -43,10 +44,20 @@ def upload(job_id, local_path, name=None):
     key = f"{job_id}/{name}"
     ctype = mimetypes.guess_type(name)[0] or ("application/dxf" if name.endswith(".dxf") else "application/octet-stream")
     with open(local_path, "rb") as f:
-        r = requests.post(f"{URL}/storage/v1/object/{BUCKET}/{key}", data=f.read(),
-                          headers=_h({"Content-Type": ctype, "x-upsert": "true"}), timeout=120)
-    r.raise_for_status()
-    return key
+        data = f.read()
+    last = None
+    for attempt in range(5):       # storage sometimes answers 5xx (520 / 502 / 503) for a moment: retry with backoff, never fail a job on it
+        try:
+            r = requests.post(f"{URL}/storage/v1/object/{BUCKET}/{key}", data=data,
+                              headers=_h({"Content-Type": ctype, "x-upsert": "true"}), timeout=120)
+            if r.status_code < 500 and r.status_code != 429:
+                r.raise_for_status()
+                return key
+            last = f"{r.status_code}"
+        except (requests.ConnectionError, requests.Timeout) as e:  # noqa: BLE001
+            last = repr(e)
+        time.sleep(2 * (attempt + 1))
+    raise RuntimeError(f"Storage upload of {name} failed after retries ({last})")
 
 
 def set_config(key, value):
@@ -56,6 +67,11 @@ def set_config(key, value):
 
 
 def download(job_id, name):
-    r = requests.get(f"{URL}/storage/v1/object/{BUCKET}/{job_id}/{name}", headers=_h(), timeout=120)
+    r = None
+    for attempt in range(5):
+        r = requests.get(f"{URL}/storage/v1/object/{BUCKET}/{job_id}/{name}", headers=_h(), timeout=120)
+        if r.status_code < 500 and r.status_code != 429:
+            break
+        time.sleep(2 * (attempt + 1))
     r.raise_for_status()
     return r.content
