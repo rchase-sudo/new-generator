@@ -59,27 +59,37 @@ BLDG_H = 22.0                # ft, for shadow length
 
 # ---------------------------------------------------------------- DXF
 def _clip_demo(existing, sp, k_ft):
-    """Existing work marked for demolition is only flagged where the proposed development does not replace it: a red
-    demolition overlay on top of the proposed buildings and pavement is noise on the layout plan."""
-    if not existing:
-        return existing
-    parts = [sp.get(n) for n in ("bldgs", "pave", "pond", "walk", "drive")]
-    flat = []
-    for p in parts:
-        flat += list(p) if isinstance(p, (list, tuple)) else ([p] if p is not None else [])
-    flat = [g for g in flat if g is not None and not g.is_empty]
-    if not flat:
-        return existing
-    prop = unary_union(flat).buffer(2.0 / k_ft)
-    out = []
-    for e in existing:
-        if e.get("action") != "demo":
-            out.append(e)
+    """The layout plan shows the proposed development and what stays. Demolition is never drawn or labelled on it (it
+    belongs on a separate demolition plan), so everything marked for demolition is dropped here."""
+    return [e for e in (existing or []) if e.get("action") != "demo"]
+
+
+def _typ_labels(labels):
+    """Identical building labels collapse into one with '(TYP. OF N)' on the last line. Returns [(label, building_index)] for
+    the labels that are drawn; building_index is the position of the building the label points at (None for non-building labels)."""
+    out, groups, bi = [], {}, 0
+    for i, t in enumerate(labels):
+        if t.get("small"):
+            out.append((t, None))
             continue
-        g = e["geom"].difference(prop)
-        if g.is_empty or g.area < 0.35 * e["geom"].area:
+        groups.setdefault(tuple(t["lines"]), []).append((i, bi, t))
+        bi += 1
+    done = set()
+    for i, t in enumerate(labels):
+        if t.get("small"):
             continue
-        out.append(dict(e, geom=g, sf=round(e.get("sf", 0) * g.area / e["geom"].area, -1)))
+        key = tuple(t["lines"])
+        if key in done:
+            continue
+        done.add(key)
+        g = groups[key]
+        if len(g) == 1:
+            out.append((t, g[0][1]))
+            continue
+        cx = sum(x[2]["at"][0] for x in g) / len(g)
+        cy = sum(x[2]["at"][1] for x in g) / len(g)
+        i0, b0, t0 = min(g, key=lambda x: (x[2]["at"][0] - cx) ** 2 + (x[2]["at"][1] - cy) ** 2)
+        out.append((dict(t0, lines=list(t0["lines"]) + [f"(TYP. OF {len(g)})"]), b0))
     return out
 
 
@@ -134,7 +144,7 @@ def write_dxf(ec_dxf, out_path, sp, labels, k_ft, existing=None, steep=None):
         mt = msp.add_mtext(f"EXISTING {'PAVEMENT ' if pv else ''}{e['id']} TO BE {'REMOVED' if pv and e['action'] == 'demo' else 'DEMOLISHED' if e['action'] == 'demo' else 'RETAINED'}\\P{e['sf']:,.0f} SF",
                            dxfattribs={"layer": "P-TEXT", "char_height": 2.5 / k_ft, "insert": (c.x, c.y), "attachment_point": 5, "rotation": 0})
         mt.set_bg_color("canvas", scale=1.3)
-    for t in labels:
+    for t, _bi in _typ_labels(labels):
         h = (2.0 if t.get("small") else 3.0) / k_ft
         mt = msp.add_mtext("\\P".join(t["lines"]), dxfattribs={"layer": "P-TEXT", "char_height": h, "insert": t["at"],
                                                                "attachment_point": 5, "rotation": 0})
@@ -370,14 +380,12 @@ def write_sheet(pdf_path, png_path, parcel, env, wet, fl, rds, aerial, k_ft, sp,
         ax.text(cx, cy, "\n".join(lines), ha="center", va="center", fontsize=fs, family=LFONT, zorder=12,
                 linespacing=LSPACE, bbox=box_kw)
 
-    bi = 0
-    for t in labels:
+    for t, bi in _typ_labels(labels):
         if t.get("small"):
             ax.text(t["at"][0], t["at"][1], "\n".join(t["lines"]), ha="center", va="center", fontsize=LFS, family=LFONT,
                     color="#10324a", zorder=12, linespacing=LSPACE)
             continue
-        target = bldgs[bi] if bi < len(bldgs) else None
-        bi += 1
+        target = bldgs[bi] if bi is not None and bi < len(bldgs) else None
         place(t["lines"], t["at"], target, LFS)
     for e in existing or []:
         c = e["geom"].representative_point()
