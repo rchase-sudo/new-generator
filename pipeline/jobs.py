@@ -157,15 +157,25 @@ def _extent_around(geom, k_ft, pad_ft=250, min_ft=900):
 
 
 def _single_polygon(geom, job, epsg, k):
-    """The pipeline works on one contiguous parcel. A multipart record (a tax parcel split by a road or rail line, or two
-    separate lots) is reduced to the single part that holds the listing address; the other parts are named in the note."""
-    from shapely.geometry import MultiPolygon, Point
+    """The pipeline works on one contiguous parcel. A multipart record is joined into one site when its parts are close
+    (a road, rail line or sliver between them, up to 100 ft: the connecting strip is flagged in the note); parts further
+    apart cannot be one site, so the part at the listing address is used and the others are named in the note."""
+    from shapely.geometry import Point
     if geom.geom_type != "MultiPolygon":
         return geom, None
+    own = geom.area * k * k / 43560.0
     tight = geom.buffer(3.0 / k).buffer(-3.0 / k)           # bridge hairline gaps between slivers of the same lot
     if tight.geom_type == "Polygon":
         return tight, None
     parts = sorted(tight.geoms, key=lambda p: -p.area)
+    gap = max(min(p.distance(q) for q in parts if q is not p) for p in parts) * k
+    if gap <= 100.0:
+        for d in (10, 20, 30, 45, 60, 80):
+            j = geom.buffer(d / k).buffer(-d / k)
+            if j.geom_type == "Polygon":
+                add = j.area * k * k / 43560.0 - own
+                return j, (f"The parcel record has {len(parts)} separate parts about {gap:.0f} ft apart. They are planned as one site, "
+                           f"joined by a connecting strip of about {add:.2f} ac that is NOT part of either parcel. Confirm access / easements across the gap.")
     pick = parts[0]
     try:
         gc = job.get("geocode") or {}
@@ -176,7 +186,7 @@ def _single_polygon(geom, job, epsg, k):
     except Exception:  # noqa: BLE001
         pass
     other = sum(p.area for p in parts if p is not pick) * k * k / 43560.0
-    note = (f"The parcel record has {len(parts)} separate parts; the plan uses the part at the listing address "
+    note = (f"The parcel record has {len(parts)} separate parts too far apart to be one site; the plan uses the part at the listing address "
             f"({pick.area * k * k / 43560.0:.2f} ac). The other part(s), about {other:.2f} ac, are not included.")
     return pick, note
 
