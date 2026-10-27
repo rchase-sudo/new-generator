@@ -199,7 +199,7 @@ def prepare(work, parcel_sp, k_ft, aerial, rds, lay, program=None, seed=3, view=
                         a += math.pi          # the road must be on the camera side
             S = max(0.62 * L_ * mpu, W_ * mpu * 3.0)
             if view:      # zoom on one stretch of the strip: span = fraction of its length in frame, center = where along it (0 = left end)
-                span = min(1.0, max(0.1, float(view.get("span", 1.0))))
+                span = min(1.5, max(0.1, float(view.get("span", 1.0))))
                 S = max(0.62 * span * L_ * mpu, W_ * mpu * 3.0)
                 aim_m = (float(view.get("center", 0.5)) - 0.5) * L_ * mpu
     except Exception:  # noqa: BLE001
