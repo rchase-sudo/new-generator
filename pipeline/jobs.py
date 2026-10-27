@@ -156,6 +156,31 @@ def _extent_around(geom, k_ft, pad_ft=250, min_ft=900):
     return (cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2)
 
 
+def _single_polygon(geom, job, epsg, k):
+    """The pipeline works on one contiguous parcel. A multipart record (a tax parcel split by a road or rail line, or two
+    separate lots) is reduced to the single part that holds the listing address; the other parts are named in the note."""
+    from shapely.geometry import MultiPolygon, Point
+    if geom.geom_type != "MultiPolygon":
+        return geom, None
+    tight = geom.buffer(3.0 / k).buffer(-3.0 / k)           # bridge hairline gaps between slivers of the same lot
+    if tight.geom_type == "Polygon":
+        return tight, None
+    parts = sorted(tight.geoms, key=lambda p: -p.area)
+    pick = parts[0]
+    try:
+        gc = job.get("geocode") or {}
+        pt = to_crs(Point(gc["lon"], gc["lat"]), 4326, epsg)
+        hit = [p for p in parts if p.buffer(60.0 / k).contains(pt)]
+        if hit:
+            pick = min(hit, key=lambda p: p.distance(pt))
+    except Exception:  # noqa: BLE001
+        pass
+    other = sum(p.area for p in parts if p is not pick) * k * k / 43560.0
+    note = (f"The parcel record has {len(parts)} separate parts; the plan uses the part at the listing address "
+            f"({pick.area * k * k / 43560.0:.2f} ac). The other part(s), about {other:.2f} ac, are not included.")
+    return pick, note
+
+
 def step_ec(job_id):
     job = supa.get_job(job_id)
     parcel = job.get("parcel")
@@ -171,6 +196,7 @@ def step_ec(job_id):
                   "apn": ", ".join(str(p.get("apn")) for p in parcel["parts"]), "acres": sum(p.get("acres") or 0 for p in parcel["parts"])}
         supa.update_job(job_id, parcel=parcel)
     parcel_sp = to_crs(shape(parcel["geometry"]), 4326, epsg)
+    parcel_sp, parcel_note = _single_polygon(parcel_sp, job, epsg, k)
     ext = _extent_around(parcel_sp, k)
     aerial = context.aerial(ext, epsg, k)
     supa.update_job(job_id, progress="Wetlands, flood zones, roads")
@@ -218,6 +244,8 @@ def step_ec(job_id):
     summary["topo"] = topo_mod.summary(dem, parcel_sp, (job.get("zoning") or {}).get("max_slope_pct", topo_mod.DEFAULT_MAX_SLOPE)) if dem else {"available": False}
     summary["existing_buildings"] = existing.summary(bld, epsg)
     summary["buildings_checked"] = not isinstance(bld_raw, dict)
+    if parcel_note:
+        summary["parcel_note"] = parcel_note
     summary["existing_pavement"] = existing.pave_summary(pave, epsg)
     files = {}
     for name in ("existing_conditions.dxf", "existing_conditions.pdf", "existing_conditions.png", "aerial.jpg", "aerial.jgw"):
