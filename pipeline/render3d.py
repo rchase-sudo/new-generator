@@ -175,10 +175,32 @@ def prepare(work, parcel_sp, k_ft, aerial, rds, lay, program=None, seed=3):
 
     # ---------------- camera: from the road side, 3/4 aerial like the Pocahontas front view
     a = math.radians(lay.get("frame_angle_deg") or 0.0)
-    n_in = np.array([-math.sin(a), math.cos(a)])        # into the site
-    t_al = np.array([math.cos(a), math.sin(a)])         # along the frontage
     dx0, dy0, dx1, dy1 = dev.bounds
     S = max(dx1 - dx0, dy1 - dy0) * mpu
+    # a long, narrow development (a strip along a road or rail line): turn the camera so the strip runs ACROSS the frame and
+    # fill the frame with it. Framed like a square site it is a thin sliver in a sea of surroundings, and the photoreal pass
+    # then invents the whole scene instead of following the model.
+    try:
+        mc = list(dev.minimum_rotated_rectangle.exterior.coords)[:4]
+        e0 = (mc[1][0] - mc[0][0], mc[1][1] - mc[0][1])
+        e1 = (mc[2][0] - mc[1][0], mc[2][1] - mc[1][1])
+        l0, l1 = math.hypot(*e0), math.hypot(*e1)
+        long_v, L_, W_ = (e0, l0, l1) if l0 >= l1 else (e1, l1, l0)
+        if W_ > 0 and L_ / W_ >= 2.5:
+            a = math.atan2(long_v[1], long_v[0])
+            if rds:
+                ru = unary_union([r["pavement"] for r in rds])
+                rp = min(_polys(ru) or [ru], key=lambda q: q.distance(dev.centroid)) if not ru.is_empty else None
+                if rp is not None:
+                    from shapely.ops import nearest_points as _np2
+                    q_ = _np2(rp, dev.centroid)[0]
+                    if (-math.sin(a)) * (q_.x - dev.centroid.x) + math.cos(a) * (q_.y - dev.centroid.y) > 0:
+                        a += math.pi          # the road must be on the camera side
+            S = max(0.62 * L_ * mpu, W_ * mpu * 3.0)
+    except Exception:  # noqa: BLE001
+        pass
+    n_in = np.array([-math.sin(a), math.cos(a)])        # into the site
+    t_al = np.array([math.cos(a), math.sin(a)])         # along the frontage
     dist = 1.75 * S + 45.0
     el = math.radians(40)           # steep enough that no horizon shows: the frame is all ground, like a real drone shot
     cam_xy = -n_in * dist * math.cos(el) + t_al * dist * 0.28

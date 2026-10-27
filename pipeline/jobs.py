@@ -527,7 +527,7 @@ def step_render_composite(job_id):
     if not raw_name:
         raise RuntimeError("Nano Banana output missing")
     raw = Image.open(io.BytesIO(supa.download(job_id, raw_name))).convert("RGB")
-    if not os.environ.get("RENDER_LOT_ONLY"):
+    if not (os.environ.get("RENDER_LOT_ONLY") or (job.get("zoning") or {}).get("render_lot_only")):
         # the whole frame is the photoreal pass (like the Pocahontas render): surroundings included, no seam with the 3D model texture
         path = os.path.join(tempfile.mkdtemp(), "render.jpg")
         raw.save(path, quality=94)
