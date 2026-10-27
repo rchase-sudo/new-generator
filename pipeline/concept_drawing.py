@@ -266,7 +266,7 @@ def write_sheet(pdf_path, png_path, parcel, env, wet, fl, rds, aerial, k_ft, sp,
         from .ec_drawing import draw_topo
         draw_topo(ax, topo, T / 2, shade=False, labels=False, alpha=0.7, lw=0.45)
     for g in steep or []:
-        _patch(ax, g, 2, facecolor=(1, 0.25, 0.2, 0.12), edgecolor="#ff4d4d", lw=1.0 * T, ls=(0, (3, 3)))
+        _patch(ax, g, 2, facecolor=(0.95, 0.65, 0.15, 0.14), edgecolor="#e8a317", lw=1.0 * T, ls=(0, (3, 3)))
     # existing: wetlands (dashed outline), parcel, setback
     for w in wet:
         _patch(ax, w["geom"], 2, facecolor="none", edgecolor="#4fdc5a", lw=1.1 * T, ls=(0, (6, 4)))

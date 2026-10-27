@@ -427,7 +427,7 @@ def step_layout(job_id):
     ex += [{"id": p["id"], "action": "keep", "geom": p["geom"], "sf": p["area_sf"], "label": ("Parking" if p["kind"] == "parking" else "Drive") +
             (f" (about {p['est_stalls']} stalls)" if p.get("est_stalls") else ""), "kind": "pavement"} for p in pave_keep] + \
           [{"id": p["id"], "action": "demo", "geom": p["geom"], "sf": p["area_sf"], "label": "Parking" if p["kind"] == "parking" else "Drive", "kind": "pavement"} for p in pave_rm]
-    res["metrics"]["existing"] = [{"id": e["id"], "action": e["action"], "sf": round(e["sf"], -1), "label": e["label"], **({"kind": "pavement"} if e.get("kind") == "pavement" else {})} for e in ex]
+    res["metrics"]["existing"] = [{"id": e["id"], "action": e["action"], "sf": round(e["sf"], -1), "label": e["label"], **({"kind": "pavement"} if e.get("kind") == "pavement" else {})} for e in ex if e.get("action") != "demo"]
     write_concept_sheet(os.path.join(out, "concept_plan.pdf"), os.path.join(out, "concept_plan.png"), ctx["parcel_sp"], env, wet, fl, rds,
                         ctx["aerial"], ctx["k"], res["sp"], res["labels"], title, res["metrics"], prog, rules, project=project, existing=ex,
                         topo=dem, steep=steep)
