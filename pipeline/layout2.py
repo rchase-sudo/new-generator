@@ -611,6 +611,12 @@ def _generate_inner(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=N
     if lane_u is not None:
         for rid, units in S.runs.items():
             S.runs[rid] = [u for u in units if not any(S.polys[i].intersects(lane_u) for i in S.units[u])]
+    if GAP >= 100:     # open-space layout: stalls only alongside each building, the middle of every gap stays lawn
+        rx = sorted((r["rect"].bounds[0], r["rect"].bounds[2]) for r in row)
+        def _near(c):
+            return any(x0 - 20 <= c.x <= x1 + 20 for x0, x1 in rx)
+        for rid, units in S.runs.items():
+            S.runs[rid] = [u for u in units if _near(unary_union([S.polys[i] for i in S.units[u]]).centroid)]
     ucen = {u: unary_union([S.polys[i] for i in idx]).centroid for u, idx in S.units.items()}
     while S.n > req:
         cands = []
