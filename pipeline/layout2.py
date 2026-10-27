@@ -657,6 +657,17 @@ def _generate_inner(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=N
     RPf = fr.fwd(RP) if RP is not None else None
     if RPf is not None:
         pave = pave.difference(RPf).buffer(0)      # reused pavement is existing: only new paving is drawn / counted
+    if program.get("connect_service"):     # driveway from the new pavement to the nearest existing gravel / service road
+        sv = [fr.fwd(r["centerline"]) for r in rds if r.get("class") == "service"]
+        if sv:
+            svu = unary_union(sv)
+            from shapely.ops import nearest_points
+            a_, b_ = nearest_points(pave, svu)
+            if a_.distance(b_) > 1:
+                link = LineString([a_, b_]).buffer(12.0, cap_style=2)
+                link = link.difference(unary_union([r["rect"] for r in row]))
+                pave = unary_union([pave, link]).buffer(0)
+                drive = unary_union([drive, link]) if drive is not None else link
     walks = unary_union([r["walk"] for r in row]).difference(pave)
     bldgs = [r["rect"] for r in row]
     dev = unary_union([pave, walks, *bldgs])
