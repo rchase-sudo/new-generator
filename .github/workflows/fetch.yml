@@ -1,0 +1,30 @@
+name: Fetch job files
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id: {description: "Job id", required: true}
+      names: {description: "Space-separated storage file names", required: true}
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - run: pip install -r requirements.txt
+      - run: python scripts/fetch.py "${{ inputs.job_id }}" ${{ inputs.names }} 2>&1 | tee fetch.log
+      - name: Publish to test-runs branch
+        if: always()
+        run: |
+          git config user.name "forma-ci"; git config user.email "forma-ci@users.noreply.github.com"
+          git fetch origin test-runs || true
+          git checkout -B test-runs
+          git add -f test_runs
+          git commit -m "fetch ${{ inputs.job_id }}" || exit 0
+          git push -f origin test-runs
