@@ -507,7 +507,7 @@ def _pond(P, dev, constraints, target_sf):
 
 
 # ---------------------------------------------------------------- main
-def _generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, parking_setbacks_ft=None, drive_road=None, keep_bldgs=None, stem=None, steep=None, reuse_pave=None, shared_stalls=0):
+def _generate_inner(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, parking_setbacks_ft=None, drive_road=None, keep_bldgs=None, stem=None, steep=None, reuse_pave=None, shared_stalls=0):
     """drive_road: key of the road the driveway must connect to (ec_drawing.road_key); None = longest frontage.
     keep_bldgs: footprints of existing buildings that stay; the layout treats them (plus clearance) like wetlands."""
     rules = rules or {}
@@ -790,6 +790,21 @@ def _generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, p
 
 # ---------------------------------------------------------------- access-road mode (flag / horseshoe lots)
 STEM_CELL = 6.0
+
+
+def _generate(*a, **kw):
+    """program['gap_ft'] sets the clear space (walks + lawn) between buildings in a row; default GAP. Used for open-space layouts
+    where fewer, larger buildings sit apart with lawn between them."""
+    global GAP
+    prog = kw.get("program") or (a[6] if len(a) > 6 else None) or {}
+    g0 = GAP
+    try:
+        gp = float(prog.get("gap_ft") or 0)
+        if gp > 0:
+            GAP = gp
+        return _generate_inner(*a, **kw)
+    finally:
+        GAP = g0
 
 
 def _plan_stem(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, parking_setbacks_ft, drive_road, keep_bldgs, rules, steep=None, dem=None, reuse_pave=None, tie=False):
