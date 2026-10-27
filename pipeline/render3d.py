@@ -41,7 +41,7 @@ def forest_mask(img):
     return np.asarray(im) > 127
 
 
-def prepare(work, parcel_sp, k_ft, aerial, rds, lay, program=None, seed=3):
+def prepare(work, parcel_sp, k_ft, aerial, rds, lay, program=None, seed=3, view=None):
     """Write scene.json, ground.jpg, lawn.png and site masks into `work`. Returns the scene dict."""
     os.makedirs(work, exist_ok=True)
     sp = lay["sp"]
@@ -177,6 +177,7 @@ def prepare(work, parcel_sp, k_ft, aerial, rds, lay, program=None, seed=3):
     a = math.radians(lay.get("frame_angle_deg") or 0.0)
     dx0, dy0, dx1, dy1 = dev.bounds
     S = max(dx1 - dx0, dy1 - dy0) * mpu
+    aim_m = 0.0
     # a long, narrow development (a strip along a road or rail line): turn the camera so the strip runs ACROSS the frame and
     # fill the frame with it. Framed like a square site it is a thin sliver in a sea of surroundings, and the photoreal pass
     # then invents the whole scene instead of following the model.
@@ -197,13 +198,18 @@ def prepare(work, parcel_sp, k_ft, aerial, rds, lay, program=None, seed=3):
                     if (-math.sin(a)) * (q_.x - dev.centroid.x) + math.cos(a) * (q_.y - dev.centroid.y) > 0:
                         a += math.pi          # the road must be on the camera side
             S = max(0.62 * L_ * mpu, W_ * mpu * 3.0)
+            if view:      # zoom on one stretch of the strip: span = fraction of its length in frame, center = where along it (0 = left end)
+                span = min(1.0, max(0.1, float(view.get("span", 1.0))))
+                S = max(0.62 * span * L_ * mpu, W_ * mpu * 3.0)
+                aim_m = (float(view.get("center", 0.5)) - 0.5) * L_ * mpu
     except Exception:  # noqa: BLE001
         pass
     n_in = np.array([-math.sin(a), math.cos(a)])        # into the site
     t_al = np.array([math.cos(a), math.sin(a)])         # along the frontage
     dist = 1.75 * S + 45.0
     el = math.radians(40)           # steep enough that no horizon shows: the frame is all ground, like a real drone shot
-    cam_xy = -n_in * dist * math.cos(el) + t_al * dist * 0.28
+    aim = t_al * aim_m                                  # camera target, metres from the development centroid
+    cam_xy = aim - n_in * dist * math.cos(el) + t_al * dist * 0.28
     # the lot: only this area may change in the photoreal pass (parcel + the driveway out to the road)
     # only the developed area (plus a margin and the driveway), never the whole parcel: on a long parcel the rest stays
     # exactly as the model draws it (woods), so the photoreal pass cannot invent buildings or parking there
@@ -222,7 +228,7 @@ def prepare(work, parcel_sp, k_ft, aerial, rds, lay, program=None, seed=3):
         "trees": trees,
         "ornamental": orn,
         "camera": {"pos": [round(float(cam_xy[0]), 2), round(float(cam_xy[1]), 2), round(dist * math.sin(el), 2)],
-                   "target": [0.0, 0.0, 0.0], "lens": 32},
+                   "target": [round(float(aim[0]), 2), round(float(aim[1]), 2), 0.0], "lens": 32},
         "sun": {"az_deg": (math.degrees(math.atan2(-n_in[0], -n_in[1])) + 35) % 360, "el_deg": 24},   # low golden-hour sun: long soft shadows
         "program": (program or {}).get("use"),
     }

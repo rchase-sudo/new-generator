@@ -501,7 +501,7 @@ def step_render(job_id):
     except Exception:  # noqa: BLE001
         rds = ctx["rds"] if isinstance(ctx["rds"], list) else []
     work = tempfile.mkdtemp()
-    render3d.prepare(work, ctx["parcel_sp"], k, aer, rds, lay, job.get("program"))
+    render3d.prepare(work, ctx["parcel_sp"], k, aer, rds, lay, job.get("program"), view=(job.get("zoning") or {}).get("render_view"))
     supa.update_job(job_id, render_status="rendering")
     out = render3d.render(work, width=1800, height=1200, samples=64)
     key = supa.upload(job_id, out, "model_front.png")
