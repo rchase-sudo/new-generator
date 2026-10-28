@@ -97,6 +97,9 @@ INPUTS_SCHEMA = """{
  "utility_fee": {"amount": number, "qty": "e.g. 2 × 2-in. taps", "unit": "e.g. $52,000", "note": "e.g. Water + sewer connection; FY2027 schedule"},
  "permitting_ls": number, "legal_ls": number, "leasing_ls": number,
  "rents": [ {"building": "<exact building name>", "rent_psf": number, "basis": "short"} ],   // NNN $/SF/yr, one per building
+ "for_sale": boolean,   // true when the buildings are SOLD (condos, townhomes, for-sale homes); false for leased / income uses
+ "sale_psf": [ {"building": "<exact building name>", "price_psf": number, "basis": "short comp basis"} ],   // only when for_sale: gross sale price per SF of building area for new construction here
+ "selling_cost_pct": number,   // only when for_sale: brokerage + closing + marketing, e.g. 0.06
  "cap_rate": number,   // e.g. 0.07
  "cap_note": "short — product type the cap reflects",
  "phase1": ["<building name(s) built first — the anchor / most viable>"],
@@ -111,8 +114,9 @@ RESEARCH_SYS = """You are a commercial real estate development analyst researchi
 development proforma. Use web search to find, for THIS jurisdiction: utility connection / tap / impact fees (current
 schedule), the land price or comparable land sales and the assessment, demographics (median household income, population,
 growth), traffic counts on the fronting road, regional construction costs for the proposed building types and site work,
-NNN rents and cap rates for the proposed uses, and the permitting sequence with real agency names (city/county planning,
-state DOT district, state environmental agency, utility). Report findings as concise notes with figures, dates and
+NNN rents and cap rates for the proposed uses (for programs that are SOLD, such as condos, townhomes or for-sale homes,
+research recent new-construction sale prices per SF in the immediate market instead, and selling costs), and the permitting
+sequence with real agency names (city/county planning, state DOT district, state environmental agency, utility). Report findings as concise notes with figures, dates and
 source URLs. Where nothing is found, give a conservative regional benchmark and label it as such."""
 
 FILL_SYS = """You turn research notes into proforma inputs for a FORMA due diligence package. Use the research figures;
@@ -149,6 +153,16 @@ def proforma(F, I):
         rent.setdefault(n, (24.0, "FORMA estimate"))
     cap = _num(I.get("cap_rate"), 0.07) or 0.07
     cap = cap / 100 if cap > 1 else cap
+    for_sale = bool(I.get("for_sale"))
+    sell = _num(I.get("selling_cost_pct"), 0.06)
+    sell = sell / 100 if sell > 1 else sell
+    price = {}
+    for r in I.get("sale_psf") or []:
+        if r.get("building") in sf:
+            price[r["building"]] = _num(r.get("price_psf"))
+    _avg = (sum(price.values()) / len(price)) if price else 300.0
+    for n in names:
+        price.setdefault(n, _avg)
     land_price = _num((I.get("land") or {}).get("price")) or _num(F.get("asking_price")) or 0
     clip = lambda t, n=90: (str(t or "")[:n - 1].rsplit(" ", 1)[0] + "…") if len(str(t or "")) > n else str(t or "")  # noqa: E731
     site = [(r.get("item", ""), clip(r.get("qty", ""), 28), clip(r.get("unit", "—"), 24), round(_num(r.get("subtotal"))), clip(r.get("note", "")))
@@ -188,14 +202,16 @@ def proforma(F, I):
     A, B, C = build(phase1), build(names), build(names, False)
     nA, nB = noi(phase1), noi(names)
     out = {}
+    def sale_net(bset):
+        return sum(sf[n] * price[n] for n in bset) * (1 - sell)
     for k, m, n in (("A", A, nA[1]), ("B", B, nB[1]), ("C", C, nB[1])):
-        val = n / cap
+        val = sale_net(phase1 if k == "A" else names) if for_sale else n / cap
         out[k] = dict(tdc=m["tdc"], noi=n, yld=n / m["tdc"] if m["tdc"] else 0, value=round(val), profit=round(val - m["tdc"]))
     tsf = sum(sf.values()) or 1
     blend = sum(sf[n] * rent[n][0] for n in names) / tsf
     be = lambda tdc: tdc * cap / ((1 - MGMT) * OCC) / tsf  # noqa: E731
     return dict(A=A, B=B, C=C, out=out, noiA=nA, noiB=nB, cap=cap, land_price=land_price, sf=sf, names=names, phase1=phase1,
-                rent=rent, blend=blend, be_ask=be(B["tdc"]), be_zero=be(C["tdc"]), resid=out["C"]["value"] - C["tdc"], tsf=tsf)
+                rent=rent, blend=blend, for_sale=for_sale, price=price, sell=sell, be_ask=be(B["tdc"]), be_zero=be(C["tdc"]), resid=out["C"]["value"] - C["tdc"], tsf=tsf)
 
 
 # ------------------------------------------------------------------------------------------------ pass 2
@@ -253,7 +269,10 @@ def write_text(F, I, PF):
             "blended_rent_psf": round(PF["blend"], 2), "break_even_rent_land_at_price": round(PF["be_ask"], 2),
             "break_even_rent_land_zero": round(PF["be_zero"], 2), "hard_cost_B": PF["B"]["hard"],
             "all_in_cost_per_sf": round(PF["B"]["tdc"] / PF["tsf"]), "phase1_buildings": PF["phase1"],
-            "rents": {n: r[0] for n, r in PF["rent"].items()}, "utility_fee": I.get("utility_fee")}
+            "rents": {n: r[0] for n, r in PF["rent"].items()}, "utility_fee": I.get("utility_fee"),
+            "valuation": ({"basis": "for-sale: scenario value = net sale proceeds (gross sales less selling costs), not NOI over a cap rate",
+                           "sale_psf": {n: round(v) for n, v in PF["price"].items()}, "selling_cost_pct": PF["sell"]} if PF.get("for_sale")
+                          else {"basis": "income: scenario value = NOI divided by the cap rate"})}
     I = {k: v for k, v in I.items() if k != "research_notes"}
     user = (f"FACTS:\n{json.dumps(F, default=str)}\n\nRESEARCH INPUTS:\n{json.dumps(I, default=str)}\n\n"
             f"COMPUTED PROFORMA (authoritative numbers):\n{json.dumps(nums, default=str)}\n\n"

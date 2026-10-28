@@ -65,6 +65,10 @@ def _scaled_inputs(I0, F0, F1):
                      for n, sf in sf1.items()]
     I["rents"] = [{"building": n, "rent_psf": rents.get(n, avg_rent), "basis": "scaled from researched rent"} for n in sf1]
     I["phase1"] = list(sf1)
+    if I0.get("for_sale"):
+        pr = {r.get("building"): pkg._num(r.get("price_psf")) for r in I0.get("sale_psf") or []}
+        avg_p = (sum(pr.values()) / len(pr)) if pr else 300.0
+        I["sale_psf"] = [{"building": n, "price_psf": pr.get(n, avg_p), "basis": "scaled from researched sale price"} for n in sf1]
     return I
 
 
@@ -135,16 +139,23 @@ def size_program(job_id, job, prog, res, regenerate, log=print):
             newp["parking"] = {**cur_prog["parking"], "required": round(req * sum(float(b["footprint_sf"]) * int(b.get("stories") or 1) for b in bl)
                                                                          / sum(float(b["footprint_sf"]) * int(b.get("stories") or 1) for b in cur_prog["buildings"]))}
         log(f"residual land value ${cur_r:,.0f} < ${mn:,.0f}: growing the program (pass {it + 1})")
-        try:
-            r2 = regenerate(newp)
-        except RuntimeError:
-            note["site_limit"] = True
+        def _try(p_):
+            try:
+                return regenerate(p_)
+            except RuntimeError:
+                return None
+        r2 = _try(newp)
+        held = lambda r_: r_ is not None and float(r_["metrics"].get("gfa_sf") or 0) > float(cur_res["metrics"].get("gfa_sf") or 0) * 1.01  # noqa: E731
+        if not held(r2) and float(newp.get("gap_ft") or 0) > 40:
+            # open space gives way to value: pull the buildings back to the standard spacing and try again
+            newp = {k_: v_ for k_, v_ in newp.items() if k_ != "gap_ft"}
+            r2 = _try(newp)
+            note["open_space_reduced"] = True
+        if not held(r2):
+            note["site_limit"] = True        # the layout could not hold more building area
             break
         F2 = pkg.facts({**job, "program": newp, "layout": r2["metrics"]})
         _, ra = _resid(F2, _scaled_inputs(I0, F0, F2))
-        if float(r2["metrics"].get("gfa_sf") or 0) <= float(cur_res["metrics"].get("gfa_sf") or 0) * 1.01:
-            note["site_limit"] = True        # the layout could not hold more building area
-            break
         cur_prog, cur_res, cur_F, cur_r = newp, r2, F2, ra
         if ra > best_r:
             best_prog, best_res, best_r = newp, r2, ra
