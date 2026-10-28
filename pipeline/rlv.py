@@ -39,8 +39,8 @@ def check(job_id, job, metrics, log=print):
          "value": PF["out"]["C"]["value"], "cost_ex_land": PF["C"]["tdc"]}
     if not r["ok"]:
         metrics.setdefault("warnings", []).append(
-            f"Residual land value about ${resid:,.0f} is below the ${mn:,.0f} minimum (value ${r['value']:,.0f} at a {PF['cap'] * 100:.1f}% cap rate "
-            f"less ${r['cost_ex_land']:,.0f} development cost, land excluded)")
+            f"Residual land value about ${resid:,.0f} is below the ${mn:,.0f} minimum (after required developer profit, {PF['profit_basis']}, "
+            f"and ${r['cost_ex_land']:,.0f} development cost, land excluded)")
     metrics["rlv"] = r
     return r
 

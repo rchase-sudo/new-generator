@@ -16,6 +16,10 @@ from . import claude
 
 ASSETS = os.environ.get("FORMA_ASSETS") or os.path.join(os.path.dirname(__file__), "assets")
 OCC, MGMT = 0.95, 0.06
+# Required developer profit (researched: profit 10-20% of gross development value, about 20% on cost for low-risk residential;
+# rentals need yield on cost 150-250 bps over the market cap rate)
+SALE_MARGIN = 0.15     # for-sale: profit as a share of gross sales
+YOC_SPREAD = 0.02      # rental: required yield-on-cost spread over the market cap rate
 
 e = lambda s: _html.escape(str(s if s is not None else ""), quote=False)  # noqa: E731
 f = lambda n: f"${n:,.0f}"  # noqa: E731
@@ -208,10 +212,20 @@ def proforma(F, I):
         val = sale_net(phase1 if k == "A" else names) if for_sale else n / cap
         out[k] = dict(tdc=m["tdc"], noi=n, yld=n / m["tdc"] if m["tdc"] else 0, value=round(val), profit=round(val - m["tdc"]))
     tsf = sum(sf.values()) or 1
+    if for_sale:      # residual land = net sales - required profit (share of gross sales) - cost excluding land
+        gross = sum(sf[n] * price[n] for n in names)
+        profit = SALE_MARGIN * gross
+        resid_land = out["C"]["value"] - profit - C["tdc"]
+        profit_basis = f"{SALE_MARGIN * 100:.0f}% of gross sales"
+    else:             # residual land = NOI / (cap + spread) - cost excluding land (project must yield cap + spread on total cost)
+        need = nB[1] / (cap + YOC_SPREAD)
+        profit = out["C"]["value"] - need
+        resid_land = need - C["tdc"]
+        profit_basis = f"yield on cost of cap rate + {YOC_SPREAD * 10000:.0f} bps"
     blend = sum(sf[n] * rent[n][0] for n in names) / tsf
     be = lambda tdc: tdc * cap / ((1 - MGMT) * OCC) / tsf  # noqa: E731
     return dict(A=A, B=B, C=C, out=out, noiA=nA, noiB=nB, cap=cap, land_price=land_price, sf=sf, names=names, phase1=phase1,
-                rent=rent, blend=blend, for_sale=for_sale, price=price, sell=sell, be_ask=be(B["tdc"]), be_zero=be(C["tdc"]), resid=out["C"]["value"] - C["tdc"], tsf=tsf)
+                rent=rent, blend=blend, for_sale=for_sale, price=price, sell=sell, be_ask=be(B["tdc"]), be_zero=be(C["tdc"]), resid=resid_land, resid_pre_profit=out["C"]["value"] - C["tdc"], profit=profit, profit_basis=profit_basis, tsf=tsf)
 
 
 # ------------------------------------------------------------------------------------------------ pass 2
@@ -265,7 +279,7 @@ TEXT_PROPS = {
 def write_text(F, I, PF):
     o = PF["out"]
     nums = {"scenarios": {k: {kk: (round(v, 4) if isinstance(v, float) else v) for kk, v in o[k].items()} for k in o},
-            "cap_rate": PF["cap"], "land_price": PF["land_price"], "residual_land_value": PF["resid"],
+            "cap_rate": PF["cap"], "land_price": PF["land_price"], "residual_land_value": PF["resid"], "residual_land_value_note": f"after required developer profit ({PF['profit_basis']}); before profit it is {PF['resid_pre_profit']:,.0f}",
             "blended_rent_psf": round(PF["blend"], 2), "break_even_rent_land_at_price": round(PF["be_ask"], 2),
             "break_even_rent_land_zero": round(PF["be_zero"], 2), "hard_cost_B": PF["B"]["hard"],
             "all_in_cost_per_sf": round(PF["B"]["tdc"] / PF["tsf"]), "phase1_buildings": PF["phase1"],
