@@ -62,7 +62,9 @@ def _scaled_inputs(I0, F0, F1):
     avg_rent = (sum(_pos) / len(_pos)) if _pos else 24.0
     I = dict(I0)
     I["site"] = [{**r, "subtotal": pkg._num(r.get("subtotal")) * imp1 / imp0} for r in I0.get("site") or []]
-    I["vertical"] = [{"item": "Vertical construction", "qty": f"{sf:,.0f} SF", "unit": "$/SF", "subtotal": v_psf * sf, "building": n}
+    st1 = {b["name"]: max(1, int(pkg._num(b.get("stories"), 1))) for b in F1["buildings"]}
+    # taller buildings cost more per SF (structure, stairs, elevator, life safety): +12% per added floor
+    I["vertical"] = [{"item": "Vertical construction", "qty": f"{sf:,.0f} SF", "unit": "$/SF", "subtotal": v_psf * sf * (1 + 0.12 * (st1.get(n, 1) - 1)), "building": n}
                      for n, sf in sf1.items()]
     I["rents"] = [{"building": n, "rent_psf": rents.get(n, avg_rent), "basis": "scaled from researched rent"} for n in sf1]
     I["phase1"] = list(sf1)
@@ -127,6 +129,11 @@ def _size_once(job_id, job, prog, res, regenerate, log=print):
     max_st = int(pkg._num((job.get("zoning") or {}).get("max_stories"))) or None
     if not max_st and pkg._num((job.get("zoning") or {}).get("max_height_ft")):
         max_st = max(1, int(pkg._num(job["zoning"]["max_height_ft"]) // 12))
+    # Floors are not a free way to add area: drive-up self-storage stays single-story (programs can set max_stories explicitly)
+    if any("storage" in str(b.get("use", "")).lower() for b in prog.get("buildings") or []) and not prog.get("max_stories"):
+        max_st = 1
+    if pkg._num(prog.get("max_stories")):
+        max_st = max(1, int(pkg._num(prog["max_stories"])))
     for it in range(4):
         if cur_r >= mn:
             break
