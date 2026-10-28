@@ -408,7 +408,7 @@ def step_layout(job_id):
     if True:     # always: land cost is part of every layout's economics; the program is sized to cover it (and any minimum set on it)
         try:
             from . import rlv
-            supa.update_job(job_id, progress="Checking the economics against the land cost")
+            supa.update_job(job_id, progress="Checking the residual land value")
             regen = lambda p_: generate_layout(ctx["parcel_sp"], ctx["k"], ctx["rds"], ctx["wet"], ctx["fl"], setbacks, p_, rules=rules,  # noqa: E731
                                                parking_setbacks_ft=psb, drive_road=rules.get("drive_road") or None,
                                                keep_bldgs=[b["geom"] for b in keep], steep=steep, dem=dem,
