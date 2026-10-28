@@ -519,7 +519,7 @@ def _dense_try(ctx, proto, office, T, d, k, x0, W, H, req, scale, name):
     pz, bz = ctx["pz"], ctx["bz"]
     y0 = ctx["y0"]
     D = _largest(pz.intersection(box(x0, y0, x0 + W, y0 + H)))
-    if D is None or D.area < 0.55 * W * H:
+    if D is None or D.area < 0.2 * W * H:
         return None
     D = _largest(_fillet(D, R_OUT))
     if D is None:
