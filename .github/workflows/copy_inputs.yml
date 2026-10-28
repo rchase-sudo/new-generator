@@ -1,0 +1,19 @@
+name: Copy package inputs
+
+on:
+  workflow_dispatch:
+    inputs:
+      src: {description: "Source job id", required: true}
+      dst: {description: "Destination job id", required: true}
+
+jobs:
+  copy:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - run: pip install -r requirements.txt
+      - run: python scripts/copy_inputs.py "${{ inputs.src }}" "${{ inputs.dst }}"
