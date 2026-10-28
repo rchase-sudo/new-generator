@@ -92,6 +92,8 @@ regional construction costs, NNN rents and cap rates for the proposed uses, the 
 demographics, and the land price. Use real local agency names (county/city planning, state DOT district, state
 environmental agency, utility). Be realistic, not conservative or aggressive.
 Return ONLY one JSON object, no prose. Write inch sizes as "2-in." (never a bare " inside strings).
+SELF-STORAGE: modern facilities run unmanned (remote access, cameras, online rentals), so do not assume on-site staff; operating cost is
+mainly maintenance, lawn and snow service, utilities, insurance and taxes.
 ESTIMATING STANCE (important): price this as a typical, standard-quality speculative project, not a premium one. Use the MIDDLE of the
 benchmark range for construction cost (standard finishes and systems, no upscale or high-end specification, no top-of-range
 cost per SF) and the prevailing MARKET rent or sale price per SF for comparable existing space in this specific submarket (the median of
@@ -127,6 +129,8 @@ NNN rents and cap rates for the proposed uses (for programs that are SOLD, such 
 research recent new-construction sale prices per SF in the immediate market instead, and selling costs), and the permitting
 sequence with real agency names (city/county planning, state DOT district, state environmental agency, utility). Report findings as concise notes with figures, dates and
 source URLs. Where nothing is found, give the mid-range regional benchmark and label it as such.
+SELF-STORAGE: modern facilities run unmanned (remote access, cameras, online rentals), so do not assume on-site staff; operating cost is
+mainly maintenance, lawn and snow service, utilities, insurance and taxes.
 ESTIMATING STANCE (important): price this as a typical, standard-quality speculative project, not a premium one. Use the MIDDLE of the
 benchmark range for construction cost (standard finishes and systems, no upscale or high-end specification, no top-of-range
 cost per SF) and the prevailing MARKET rent or sale price per SF for comparable existing space in this specific submarket (the median of

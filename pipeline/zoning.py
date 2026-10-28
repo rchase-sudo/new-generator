@@ -47,6 +47,9 @@ off the rest) and leave about 30% of it for the loop drive, landscaping and stor
 Parking: compute the MINIMUM number of stalls the ordinance requires for exactly this program, use by use, from the
 ordinance's ratios (round up per the ordinance) and report that number; do not add a cushion. Mark drive_thru true for
 any use that needs a vehicle queue lane (drive-thru restaurant/coffee/bank/pharmacy, tunnel car wash).
+Residual land value: when the user wants a strong residual land value (or sets a minimum), self-storage is the best choice
+wherever the zoning permits it: low construction cost per SF, very low parking, and modern facilities run unmanned with only
+maintenance, lawn and snow service. Say in the rationale when self-storage is permitted and was or was not chosen, and why.
 Return ONLY one JSON object."""
 
 PROGRAM_SCHEMA = """{
