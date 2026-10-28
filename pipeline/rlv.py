@@ -90,9 +90,10 @@ def size_program(job_id, job, prog, res, regenerate, log=print):
     """Grow the program until the residual land value meets program['min_rlv']. Returns (prog, res). The site decides the
     ceiling: when the layout cannot hold the building area needed the result keeps the best layout and says so."""
     try:
-        mn = float(prog.get("min_rlv"))
+        mn_user = float(prog.get("min_rlv"))
     except (TypeError, ValueError):
-        return prog, res
+        mn_user = 0.0
+    mn = mn_user           # replaced below by max(user minimum, cost of the land): the land cost is always in
     job0 = {**job, "program": prog}
     F0 = pkg.facts({**job0, "layout": res["metrics"]})
     plan0 = json.loads(json.dumps(F0["plan"], default=str))
@@ -117,7 +118,9 @@ def size_program(job_id, job, prog, res, regenerate, log=print):
             pass
     base_gfa = float(res["metrics"].get("gfa_sf") or 0)
     PF0, r0 = _resid(F0, I0)
-    note = {"min": mn, "cap_rate": PF0["cap"], "base_residual": round(r0, -3), "base_gfa_sf": round(base_gfa)}
+    land_cost = float(PF0.get("land_price") or 0) * (1 + 0.025)        # price + closing / due diligence, same as the package
+    mn = max(mn_user, land_cost)
+    note = {"min": mn, "min_user": mn_user, "land_cost": round(land_cost, -3), "cap_rate": PF0["cap"], "base_residual": round(r0, -3), "base_gfa_sf": round(base_gfa)}
     best_prog, best_res, best_r = prog, res, r0
     cur_prog, cur_res, cur_F, cur_r = prog, res, F0, r0
     max_st = int(pkg._num((job.get("zoning") or {}).get("max_stories"))) or None
@@ -169,12 +172,13 @@ def size_program(job_id, job, prog, res, regenerate, log=print):
         if ra > best_r:
             best_prog, best_res, best_r = newp, r2, ra
     prog, res = best_prog, best_res
-    note.update({"residual": round(best_r, -3), "ok": best_r >= mn, "gfa_sf": round(float(res["metrics"].get("gfa_sf") or 0)),
+    note.update({"residual": round(best_r, -3), "after_land": round(best_r - land_cost, -3), "ok": best_r >= mn, "gfa_sf": round(float(res["metrics"].get("gfa_sf") or 0)),
                  "value": None, "sized": res is not None and note.get("base_gfa_sf") != round(float(res["metrics"].get("gfa_sf") or 0))})
     res["metrics"]["rlv"] = note
     if not note["ok"]:
         why = ("the site cannot hold more building area" if note.get("site_limit") else
                "the researched rents and costs do not reach it at any building size" if note.get("unreachable") else "the program could not be grown enough")
         res["metrics"].setdefault("warnings", []).append(
-            f"Residual land value about ${best_r:,.0f} is below the ${mn:,.0f} minimum: {why}.")
+            f"Residual land value about ${best_r:,.0f} is below the ${mn:,.0f} needed (land cost ${land_cost:,.0f}"
+            f"{'' if mn_user <= land_cost else f', your minimum ${mn_user:,.0f}'}): {why}.")
     return prog, res
