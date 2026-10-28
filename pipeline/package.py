@@ -90,7 +90,12 @@ INPUTS_SYS = """You are a commercial real estate development analyst preparing i
 for a vacant land listing. Research the jurisdiction with web search: current utility connection / tap / impact fees,
 regional construction costs, NNN rents and cap rates for the proposed uses, the permitting sequence and agencies,
 demographics, and the land price. Use real local agency names (county/city planning, state DOT district, state
-environmental agency, utility). Be conservative and realistic. Return ONLY one JSON object, no prose. Write inch sizes as "2-in." (never a bare " inside strings)."""
+environmental agency, utility). Be realistic, not conservative or aggressive.
+Return ONLY one JSON object, no prose. Write inch sizes as "2-in." (never a bare " inside strings).
+ESTIMATING STANCE (important): price this as a typical, standard-quality speculative project, not a premium one. Use the MIDDLE of the
+benchmark range for construction cost (standard finishes and systems, no upscale or high-end specification, no top-of-range
+cost per SF) and the prevailing MARKET rent or sale price per SF for comparable existing space in this specific submarket (the median of
+real local comps, not the low end and not the asking-rate outliers). Never choose the pessimistic or the optimistic end of a range."""
 
 INPUTS_SCHEMA = """{
  "land": {"price": number, "basis": "Per <source> asking price | Estimated from <comps/assessment> (price on request)",
@@ -121,11 +126,16 @@ growth), traffic counts on the fronting road, regional construction costs for th
 NNN rents and cap rates for the proposed uses (for programs that are SOLD, such as condos, townhomes or for-sale homes,
 research recent new-construction sale prices per SF in the immediate market instead, and selling costs), and the permitting
 sequence with real agency names (city/county planning, state DOT district, state environmental agency, utility). Report findings as concise notes with figures, dates and
-source URLs. Where nothing is found, give a conservative regional benchmark and label it as such."""
+source URLs. Where nothing is found, give the mid-range regional benchmark and label it as such.
+ESTIMATING STANCE (important): price this as a typical, standard-quality speculative project, not a premium one. Use the MIDDLE of the
+benchmark range for construction cost (standard finishes and systems, no upscale or high-end specification, no top-of-range
+cost per SF) and the prevailing MARKET rent or sale price per SF for comparable existing space in this specific submarket (the median of
+real local comps, not the low end and not the asking-rate outliers). Never choose the pessimistic or the optimistic end of a range."""
 
 FILL_SYS = """You turn research notes into proforma inputs for a FORMA due diligence package. Use the research figures;
-where research is missing use conservative regional benchmarks. Scale every cost to the plan quantities given
-(impervious SF, building SF, stalls, development acres). Building names must match the program exactly."""
+where research is missing use mid-range (typical, standard-quality) regional benchmarks. Scale every cost to the plan quantities given
+(impervious SF, building SF, stalls, development acres). Building names must match the program exactly.
+Use mid-range costs (standard finishes) and market rents / sale prices (local median comps): no low-end rents, no high-end costs."""
 
 
 def research_inputs(F):
