@@ -93,7 +93,7 @@ regional construction costs, NNN rents and cap rates for the proposed uses, the 
 demographics, and the land price. Use real local agency names (county/city planning, state DOT district, state
 environmental agency, utility). Be realistic, not conservative or aggressive.
 Return ONLY one JSON object, no prose. Write inch sizes as "2-in." (never a bare " inside strings).
-SELF-STORAGE: modern facilities run unmanned (remote access, cameras, online rentals), so do not assume on-site staff; operating cost is
+SELF-STORAGE: price the building as a standard drive-up metal-building product at the mid-range of local benchmarks (about $45-55/SF shell). Modern facilities run unmanned (remote access, cameras, online rentals), so do not assume on-site staff; operating cost is
 mainly maintenance, lawn and snow service, utilities, insurance and taxes.
 ESTIMATING STANCE (important): price this as a typical, standard-quality speculative project, not a premium one. Use the MIDDLE of the
 benchmark range for construction cost (standard finishes and systems, no upscale or high-end specification, no top-of-range
@@ -112,6 +112,7 @@ INPUTS_SCHEMA = """{
  "for_sale": boolean,   // true when the buildings are SOLD (condos, townhomes, for-sale homes); false for leased / income uses
  "sale_psf": [ {"building": "<exact building name>", "price_psf": number, "basis": "short comp basis"} ],   // only when for_sale: gross sale price per SF of building area for new construction here
  "selling_cost_pct": number,   // only when for_sale: brokerage + closing + marketing, e.g. 0.06
+ "soft_rates": {"ae": number, "cm": number, "contingency": number},   // soft-cost rates as a decimal of hard cost. Retail / restaurant / mixed: ae 0.08, cm 0.05, contingency 0.10. Simple repetitive product (self-storage, flex shells, townhome blocks of one plan): ae 0.06, cm 0.03, contingency 0.05
  "gross_lease": boolean,   // true when rents are gross / all-in and the OWNER pays property tax, insurance, utilities and maintenance (self-storage, apartments); false for NNN leases where tenants pay them
  "owner_opex_psf": number,   // only when gross_lease: owner-paid operating cost in $/SF/yr of building area EXCLUDING property tax and on-site management (insurance, utilities, repairs, lawn and snow, remote-management software, marketing). Unmanned facilities have no on-site staff.
  "property_tax_rate": number,   // only when gross_lease: the local effective annual property tax as a decimal of property value (e.g. 0.0235 = $23.50 per $1,000); use the town's current commercial tax rate and equalization
@@ -133,7 +134,7 @@ NNN rents and cap rates for the proposed uses (for programs that are SOLD, such 
 research recent new-construction sale prices per SF in the immediate market instead, and selling costs), and the permitting
 sequence with real agency names (city/county planning, state DOT district, state environmental agency, utility). Report findings as concise notes with figures, dates and
 source URLs. Where nothing is found, give the mid-range regional benchmark and label it as such.
-SELF-STORAGE: modern facilities run unmanned (remote access, cameras, online rentals), so do not assume on-site staff; operating cost is
+SELF-STORAGE: price the building as a standard drive-up metal-building product at the mid-range of local benchmarks (about $45-55/SF shell). Modern facilities run unmanned (remote access, cameras, online rentals), so do not assume on-site staff; operating cost is
 mainly maintenance, lawn and snow service, utilities, insurance and taxes.
 ESTIMATING STANCE (important): price this as a typical, standard-quality speculative project, not a premium one. Use the MIDDLE of the
 benchmark range for construction cost (standard finishes and systems, no upscale or high-end specification, no top-of-range

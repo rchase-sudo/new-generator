@@ -602,7 +602,7 @@ def step_package(job_id):
     I = None
     try:   # rebuilds reuse the research when the plan has not changed (saves the web-search pass)
         prev = json.loads(supa.download(job_id, "package_inputs.json"))
-        if prev.get("plan") == json.loads(json.dumps(F["plan"], default=str)) and prev.get("inputs") and "gross_lease" in prev["inputs"]:
+        if prev.get("plan") == json.loads(json.dumps(F["plan"], default=str)) and prev.get("inputs") and "gross_lease" in prev["inputs"] and "soft_rates" in prev["inputs"]:
             I = prev["inputs"]
     except Exception:  # noqa: BLE001
         pass
