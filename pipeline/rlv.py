@@ -106,6 +106,15 @@ def size_program(job_id, job, prog, res, regenerate, log=print):
     if I0 is None:
         log("residual land value: researching rents, costs and cap rate")
         I0 = pkg.research_inputs(F0)
+        try:    # keep the research so a rerun and the due diligence package reuse it
+            import os, tempfile
+            d_ = tempfile.mkdtemp()
+            p_ = os.path.join(d_, "package_inputs.json")
+            with open(p_, "w") as fh:
+                json.dump({"plan": plan0, "inputs": I0}, fh, default=str)
+            supa.upload(job_id, p_)
+        except Exception:  # noqa: BLE001
+            pass
     base_gfa = float(res["metrics"].get("gfa_sf") or 0)
     PF0, r0 = _resid(F0, I0)
     note = {"min": mn, "cap_rate": PF0["cap"], "base_residual": round(r0, -3), "base_gfa_sf": round(base_gfa)}
