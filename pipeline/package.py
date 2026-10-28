@@ -281,7 +281,16 @@ design practice; refer to the work as "FORMA" or "the FORMA plan", never "we". S
 declarative sentences, numbers with units, no hype, no marketing adjectives, no em-dash chains. Every figure you state must
 come from the facts, research inputs or computed proforma given to you; never invent figures. Where something is
 unconfirmed, say what must be confirmed and with whom. Keep each field within its length limit so the fixed-size pages
-do not overflow. Return ONLY one JSON object."""
+do not overflow.
+AUDIENCE AND POSITION (overrides everything else): the client is the LISTING AGENT who is selling this land. The package exists to
+present the opportunity and support the listing. Never state, hint or imply that the asking price is too high, that land value is
+low or negative, that the project does not pencil, loses money, falls short or has a shortfall, gap, loss or deficit, that an
+appraisal or price reduction is advised, or that the seller should change anything. Never compare the asking price with the
+project's economics. Do not use the words shortfall, gap, loss, negative, overpriced, does not clear, or does not pencil. Present what
+the site offers: zoning, location, frontage, utilities, buildable area, the concept plan, program, timeline and the stabilized
+income and value of the concept, the yield on cost and what a buyer could do (phasing, pad sales, rent upside). Use only facts,
+research inputs and computed numbers given to you; stay accurate, never invent a favourable figure, and when something is
+unfavourable simply leave it out rather than comment on it. Return ONLY one JSON object."""
 
 TEXT_SCHEMA = """{
  "cover_use": "UPPERCASE use line, ≤ 40 chars, e.g. RETAIL / QSR / MEDICAL OFFICE DEVELOPMENT",
@@ -289,7 +298,7 @@ TEXT_SCHEMA = """{
  "hbu_title": "≤ 70 chars, e.g. Retail Strip + QSR Pad + Medical Office — Three Buildings, 21,800 SF",
  "overview": "≤ 120 words",
  "highlights": ["6 bullets, ≤ 32 words each"],
- "exec_summary": "≤ 140 words; ends by pointing to Sections 05–07 for whether the project pencils",
+ "exec_summary": "≤ 140 words; supportive of the listing; ends by pointing to Sections 05–07 for development economics",
  "zoning_h3": "≤ 45 chars", "zoning_text": "≤ 120 words, bulk standards with ordinance section numbers where known",
  "site_h3": "≤ 45 chars", "site_text": "≤ 115 words, road context, frontage, constraints, where the pod sits, traffic data",
  "uses": [["Use category", "Permit status", "Fit for this site", "Notes ≤ 12 words"]],   // 7-8 rows, proposed uses first
@@ -301,9 +310,9 @@ TEXT_SCHEMA = """{
  "permit_boxes": [["big", "CAPTION", "≤ 32 words"]],   // exactly 3
  "scenario_a": "≤ 16 words describing the Phase 1 only program",
  "noi_note": "≤ 55 words: rent basis, what to confirm",
- "returns_note": "≤ 50 words: cap rate rationale, which scenarios carry land",
- "returns_boxes": [["big", "CAPTION", "≤ 28 words"]],   // exactly 3: base yield vs cap, residual land, realistic buyer / path
- "residual_boxes": [["big", "CAPTION", "≤ 28 words"]],  // exactly 3: yield range A→C, all-in cost per SF, levers to a positive outcome
+ "returns_note": "≤ 50 words: cap rate rationale and what the stabilized figures represent (land excluded)",
+ "returns_boxes": [["big", "CAPTION", "≤ 28 words"]],   // exactly 3: stabilized value, yield on cost, the buyer profile / path to development
+ "residual_boxes": [["big", "CAPTION", "≤ 28 words"]],  // exactly 3: stabilized value per SF, development cost per SF excluding land, upside levers (rent, phasing, pad sales)
  "disclaimer_agencies": "comma list of agencies to confirm with",
  "disclaimer_sources": "1-2 sentences naming the sources of zoning, listing facts, demographics and fees"
 }"""
@@ -325,16 +334,16 @@ TEXT_PROPS = {
 
 def write_text(F, I, PF):
     o = PF["out"]
-    nums = {"scenarios": {k: {kk: (round(v, 4) if isinstance(v, float) else v) for kk, v in o[k].items()} for k in o},
-            "cap_rate": PF["cap"], "land_price": PF["land_price"], "residual_land_value": PF["resid"], "residual_land_value_note": f"after required developer profit ({PF['profit_basis']}); before profit it is {PF['resid_pre_profit']:,.0f}",
-            "blended_rent_psf": round(PF["blend"], 2), "break_even_rent_land_at_price": round(PF["be_ask"], 2),
-            "break_even_rent_land_zero": round(PF["be_zero"], 2), "hard_cost_B": PF["B"]["hard"],
-            "all_in_cost_per_sf": round(PF["B"]["tdc"] / PF["tsf"]), "phase1_buildings": PF["phase1"],
-            "rents": {n: r[0] for n, r in PF["rent"].items()}, "utility_fee": I.get("utility_fee"),
-            "valuation": ({"basis": "for-sale: scenario value = net sale proceeds (gross sales less selling costs), not NOI over a cap rate",
+    full = o["C"]
+    nums = {"full_plan": {"development_cost_excluding_land": full["tdc"], "stabilized_noi": full["noi"], "yield_on_cost": round(full["yld"], 4),
+                          "stabilized_value": full["value"]},
+            "cap_rate": PF["cap"], "blended_rent_psf": round(PF["blend"], 2), "hard_cost": PF["C"]["hard"],
+            "cost_per_sf_excluding_land": round(PF["C"]["tdc"] / PF["tsf"]), "stabilized_value_per_sf": round(full["value"] / PF["tsf"]),
+            "phase1_buildings": PF["phase1"], "rents": {n: r[0] for n, r in PF["rent"].items()}, "utility_fee": I.get("utility_fee"),
+            "valuation": ({"basis": "for-sale: value = net sale proceeds (gross sales less selling costs), not NOI over a cap rate",
                            "sale_psf": {n: round(v) for n, v in PF["price"].items()}, "selling_cost_pct": PF["sell"]} if PF.get("for_sale")
-                          else {"basis": "income: scenario value = NOI divided by the cap rate"})}
-    I = {k: v for k, v in I.items() if k != "research_notes"}
+                          else {"basis": "income: value = NOI divided by the cap rate"})}
+    I = {k: v for k, v in I.items() if k not in ("research_notes", "land")}   # land basis commentary never reaches the writer
     user = (f"FACTS:\n{json.dumps(F, default=str)}\n\nRESEARCH INPUTS:\n{json.dumps(I, default=str)}\n\n"
             f"COMPUTED PROFORMA (authoritative numbers):\n{json.dumps(nums, default=str)}\n\n"
             f"Write the package text. Return JSON in exactly this shape:\n{TEXT_SCHEMA}")
@@ -550,8 +559,8 @@ def build_html(F, I, PF, T, plan_img, render_img, today=None):
 
     H = [("COST LINE ITEM", ""), ("QUANTITY", "r"), ("UNIT COST", "r"), ("SUBTOTAL", "r"), ("NOTES", "")]
     cr = lambda items: [(e(r[0]) if "&amp;" not in r[0] else r[0], e(r[1]) if "&" not in str(r[1]) else r[1], e(r[2]) if "&" not in str(r[2]) else r[2], f(r[3]), e(r[4]) if "&" not in str(r[4]) else r[4]) for r in items]  # noqa: E731
-    all_rows = (["Land"] + cr(B_["land"]) if B_["land"] else []) + ["Site &amp; Infrastructure"] + cr(B_["site"]) + \
-               ["Vertical Construction"] + cr(B_["vert"]) + ["Soft Costs"] + cr(B_["soft"])
+    all_rows = ["Site &amp; Infrastructure"] + cr(C_["site"]) + \
+               ["Vertical Construction"] + cr(C_["vert"]) + ["Soft Costs"] + cr(C_["soft"])
     # page 05 holds the scenario cards + as many rows as fit (by estimated wrapped height); the rest goes to 05 cont.
     def _h(r):
         if isinstance(r, str):
@@ -570,14 +579,14 @@ def build_html(F, I, PF, T, plan_img, render_img, today=None):
     if cut and isinstance(all_rows[cut - 1], str):   # never leave a group header orphaned at the bottom
         cut -= 1
     rows1, rows2 = all_rows[:cut], all_rows[cut:]
-    rows2 += [(f"Total Project Cost — {'Phase 1 + 2' if nb > 1 else 'All Phases'}", "", "", f"~{f(B_['tdc'])}", f"Rounded: ~${B_['tdc'] / 1e6:.2f}M", {"cls": "tot"}),
-              ("Total Cost / SF (Building)", "", "", f"~${B_['tdc'] / tsf:,.0f} / SF", f"Full {acres:g} AC land basis carried by {tsf:,.0f} SF", {"cls": "tot"})]
+    rows2 += [(f"Total Development Cost — {'Phase 1 + 2' if nb > 1 else 'All Phases'}", "", "", f"~{f(C_['tdc'])}", f"Rounded: ~${C_['tdc'] / 1e6:.2f}M; land acquisition not included", {"cls": "tot"}),
+              ("Total Cost / SF (Building)", "", "", f"~${C_['tdc'] / tsf:,.0f} / SF", f"Over {tsf:,.0f} SF of building area", {"cls": "tot"})]
     a_names = " + ".join(PF["phase1"])
     p5 = page("05", "PROFORMA — BASE CASE (ALL PHASES STABILIZED)", f'''
-<div class="scen"><div><div class="sl">A — CONSERVATIVE</div><b>Phase 1 Only</b><p>{e(T.get("scenario_a") or a_names)}</p></div>
-<div><div class="sl">B — BASE</div><b>Base Case</b><p>Full FORMA plan ({tsf:,.0f} SF); tenants on NNN leases, 95% occupancy</p></div>
-<div><div class="sl">C — RESIDUAL</div><b>Land at $0</b><p>Base Case program with land and closing costs removed — tests what the land is worth</p></div></div>
-<div class="lbl">TOTAL DEVELOPMENT COST — FULL PLAN ({tsf:,.0f} SF, {nb} BUILDING{"S" if nb != 1 else ""})</div>
+<div class="scen"><div><div class="sl">PHASE 1</div><b>Phase 1 Only</b><p>{e(T.get("scenario_a") or a_names)}</p></div>
+<div><div class="sl">FULL PLAN</div><b>Base Case</b><p>Full FORMA plan ({tsf:,.0f} SF); stabilized operation, 95% occupancy</p></div>
+<div><div class="sl">COSTS SHOWN</div><b>Development Only</b><p>Land acquisition and closing costs are not included in the figures below</p></div></div>
+<div class="lbl">DEVELOPMENT COST — FULL PLAN ({tsf:,.0f} SF, {nb} BUILDING{"S" if nb != 1 else ""})</div>
 {_table(H, rows1, "cost")}''')
 
     NH = [("COMPONENT", ""), ("SF", "r"), ("RENT NNN", "r"), ("OCC.", "r"), ("ANNUAL REVENUE", "r"), ("NOTES", "")]
@@ -587,42 +596,41 @@ def build_html(F, I, PF, T, plan_img, render_img, today=None):
                       f"{s:,}", f"${r:.0f} / SF", "95%", f(g), e(basis)))
         nrows.append(("Less: Management / Reserves (6%)", "", "", "", f"({f(m)})", "NNN lease; owner-side opex limited" if i == 0 else "", {}))
         if n == PF["phase1"][-1] and len(PF["phase1"]) < nb:
-            nrows.append(("Phase 1 NOI", "", "", "", f(O["A"]["noi"]), f"Development yield: {O['A']['yld']:.1%} (on Scenario A TDC)", {"cls": "tot"}))
-    nrows.append(("Combined NOI (All Phases)", "", "", "", f(O["B"]["noi"]), f"Development yield: {O['B']['yld']:.1%}", {"cls": "tot"}))
+            nrows.append(("Phase 1 NOI", "", "", "", f(O["A"]["noi"]), "Stabilized, Phase 1 buildings", {"cls": "tot"}))
+    nrows.append(("Combined NOI (All Phases)", "", "", "", f(O["C"]["noi"]), f"Yield on development cost: {O['C']['yld']:.1%}", {"cls": "tot"}))
     p6 = page("05", "PROFORMA — CONTINUED", f'''
 {_table(H, rows2, "cost")}
 <div class="lbl">STABILIZED NOI — PHASE 1 &amp; ALL PHASES (YEAR 2 PROJECTION)</div>
 {_table(NH, nrows)}
-<p class="note">{e(T.get("noi_note"))} Scenario A carries the full site and entrance cost (TDC ≈ ${O["A"]["tdc"] / 1e6:.2f}M).</p>''')
+<p class="note">{e(T.get("noi_note"))}</p>''')
 
     capp = f"{PF['cap'] * 100:.2f}".rstrip("0").rstrip(".") + "%"
-    p7 = page("06", "RETURNS BY SCENARIO — THREE OUTCOMES", f'''
-<div class="lbl">SCENARIO COMPARISON — CONSERVATIVE → RESIDUAL LAND TEST</div>
-{_table([("SCENARIO", ""), ("TDC", "r"), ("STABILIZED NOI", "r"), ("DEV. YIELD", "r"), ("VALUE @ CAP RATE", "r"), ("PROFIT / (LOSS)", "r"), ("STATUS", "")], [
-        (f"A — Conservative ({e(a_names)})", f(O["A"]["tdc"]), f(O["A"]["noi"]), f"{O['A']['yld']:.1%}", f"{f(O['A']['value'])} @ {capp} cap", fp(O["A"]["profit"]), "PHASE 1 ONLY"),
-        ("B — Base Case (Full plan)", f(O["B"]["tdc"]), f(O["B"]["noi"]), f"{O['B']['yld']:.1%}", f"{f(O['B']['value'])} @ {capp} cap", fp(O["B"]["profit"]), "FULL FORMA PLAN"),
-        ("C — Residual (Land at $0)", f(O["C"]["tdc"]), f(O["C"]["noi"]), f"{O['C']['yld']:.1%}", f"{f(O['C']['value'])} @ {capp} cap", fp(O["C"]["profit"]), "LAND VALUE TEST")])}
-<p class="note">Figures above are FORMA preliminary estimates for illustrative purposes; see Section 07 for the residual land walk and disclaimer. {e(T.get("returns_note"))}</p>
+    p7 = page("06", "DEVELOPMENT RETURNS — STABILIZED PROGRAM", f'''
+<div class="lbl">STABILIZED RETURNS — FULL PLAN (LAND EXCLUDED)</div>
+{_table([("PROGRAM", ""), ("DEVELOPMENT COST", "r"), ("STABILIZED NOI", "r"), ("YIELD ON COST", "r"), ("STABILIZED VALUE", "r")], [
+        (f"Full plan — {tsf:,.0f} SF", f(O["C"]["tdc"]), f(O["C"]["noi"]), f"{O['C']['yld']:.1%}", f"{f(O['C']['value'])} @ {capp} cap")])}
+<p class="note">Figures above are FORMA preliminary estimates for illustrative purposes; see Section 07 for the value walk and sensitivity. {e(T.get("returns_note"))}</p>
 {_boxes(T.get("returns_boxes"))}''')
 
-    land_basis = e((I.get("land") or {}).get("basis") or ("Asking price" if priced else "FORMA estimate"))
-    p8 = page("07", "RESIDUAL LAND — SCENARIO DETAIL", f'''
-<div class="lbl">RESIDUAL LAND VALUE WALK</div>
+    def _val(rent_x, cap_d):
+        I2 = dict(I)
+        I2["rents"] = [{**r_, "rent_psf": _num(r_.get("rent_psf")) * (1 + rent_x) if _num(r_.get("rent_psf")) > 0 else r_.get("rent_psf")} for r_ in (I.get("rents") or [])]
+        I2["cap_rate"] = PF["cap"] + cap_d
+        F2 = {**F, "underwriting": None}
+        return proforma(F2, I2)["out"]["C"]["value"]
+    sens_rows = []
+    for rx in (-0.10, 0.0, 0.10, 0.20):
+        sens_rows.append((f"Rent {rx:+.0%}" if rx else "Base rents", *[f(_val(rx, cd)) for cd in (-0.005, 0.0, 0.005)]))
+    p8 = page("07", "STABILIZED VALUE &amp; SENSITIVITY", f'''
+<div class="lbl">STABILIZED VALUE WALK</div>
 {_table([("ITEM", ""), ("AMOUNT", "r"), ("BASIS", "")], [
-        (f"Stabilized NOI ({tsf:,.0f} SF)", f(O["B"]["noi"]), "; ".join(f"${r[0]:.0f}/SF {e(n)}" for n, r in PF["rent"].items()) + ", NNN, 95% occ."),
+        (f"Stabilized NOI ({tsf:,.0f} SF)", f(O["C"]["noi"]), "; ".join(f"${r[0]:.0f}/SF {e(n)}" for n, r in PF["rent"].items()) + (", gross lease, owner pays taxes and operating cost" if I.get("gross_lease") else ", NNN") + ", 95% occ."),
         ("Market Cap Rate", capp, e("New-construction cap rate (underwriting assumption)" if (F.get("underwriting") or {}).get("cap_rate") else (I.get("cap_note") or ""))),
-        ("Stabilized Value", f(O["C"]["value"]), f"{f(O['B']['noi'])} / {PF['cap']:.3f}"),
-        ("Less: Development Cost Excluding Land", f"({f(C_['tdc'])})", f"Hard {f(C_['hard'])} + soft {f(C_['soft_total'])}"),
-        ("Residual Land Value", fp(PF["resid"]), "Value the program supports for the land", {"cls": "tot"}),
-        ("Asking Price" if priced else "Estimated Land Value", f(price), land_basis),
-        ("Gap to " + ("Asking Price" if priced else "Land Value"), fp(PF["resid"] - price), "Residual value less land price", {"cls": "tot"})])}
-<div class="lbl">BREAK-EVEN RENT — WHAT WOULD MAKE THE PROGRAM WORK</div>
-{_table([("ITEM", ""), ("AMOUNT", "r"), ("BASIS", "")], [
-        ("Market Blended Rent (NNN)", f"${PF['blend']:.0f} / SF", "SF-weighted average of the building rents"),
-        ("Break-Even Rent — Land at " + ("Asking Price" if priced else "Est. Value"), f"${PF['be_ask']:.0f} / SF", f"{f(B_['tdc'] * PF['cap'])} NOI to support ${B_['tdc'] / 1e6:.2f}M TDC @ {capp}"),
-        ("Break-Even Rent — Land at $0", f"${PF['be_zero']:.0f} / SF", f"{f(C_['tdc'] * PF['cap'])} NOI to support ${C_['tdc'] / 1e6:.2f}M @ {capp}"),
-        ("Rent Gap (Land at " + ("Asking" if priced else "Est. Value") + ")", f"{'~' if PF['be_ask'] > PF['blend'] else ''}${PF['be_ask'] - PF['blend']:.0f} / SF",
-         f"~{abs(PF['be_ask'] / PF['blend'] - 1):.0%} {'above' if PF['be_ask'] > PF['blend'] else 'below'} market" if PF["blend"] else "", {"cls": "tot"})])}
+        ("Stabilized Value", f(O["C"]["value"]), f"{f(O['C']['noi'])} / {PF['cap']:.3f}"),
+        ("Stabilized Value / SF", f"${O['C']['value'] / tsf:,.0f} / SF", f"Over {tsf:,.0f} SF of building area"),
+        ("Development Cost / SF (Land Excluded)", f"${C_['tdc'] / tsf:,.0f} / SF", f"Hard {f(C_['hard'])} + soft {f(C_['soft_total'])}", {"cls": "tot"})])}
+<div class="lbl">STABILIZED VALUE SENSITIVITY — RENT AND CAP RATE</div>
+{_table([("RENT CASE", ""), (f"CAP {PF['cap'] * 100 - 0.5:.2f}%", "r"), (f"CAP {PF['cap'] * 100:.2f}%", "r"), (f"CAP {PF['cap'] * 100 + 0.5:.2f}%", "r")], sens_rows)}
 {_boxes(T.get("residual_boxes"))}
 <div class="disc"><b>FORMA — Preliminary Development Analysis Disclaimer.</b> This document is prepared by FORMA as a preliminary feasibility and conceptual planning supplement intended to accompany a site plan for listing purposes. All cost estimates, revenue projections, cap rates, and development yields are based on publicly available market data, regional construction benchmarks, and industry comparables as of {e(f"Q{(today.month - 1) // 3 + 1} {today.year}")}. They are not guarantees of actual development costs or investment returns. This analysis does not constitute licensed engineering, architectural, legal, financial, or appraisal services. All figures must be verified by qualified licensed professionals prior to any investment decision, land acquisition, or construction commitment. Zoning, environmental, permitting requirements, utility capacity and fees, and traffic data are subject to change and must be confirmed directly with {e(T.get("disclaimer_agencies") or F.get("jurisdiction") or "the local jurisdiction")}. Wetland and flood limits shown are from public mapping and FORMA plan linework and are not a jurisdictional determination. The rendering (Exhibit B1) is a conceptual illustration only; Exhibit A governs layout and parking. {e(T.get("disclaimer_sources"))} FORMA makes no representation regarding the suitability of this site for any specific use.<br>
 <b>FORMA · {e(code)} · PREPARED {month} · CONFIDENTIAL<br>PRELIMINARY ANALYSIS — NOT FOR FINANCING OR CONSTRUCTION</b></div>''')
