@@ -98,7 +98,13 @@ mainly maintenance, lawn and snow service, utilities, insurance and taxes.
 ESTIMATING STANCE (important): price this as a typical, standard-quality speculative project, not a premium one. Use the MIDDLE of the
 benchmark range for construction cost (standard finishes and systems, no upscale or high-end specification, no top-of-range
 cost per SF) and the prevailing MARKET rent or sale price per SF for comparable existing space in this specific submarket (the median of
-real local comps, not the low end and not the asking-rate outliers). Never choose the pessimistic or the optimistic end of a range."""
+real local comps, not the low end and not the asking-rate outliers). Never choose the pessimistic or the optimistic end of a range.
+REALISTIC COST REFERENCE for a small-town / secondary-market speculative build (all-in shell, no tenant fit-out; adjust only with local evidence):
+single-story retail strip or anchor shell $140-170/SF; shops shell $150-175/SF; sit-down or QSR restaurant ground-up shell $260-330/SF
+(kitchen equipment and furnishings are the tenant's); medical / professional office shell $180-220/SF; flex / light industrial $90-120/SF.
+Do not add tenant improvement allowances on NNN leases unless the market clearly requires it, and keep them under $20/SF.
+Site work should follow the plan quantities at normal unit prices (paving about $4.50-6.00/SF with base); no padding.
+Use a lean, realistic soft-cost stack: never stack every conceivable fee at its maximum."""
 
 INPUTS_SCHEMA = """{
  "land": {"price": number, "basis": "Per <source> asking price | Estimated from <comps/assessment> (price on request)",
@@ -112,7 +118,7 @@ INPUTS_SCHEMA = """{
  "for_sale": boolean,   // true when the buildings are SOLD (condos, townhomes, for-sale homes); false for leased / income uses
  "sale_psf": [ {"building": "<exact building name>", "price_psf": number, "basis": "short comp basis"} ],   // only when for_sale: gross sale price per SF of building area for new construction here
  "selling_cost_pct": number,   // only when for_sale: brokerage + closing + marketing, e.g. 0.06
- "soft_rates": {"ae": number, "cm": number, "contingency": number},   // soft-cost rates as a decimal of hard cost. Retail / restaurant / mixed: ae 0.08, cm 0.05, contingency 0.10. Simple repetitive product (self-storage, flex shells, townhome blocks of one plan): ae 0.06, cm 0.03, contingency 0.05
+ "soft_rates": {"ae": number, "cm": number, "contingency": number},   // soft-cost rates as a decimal of hard cost. Retail / restaurant / mixed: ae 0.06, cm 0.04, contingency 0.07. Simple repetitive product (self-storage, flex shells, townhome blocks of one plan): ae 0.06, cm 0.03, contingency 0.05
  "gross_lease": boolean,   // true when rents are gross / all-in and the OWNER pays property tax, insurance, utilities and maintenance (self-storage, apartments); false for NNN leases where tenants pay them
  "owner_opex_psf": number,   // only when gross_lease: owner-paid operating cost in $/SF/yr of building area EXCLUDING property tax and on-site management (insurance, utilities, repairs, lawn and snow, remote-management software, marketing). Unmanned facilities have no on-site staff.
  "property_tax_rate": number,   // only when gross_lease: the local effective annual property tax as a decimal of property value (e.g. 0.0235 = $23.50 per $1,000); use the town's current commercial tax rate and equalization
@@ -139,7 +145,13 @@ mainly maintenance, lawn and snow service, utilities, insurance and taxes.
 ESTIMATING STANCE (important): price this as a typical, standard-quality speculative project, not a premium one. Use the MIDDLE of the
 benchmark range for construction cost (standard finishes and systems, no upscale or high-end specification, no top-of-range
 cost per SF) and the prevailing MARKET rent or sale price per SF for comparable existing space in this specific submarket (the median of
-real local comps, not the low end and not the asking-rate outliers). Never choose the pessimistic or the optimistic end of a range."""
+real local comps, not the low end and not the asking-rate outliers). Never choose the pessimistic or the optimistic end of a range.
+REALISTIC COST REFERENCE for a small-town / secondary-market speculative build (all-in shell, no tenant fit-out; adjust only with local evidence):
+single-story retail strip or anchor shell $140-170/SF; shops shell $150-175/SF; sit-down or QSR restaurant ground-up shell $260-330/SF
+(kitchen equipment and furnishings are the tenant's); medical / professional office shell $180-220/SF; flex / light industrial $90-120/SF.
+Do not add tenant improvement allowances on NNN leases unless the market clearly requires it, and keep them under $20/SF.
+Site work should follow the plan quantities at normal unit prices (paving about $4.50-6.00/SF with base); no padding.
+Use a lean, realistic soft-cost stack: never stack every conceivable fee at its maximum."""
 
 FILL_SYS = """You turn research notes into proforma inputs for a FORMA due diligence package. Use the research figures;
 where research is missing use mid-range (typical, standard-quality) regional benchmarks. Scale every cost to the plan quantities given
