@@ -201,15 +201,17 @@ def proforma(F, I):
         v = [r for r in vert if r[5] in bset]
         hard = sum(r[3] for r in site) + sum(r[3] for r in v)
         frac = sum(sf[n] for n in bset) / (sum(sf.values()) or 1)
-        soft = [("Architecture + Engineering (A&amp;E)", "8% of hard", "—", round(hard * 0.08), "Civil, architectural, MEP, environmental"),
+        sr = I.get("soft_rates") or {}       # optional per-use overrides, e.g. simple storage: ae 0.06, cm 0.03, contingency 0.05
+        ae, cm, ct = _num(sr.get("ae"), 0.08), _num(sr.get("cm"), 0.05), _num(sr.get("contingency"), 0.10)
+        soft = [("Architecture + Engineering (A&amp;E)", f"{ae * 100:.0f}% of hard", "—", round(hard * ae), "Civil, architectural, MEP, environmental"),
                 ("Permitting, Plan Review &amp; Escrow", "LS", "—", round(_num(I.get("permitting_ls"), 50000)), "Site plan, DOT, environmental, building"),
                 ("Utility Connection / Impact Fees", e(clip(uf.get("qty") or "LS", 28)), e(clip(uf.get("unit") or "—", 24)), round(_num(uf.get("amount"))), e(clip(uf.get("note") or ""))),
-                ("Construction Management / GC Fee", "5% of hard", "—", round(hard * 0.05), "Owner's rep or GC overhead + fee"),
+                ("Construction Management / GC Fee", f"{cm * 100:.0f}% of hard", "—", round(hard * cm), "Owner's rep or GC overhead + fee"),
                 ("Legal, Accounting, Entity Costs", "LS", "—", round(_num(I.get("legal_ls"), 35000) * (0.85 if frac < 1 else 1)), "LLC, leases, title work")]
         pre = hard + sum(r[3] for r in soft)
         soft += [("Construction Loan Interest (Carry)", "12 mo @ 8.0%", "—", round(pre * 0.55 * 0.08), "~55% average outstanding balance"),
                  ("Leasing Commissions &amp; Marketing", "LS", "—", round(_num(I.get("leasing_ls"), 50000) * (0.6 if frac < 1 else 1)), "Tenant leasing"),
-                 ("Contingency (10%)", "—", "10%", round(hard * 0.10), "Applied to hard costs only")]
+                 (f"Contingency ({ct * 100:.0f}%)", "—", f"{ct * 100:.0f}%", round(hard * ct), "Applied to hard costs only")]
         land = [("Land Acquisition", f"{F['acres']} AC", f"${land_price / (F['acres'] or 1):,.0f} / AC", round(land_price), e((I.get("land") or {}).get("basis") or "Asking price")),
                 ("Closing Costs, Due Diligence, Title", "—", "2.5%", round(land_price * 0.025), "Survey, title, legal, Phase I ESA")] if include_land else []
         st = sum(r[3] for r in soft)
