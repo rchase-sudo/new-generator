@@ -534,19 +534,25 @@ def _dense_try(ctx, proto, office, T, d, k, x0, W, H, req, scale, name):
     w_o = d_o = 0.0
     if office:
         w_o, d_o = _bldg_dims(office[0], scale)
-    for side in (1, -1):
-        bx0 = xd + 16 if side > 0 else xd - 16 - req * SW
+    fb = I.intersection(box(x0 - 5, iy0, x0 + W + 5, iy0 + max(SD, d_o))).bounds if not I.intersection(box(x0 - 5, iy0, x0 + W + 5, iy0 + max(SD, d_o))).is_empty else None
+    if fb is None:
+        return None
+    cands = sorted(np.arange(fb[0], fb[2] - req * SW + 0.1, 3.0), key=lambda v: abs(v + req * SW / 2 - xd))
+    for bx0 in cands:
         b_ = box(bx0, iy0, bx0 + req * SW, iy0 + SD)
         if not I.contains(b_):
             continue
-        o_ = None
-        if office:
+        if not office:
+            bay = b_
+            break
+        for side in (1, -1):
             ox0 = b_.bounds[2] + 10 if side > 0 else b_.bounds[0] - 10 - w_o
             o_ = box(ox0, iy0, ox0 + w_o, iy0 + d_o)
-            if not I.contains(o_) or not bz.contains(o_):
-                continue
-        bay, off_rect = b_, o_
-        break
+            if I.contains(o_) and bz.contains(o_):
+                bay, off_rect = b_, o_
+                break
+        if bay is not None:
+            break
     if bay is None:
         return None
     reserved = unary_union([bay.buffer(1.0)] + ([off_rect.buffer(8.0)] if off_rect is not None else []))
