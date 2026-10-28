@@ -20,7 +20,7 @@ def check(job_id, job, metrics, log=print):
     I = None
     try:    # reuse the research when the plan has not changed (same cache the package step uses)
         prev = json.loads(supa.download(job_id, "package_inputs.json"))
-        if prev.get("plan") == plan and prev.get("inputs"):
+        if prev.get("plan") == plan and prev.get("inputs") and "gross_lease" in prev["inputs"]:
             I = prev["inputs"]
     except Exception:  # noqa: BLE001
         pass
@@ -99,7 +99,7 @@ def size_program(job_id, job, prog, res, regenerate, log=print):
     I0 = None
     try:
         prev = json.loads(supa.download(job_id, "package_inputs.json"))
-        if prev.get("plan") == plan0 and prev.get("inputs"):
+        if prev.get("plan") == plan0 and prev.get("inputs") and "gross_lease" in prev["inputs"]:
             I0 = prev["inputs"]
     except Exception:  # noqa: BLE001
         pass

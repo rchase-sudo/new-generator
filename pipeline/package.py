@@ -111,6 +111,9 @@ INPUTS_SCHEMA = """{
  "for_sale": boolean,   // true when the buildings are SOLD (condos, townhomes, for-sale homes); false for leased / income uses
  "sale_psf": [ {"building": "<exact building name>", "price_psf": number, "basis": "short comp basis"} ],   // only when for_sale: gross sale price per SF of building area for new construction here
  "selling_cost_pct": number,   // only when for_sale: brokerage + closing + marketing, e.g. 0.06
+ "gross_lease": boolean,   // true when rents are gross / all-in and the OWNER pays property tax, insurance, utilities and maintenance (self-storage, apartments); false for NNN leases where tenants pay them
+ "owner_opex_psf": number,   // only when gross_lease: owner-paid operating cost in $/SF/yr of building area EXCLUDING property tax and on-site management (insurance, utilities, repairs, lawn and snow, remote-management software, marketing). Unmanned facilities have no on-site staff.
+ "property_tax_rate": number,   // only when gross_lease: the local effective annual property tax as a decimal of property value (e.g. 0.0235 = $23.50 per $1,000); use the town's current commercial tax rate and equalization
  "cap_rate": number,   // e.g. 0.07
  "cap_note": "short — product type the cap reflects",
  "phase1": ["<building name(s) built first — the anchor / most viable>"],
@@ -172,6 +175,10 @@ def proforma(F, I):
     cap = _num(I.get("cap_rate"), 0.07) or 0.07
     cap = cap / 100 if cap > 1 else cap
     for_sale = bool(I.get("for_sale"))
+    gross_lease = bool(I.get("gross_lease")) and not for_sale
+    opex_psf = _num(I.get("owner_opex_psf"), 0.0)
+    ptax = _num(I.get("property_tax_rate"), 0.0)
+    ptax = ptax / 100 if ptax > 1 else ptax
     sell = _num(I.get("selling_cost_pct"), 0.06)
     sell = sell / 100 if sell > 1 else sell
     price = {}
@@ -215,6 +222,9 @@ def proforma(F, I):
             m = g * MGMT
             rows.append((n, round(sf[n]), rent[n][0], round(g), round(m), rent[n][1]))
             tot += g - m
+        if gross_lease:     # owner pays operating cost and property tax: value V = (income - fixed opex) / (cap + tax rate), NOI = cap * V
+            fixed = opex_psf * sum(sf[n] for n in bset)
+            tot = cap * ((tot - fixed) / (cap + ptax))
         return rows, round(tot)
 
     A, B, C = build(phase1), build(names), build(names, False)
