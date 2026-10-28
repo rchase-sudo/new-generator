@@ -89,7 +89,7 @@ def _grown(F, g):
     return F2
 
 
-def _size_once(job_id, job, prog, res, regenerate, log=print):
+def _size_once(job_id, job, prog, res, regenerate, log=print, base=None):
     """Grow the program until the residual land value meets program['min_rlv']. Returns (prog, res). The site decides the
     ceiling: when the layout cannot hold the building area needed the result keeps the best layout and says so."""
     try:
@@ -101,12 +101,16 @@ def _size_once(job_id, job, prog, res, regenerate, log=print):
     F0 = pkg.facts({**job0, "layout": res["metrics"]})
     plan0 = json.loads(json.dumps(F0["plan"], default=str))
     I0 = None
-    try:
-        prev = json.loads(supa.download(job_id, "package_inputs.json"))
-        if prev.get("plan") == plan0 and prev.get("inputs") and "gross_lease" in prev["inputs"] and "soft_rates" in prev["inputs"]:
-            I0 = prev["inputs"]
-    except Exception:  # noqa: BLE001
-        pass
+    Fb = F0                 # the plan the researched inputs describe; every scaled cost model is relative to it
+    if base is not None:    # second pass (dense layout): same research, so both layouts are valued on identical inputs
+        Fb, I0 = base
+    else:
+        try:
+            prev = json.loads(supa.download(job_id, "package_inputs.json"))
+            if prev.get("plan") == plan0 and prev.get("inputs") and "gross_lease" in prev["inputs"] and "soft_rates" in prev["inputs"]:
+                I0 = prev["inputs"]
+        except Exception:  # noqa: BLE001
+            pass
     if I0 is None:
         log("residual land value: researching rents, costs and cap rate")
         I0 = pkg.research_inputs(F0)
@@ -119,8 +123,9 @@ def _size_once(job_id, job, prog, res, regenerate, log=print):
             supa.upload(job_id, p_)
         except Exception:  # noqa: BLE001
             pass
+    _size_once.last = (Fb, I0)
     base_gfa = float(res["metrics"].get("gfa_sf") or 0)
-    PF0, r0 = _resid(F0, I0)
+    PF0, r0 = _resid(F0, I0 if base is None else _scaled_inputs(I0, Fb, F0))
     # The asking price is NEVER part of the residual land value calculation or its minimum.
     mn = mn_user
     note = {"min": mn, "min_user": mn_user, "cap_rate": PF0["cap"], "base_residual": round(r0, -3), "base_gfa_sf": round(base_gfa)}
@@ -138,7 +143,7 @@ def _size_once(job_id, job, prog, res, regenerate, log=print):
         if cur_r >= mn:
             break
         # smallest uniform growth that reaches the minimum, on the cost model scaled from the researched inputs
-        g = next((x / 100 for x in range(105, 801, 5) if _resid(_grown(cur_F, x / 100), _scaled_inputs(I0, F0, _grown(cur_F, x / 100)))[1] >= mn), None)
+        g = next((x / 100 for x in range(105, 801, 5) if _resid(_grown(cur_F, x / 100), _scaled_inputs(I0, Fb, _grown(cur_F, x / 100)))[1] >= mn), None)
         if g is None:
             note["unreachable"] = True
             break
@@ -175,7 +180,7 @@ def _size_once(job_id, job, prog, res, regenerate, log=print):
             note["site_limit"] = True        # the layout could not hold more building area
             break
         F2 = pkg.facts({**job, "program": newp, "layout": r2["metrics"]})
-        _, ra = _resid(F2, _scaled_inputs(I0, F0, F2))
+        _, ra = _resid(F2, _scaled_inputs(I0, Fb, F2))
         cur_prog, cur_res, cur_F, cur_r = newp, r2, F2, ra
         if ra > best_r:
             best_prog, best_res, best_r = newp, r2, ra
@@ -195,6 +200,7 @@ def size_program(job_id, job, prog, res, regenerate, log=print):
     """Size the program to the minimum residual land value. With program["dense_ok"] (the "dense layout if needed" toggle) and a
     minimum that the standard layout cannot reach, the layout switches to dense row-and-aisle packing and sizing runs again."""
     prog1, res1 = _size_once(job_id, job, prog, res, regenerate, log)
+    base1 = getattr(_size_once, "last", None)
     note1 = res1["metrics"].get("rlv") or {}
     if not prog.get("dense_ok") or prog.get("dense_layout") or note1.get("ok") or not note1.get("min"):
         return prog1, res1
@@ -202,7 +208,7 @@ def size_program(job_id, job, prog, res, regenerate, log=print):
     dprog = {**prog, "dense_layout": True}
     try:
         dres = regenerate(dprog)
-        prog2, res2 = _size_once(job_id, job, dprog, dres, regenerate, log)
+        prog2, res2 = _size_once(job_id, job, dprog, dres, regenerate, log, base=base1)
     except Exception:  # noqa: BLE001
         return prog1, res1
     note2 = res2["metrics"].get("rlv") or {}
