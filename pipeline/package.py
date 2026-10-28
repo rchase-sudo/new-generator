@@ -54,6 +54,7 @@ def facts(job):
     return {
         "address": addr, "city": L.get("city") or (A.get("scity") or "").title(), "state": L.get("state") or A.get("state2"),
         "zip": L.get("zip") or A.get("szip5"), "county": county, "acres": round(acres, 2),
+        "underwriting": prog.get("underwriting") or None,
         "asking_price": _num(L.get("price")) or None, "listing_zoning": L.get("zoning"), "listing_summary": L.get("summary"),
         "listing_id": L.get("listing_id"), "broker": L.get("broker"), "utilities": L.get("utilities"),
         "frontage_ft": L.get("frontage_ft") or S.get("frontage_ft"), "fronting_roads": S.get("fronting_roads"),
@@ -188,6 +189,12 @@ def proforma(F, I):
         rent.setdefault(n, (24.0, "FORMA estimate"))
     cap = _num(I.get("cap_rate"), 0.07) or 0.07
     cap = cap / 100 if cap > 1 else cap
+    uw = F.get("underwriting") or {}      # user underwriting override: program["underwriting"] = {rent_psf, cap_rate}
+    if _num(uw.get("rent_psf")):
+        rent = {n: ((_num(uw["rent_psf"]), f"High end of local range (underwriting ${_num(uw['rent_psf']):.2f}/SF/yr)") if v[0] > 0 else v) for n, v in rent.items()}
+    if _num(uw.get("cap_rate")):
+        cap = _num(uw["cap_rate"])
+        cap = cap / 100 if cap > 1 else cap
     for_sale = bool(I.get("for_sale"))
     gross_lease = bool(I.get("gross_lease")) and not for_sale
     opex_psf = _num(I.get("owner_opex_psf"), 0.0)
@@ -603,7 +610,7 @@ def build_html(F, I, PF, T, plan_img, render_img, today=None):
 <div class="lbl">RESIDUAL LAND VALUE WALK</div>
 {_table([("ITEM", ""), ("AMOUNT", "r"), ("BASIS", "")], [
         (f"Stabilized NOI ({tsf:,.0f} SF)", f(O["B"]["noi"]), "; ".join(f"${r[0]:.0f}/SF {e(n)}" for n, r in PF["rent"].items()) + ", NNN, 95% occ."),
-        ("Market Cap Rate", capp, e(I.get("cap_note") or "")),
+        ("Market Cap Rate", capp, e("New-construction cap rate (underwriting assumption)" if (F.get("underwriting") or {}).get("cap_rate") else (I.get("cap_note") or ""))),
         ("Stabilized Value", f(O["C"]["value"]), f"{f(O['B']['noi'])} / {PF['cap']:.3f}"),
         ("Less: Development Cost Excluding Land", f"({f(C_['tdc'])})", f"Hard {f(C_['hard'])} + soft {f(C_['soft_total'])}"),
         ("Residual Land Value", fp(PF["resid"]), "Value the program supports for the land", {"cls": "tot"}),

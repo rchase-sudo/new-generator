@@ -58,7 +58,8 @@ def _scaled_inputs(I0, F0, F1):
     imp0 = float(pkg._num((F0["plan"] or {}).get("impervious_sf"))) or 1.0
     imp1 = float(pkg._num((F1["plan"] or {}).get("impervious_sf"))) or imp0
     rents = {r.get("building"): pkg._num(r.get("rent_psf")) for r in I0.get("rents") or []}
-    avg_rent = (sum(rents.values()) / len(rents)) if rents else 24.0
+    _pos = [v for v in rents.values() if v > 0]
+    avg_rent = (sum(_pos) / len(_pos)) if _pos else 24.0
     I = dict(I0)
     I["site"] = [{**r, "subtotal": pkg._num(r.get("subtotal")) * imp1 / imp0} for r in I0.get("site") or []]
     I["vertical"] = [{"item": "Vertical construction", "qty": f"{sf:,.0f} SF", "unit": "$/SF", "subtotal": v_psf * sf, "building": n}
