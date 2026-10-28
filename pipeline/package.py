@@ -29,7 +29,8 @@ fp = lambda n: f"(${-n:,.0f})" if n < 0 else f"${n:,.0f}"  # noqa: E731
 def _num(x, default=0.0):
     try:
         if isinstance(x, str):
-            x = re.sub(r"[^0-9.\-]", "", x)
+            m = re.search(r"-?\d[\d,]*\.?\d*|-?\.\d+", x)      # first number only: tolerates units, ranges and stray markup
+            x = m.group(0).replace(",", "") if m else ""
         return float(x)
     except (TypeError, ValueError):
         return default
