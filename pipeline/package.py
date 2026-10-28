@@ -19,7 +19,8 @@ OCC, MGMT = 0.95, 0.06
 # Required developer profit (researched: profit 10-20% of gross development value, about 20% on cost for low-risk residential;
 # rentals need yield on cost 150-250 bps over the market cap rate)
 SALE_MARGIN = 0.15     # for-sale: profit as a share of gross sales
-YOC_SPREAD = 0.02      # rental: required yield-on-cost spread over the market cap rate
+DEV_PROFIT = 0.15      # rental: developer profit as a share of development cost (value - cost - profit = residual land)
+YOC_SPREAD = 0.02     # rental: required yield-on-cost spread over the market cap rate
 
 e = lambda s: _html.escape(str(s if s is not None else ""), quote=False)  # noqa: E731
 f = lambda n: f"${n:,.0f}"  # noqa: E731
@@ -216,6 +217,7 @@ def proforma(F, I):
     vert = [(r.get("item", ""), clip(r.get("qty", ""), 28), clip(r.get("unit", ""), 24), round(_num(r.get("subtotal"))), clip(r.get("note", "")),
              r.get("building") if r.get("building") in sf else names[0]) for r in (I.get("vertical") or [])][:6]
     uf = I.get("utility_fee") or {}
+    storage_only = bool(blds) and all("storage" in str(b.get("use", "")).lower() or "storage" in str(b.get("name", "")).lower() or "office" in str(b.get("use", "")).lower() or "office" in str(b.get("name", "")).lower() for b in blds) and any("storage" in (str(b.get("use", "")) + str(b.get("name", ""))).lower() for b in blds)
 
     def build(bset, include_land=True):
         v = [r for r in vert if r[5] in bset]
@@ -230,7 +232,7 @@ def proforma(F, I):
                 ("Legal, Accounting, Entity Costs", "LS", "—", round(_num(I.get("legal_ls"), 35000) * (0.85 if frac < 1 else 1)), "LLC, leases, title work")]
         pre = hard + sum(r[3] for r in soft)
         soft += [("Construction Loan Interest (Carry)", "12 mo @ 8.0%", "—", round(pre * 0.55 * 0.08), "~55% average outstanding balance"),
-                 ("Leasing Commissions &amp; Marketing", "LS", "—", round(_num(I.get("leasing_ls"), 50000) * (0.6 if frac < 1 else 1)), "Tenant leasing"),
+                 ("Leasing Commissions &amp; Marketing", "LS", "—", 0 if storage_only else round(_num(I.get("leasing_ls"), 50000) * (0.6 if frac < 1 else 1)), "Self-storage: no tenant leasing" if storage_only else "Tenant leasing"),
                  (f"Contingency ({ct * 100:.0f}%)", "—", f"{ct * 100:.0f}%", round(hard * ct), "Applied to hard costs only")]
         land = [("Land Acquisition", f"{F['acres']} AC", f"${land_price / (F['acres'] or 1):,.0f} / AC", round(land_price), e((I.get("land") or {}).get("basis") or "Asking price")),
                 ("Closing Costs, Due Diligence, Title", "—", "2.5%", round(land_price * 0.025), "Survey, title, legal, Phase I ESA")] if include_land else []
@@ -264,11 +266,10 @@ def proforma(F, I):
         profit = SALE_MARGIN * gross
         resid_land = out["C"]["value"] - profit - C["tdc"]
         profit_basis = f"{SALE_MARGIN * 100:.0f}% of gross sales"
-    else:             # residual land = NOI / (cap + spread) - cost excluding land (project must yield cap + spread on total cost)
-        need = nB[1] / (cap + YOC_SPREAD)
-        profit = out["C"]["value"] - need
-        resid_land = need - C["tdc"]
-        profit_basis = f"yield on cost of cap rate + {YOC_SPREAD * 10000:.0f} bps"
+    else:             # residual land = stabilized value - cost excluding land - developer profit (15% of cost)
+        profit = DEV_PROFIT * C["tdc"]
+        resid_land = out["C"]["value"] - C["tdc"] - profit
+        profit_basis = f"{DEV_PROFIT * 100:.0f}% of development cost"
     blend = sum(sf[n] * rent[n][0] for n in names) / tsf
     be = lambda tdc: tdc * cap / ((1 - MGMT) * OCC) / tsf  # noqa: E731
     return dict(A=A, B=B, C=C, out=out, noiA=nA, noiB=nB, cap=cap, land_price=land_price, sf=sf, names=names, phase1=phase1,
@@ -629,7 +630,7 @@ def build_html(F, I, PF, T, plan_img, render_img, today=None):
         ("Stabilized Value", f(O["C"]["value"]), f"{f(O['C']['noi'])} / {PF['cap']:.3f}"),
         ("Stabilized Value / SF", f"${O['C']['value'] / tsf:,.0f} / SF", f"Over {tsf:,.0f} SF of building area"),
         ("Development Cost / SF (Land Excluded)", f"${C_['tdc'] / tsf:,.0f} / SF", f"Hard {f(C_['hard'])} + soft {f(C_['soft_total'])}"),
-        ("Residual Land Value", ("-" if PF["resid"] < 0 else "") + f(abs(PF["resid"])), (f"Net sales less {PF['profit_basis']} profit and {f(C_['tdc'])} development cost; land price not included" if PF["for_sale"] else f"{f(O['C']['noi'])} / ({PF['cap']:.3f} + {YOC_SPREAD:.3f}) less {f(C_['tdc'])} development cost; land price not included"), {"cls": "tot"})])}
+        ("Residual Land Value", ("-" if PF["resid"] < 0 else "") + f(abs(PF["resid"])), (f"Net sales less {PF['profit_basis']} profit and {f(C_['tdc'])} development cost; land price not included" if PF["for_sale"] else f"{f(O['C']['value'])} value less {f(C_['tdc'])} development cost less {f(PF['profit'])} developer profit ({PF['profit_basis']}); land price not included"), {"cls": "tot"})])}
 <div class="lbl">STABILIZED VALUE SENSITIVITY — RENT AND CAP RATE</div>
 {_table([("RENT CASE", ""), (f"CAP {PF['cap'] * 100 - 0.5:.2f}%", "r"), (f"CAP {PF['cap'] * 100:.2f}%", "r"), (f"CAP {PF['cap'] * 100 + 0.5:.2f}%", "r")], sens_rows)}
 {_boxes(T.get("residual_boxes"))}
