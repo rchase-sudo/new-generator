@@ -87,7 +87,7 @@ def _grown(F, g):
     return F2
 
 
-def size_program(job_id, job, prog, res, regenerate, log=print):
+def _size_once(job_id, job, prog, res, regenerate, log=print):
     """Grow the program until the residual land value meets program['min_rlv']. Returns (prog, res). The site decides the
     ceiling: when the layout cannot hold the building area needed the result keeps the best layout and says so."""
     try:
@@ -182,3 +182,26 @@ def size_program(job_id, job, prog, res, regenerate, log=print):
         res["metrics"].setdefault("warnings", []).append(
             f"Residual land value about ${best_r:,.0f} is below the ${mn:,.0f} minimum: {why}.")
     return prog, res
+
+
+def size_program(job_id, job, prog, res, regenerate, log=print):
+    """Size the program to the minimum residual land value. With program["dense_ok"] (the "dense layout if needed" toggle) and a
+    minimum that the standard layout cannot reach, the layout switches to dense row-and-aisle packing and sizing runs again."""
+    prog1, res1 = _size_once(job_id, job, prog, res, regenerate, log)
+    note1 = res1["metrics"].get("rlv") or {}
+    if not prog.get("dense_ok") or prog.get("dense_layout") or note1.get("ok") or not note1.get("min"):
+        return prog1, res1
+    log("residual land value: standard layout cannot reach the minimum, trying the dense layout")
+    dprog = {**prog, "dense_layout": True}
+    try:
+        dres = regenerate(dprog)
+        prog2, res2 = _size_once(job_id, job, dprog, dres, regenerate, log)
+    except Exception:  # noqa: BLE001
+        return prog1, res1
+    note2 = res2["metrics"].get("rlv") or {}
+    if float(note2.get("residual") or -1e18) > float(note1.get("residual") or -1e18):
+        note2["dense"] = True
+        note2["sized"] = True
+        res2["metrics"]["rlv"] = note2
+        return prog2, res2
+    return prog1, res1

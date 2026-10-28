@@ -461,6 +461,147 @@ def _search_med(ctx, buildings, scale, req, med):
     return best
 
 
+# ---------------------------------------------------------------- dense mode
+DENSE_AISLE = 24.0     # drive aisle between building rows
+DENSE_XGAP = 24.0      # fire / access gap between buildings in a row
+DENSE_LMAX = 200.0     # longest single building
+
+
+def _dense_search(ctx, buildings, scale, req):
+    """Dense row-and-aisle packing (program["dense_layout"]): parallel rows of long, narrow buildings with 24 ft drive
+    aisles between them, the ring drive around the outside, a small stall bay and the office by the entrance.
+    Fills the program's building area with the least pavement; returns a candidate shaped like _build's, or None."""
+    pz, bz = ctx["pz"], ctx["bz"]
+    req = int(req)
+    if req > 24:
+        return None
+    is_office = lambda b: b["footprint_sf"] * scale < 2500 or "office" in (str(b.get("name", "")) + str(b.get("use", "")) + str(b.get("label", ""))).lower()  # noqa: E731
+    office = [b for b in buildings if is_office(b)]
+    bulk = [b for b in buildings if not is_office(b)]
+    if not bulk:
+        return None
+    proto = max(bulk, key=lambda b: b["footprint_sf"])
+    T = sum(b["footprint_sf"] * scale for b in bulk)
+    d = min(max(float(proto.get("depth_ft") or 40), 30.0), 60.0)
+    lo, hi, y0 = ctx["drive_lo"], ctx["drive_hi"], ctx["y0"]
+    pminx, pminy, pmaxx, pmaxy = pz.bounds
+    letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+    def name(i):
+        return f"Building {letters[i]}" if i < 26 else f"Building {i + 1}"
+
+    best = None
+    for k in range(1, 15):
+        H = k * d + (k - 1) * DENSE_AISLE + 2 * RING
+        if y0 + H > pmaxy + 1:
+            break
+        found = []
+        Wmin = 2 * RING + 2 * R_OUT + 40
+        for x0 in np.arange(pminx - 10, pmaxx - Wmin + 10, 30.0):
+            W = Wmin
+            while x0 + W <= pmaxx + 40:
+                c = _dense_try(ctx, proto, office, T, d, k, x0, W, H, req, scale, name)
+                if c is not None:
+                    dx0, dy0, dx1, _ = c["D"].bounds
+                    if not (dy0 > y0 + 8 or dx1 - R_OUT - 15 < lo or dx0 + R_OUT + 15 > hi):
+                        pave = c["D"].area - c["I"].area + sum(a.area for a in c["aisles"]) + c["n"] * SW * SD
+                        c["cost"] = pave + 0.15 * c["D"].area
+                        found.append(c)
+                    break
+                W += 40
+        if found:
+            best = min(found, key=lambda c: c["cost"])
+            break
+    return best
+
+
+def _dense_try(ctx, proto, office, T, d, k, x0, W, H, req, scale, name):
+    pz, bz = ctx["pz"], ctx["bz"]
+    y0 = ctx["y0"]
+    D = _largest(pz.intersection(box(x0, y0, x0 + W, y0 + H)))
+    if D is None or D.area < 0.55 * W * H:
+        return None
+    D = _largest(_fillet(D, R_OUT))
+    if D is None:
+        return None
+    I = _largest(D.buffer(-RING, join_style=2))
+    if I is None:
+        return None
+    iy0 = I.bounds[1]
+    xd = _driveway(ctx, D, flare=False)[1]
+    # stall bay and office beside the entrance, on the ring-facing edge of the first row
+    bay = off_rect = None
+    w_o = d_o = 0.0
+    if office:
+        w_o, d_o = _bldg_dims(office[0], scale)
+    for side in (1, -1):
+        bx0 = xd + 16 if side > 0 else xd - 16 - req * SW
+        b_ = box(bx0, iy0, bx0 + req * SW, iy0 + SD)
+        if not I.contains(b_):
+            continue
+        o_ = None
+        if office:
+            ox0 = b_.bounds[2] + 10 if side > 0 else b_.bounds[0] - 10 - w_o
+            o_ = box(ox0, iy0, ox0 + w_o, iy0 + d_o)
+            if not I.contains(o_) or not bz.contains(o_):
+                continue
+        bay, off_rect = b_, o_
+        break
+    if bay is None:
+        return None
+    reserved = unary_union([bay.buffer(1.0)] + ([off_rect.buffer(8.0)] if off_rect is not None else []))
+    rects, aisles, xs_end = [], [], []
+    area, j_last = 0.0, 0
+    for j in range(k):
+        yj = iy0 + j * (d + DENSE_AISLE)
+        strip = I.intersection(box(x0 - 5, yj, x0 + W + 5, yj + d))
+        for piece in sorted(_polys(strip), key=lambda g: g.bounds[0]):
+            x, xmax = piece.bounds[0], piece.bounds[2]
+            while x + 40 <= xmax + 0.01 and area < T - 1:
+                L = min(DENSE_LMAX, max(40.0, (T - area) / d))
+                placed = None
+                Lc = L
+                while Lc >= 40.0:
+                    r_ = box(x, yj, x + Lc, yj + d)
+                    if I.buffer(0.05).contains(r_) and bz.contains(r_) and not r_.intersects(reserved):
+                        placed = r_
+                        break
+                    Lc -= 10.0
+                if placed is None:
+                    x += 10.0
+                    continue
+                rects.append(placed)
+                area += placed.area
+                j_last = j
+                if area < T - 1:
+                    aisles.append(box(placed.bounds[2], yj, placed.bounds[2] + DENSE_XGAP, yj + d).intersection(I))
+                x = placed.bounds[2] + DENSE_XGAP
+    if area < 0.985 * T:
+        return None
+    for j in range(j_last):
+        yj = iy0 + j * (d + DENSE_AISLE) + d
+        a_ = _largest(box(x0 - 50, yj, x0 + W + 50, yj + DENSE_AISLE).intersection(D))
+        if a_ is not None:
+            aisles.append(a_)
+    aisles = [a for a in aisles if a is not None and not a.is_empty]
+    row = []
+    for i, r_ in enumerate(rects):
+        L = r_.bounds[2] - r_.bounds[0]
+        b = {**proto, "name": name(i), "footprint_sf": round(L * d, 0), "depth_ft": d}
+        row.append({"b": b, "rect": r_, "lane": None, "legs": None, "walk": Polygon(), "service": None, "env": r_,
+                    "w": L, "d": d, "fp": L * d, "facing": -1})
+    if off_rect is not None:
+        b = {**office[0], "depth_ft": d_o}
+        row.append({"b": b, "rect": off_rect, "lane": None, "legs": None, "walk": off_rect.buffer(WALK, join_style=1).difference(off_rect),
+                    "service": None, "env": off_rect, "w": w_o, "d": d_o, "fp": w_o * d_o, "facing": -1})
+    S = Stalls()
+    bx0 = bay.bounds[0]
+    S.add_run([[box(bx0 + i * SW, iy0, bx0 + (i + 1) * SW, iy0 + SD)] for i in range(req)])
+    blk = unary_union([r["env"] for r in row])
+    return {"D": D, "I": I, "row": row, "aisles": aisles, "S": S, "n": S.n, "blk": blk, "med": 0.0,
+            "m": k, "bpos": "dense", "scale": scale, "x0": x0, "W": W, "Hd": H}
+
+
 # ---------------------------------------------------------------- driveway
 def _driveway(ctx, D, flare=True):
     P, R = ctx["P"], ctx["R"]
@@ -583,7 +724,7 @@ def _generate_inner(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=N
         frac = sum(b["footprint_sf"] * b.get("stories", 1) for b in sub) / gfa
         for scale in (1.0, 0.9, 0.8, 0.7, 0.6, 0.5):
             req = math.ceil(req0 * frac * scale)
-            best = _search(ctx, sub, scale, req)
+            best = (_dense_search if program.get("dense_layout") else _search)(ctx, sub, scale, req)
             if best:
                 break
         if best:
