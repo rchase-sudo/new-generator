@@ -43,3 +43,118 @@ def check(job_id, job, metrics, log=print):
             f"less ${r['cost_ex_land']:,.0f} development cost, land excluded)")
     metrics["rlv"] = r
     return r
+
+
+# ---------------------------------------------------------------------------------------------- sizing
+def _sf(F):
+    return {b["name"]: float(pkg._num(b.get("footprint_sf"))) * max(1, int(pkg._num(b.get("stories"), 1))) for b in F["buildings"]}
+
+
+def _scaled_inputs(I0, F0, F1):
+    """The researched inputs of the base plan re-expressed for a resized plan: vertical cost per SF, site cost with impervious area."""
+    sf0, sf1 = _sf(F0), _sf(F1)
+    tot0 = sum(sf0.values()) or 1.0
+    v_psf = sum(pkg._num(r.get("subtotal")) for r in I0.get("vertical") or []) / tot0
+    imp0 = float(pkg._num((F0["plan"] or {}).get("impervious_sf"))) or 1.0
+    imp1 = float(pkg._num((F1["plan"] or {}).get("impervious_sf"))) or imp0
+    rents = {r.get("building"): pkg._num(r.get("rent_psf")) for r in I0.get("rents") or []}
+    avg_rent = (sum(rents.values()) / len(rents)) if rents else 24.0
+    I = dict(I0)
+    I["site"] = [{**r, "subtotal": pkg._num(r.get("subtotal")) * imp1 / imp0} for r in I0.get("site") or []]
+    I["vertical"] = [{"item": "Vertical construction", "qty": f"{sf:,.0f} SF", "unit": "$/SF", "subtotal": v_psf * sf, "building": n}
+                     for n, sf in sf1.items()]
+    I["rents"] = [{"building": n, "rent_psf": rents.get(n, avg_rent), "basis": "scaled from researched rent"} for n in sf1]
+    I["phase1"] = list(sf1)
+    return I
+
+
+def _resid(F, I):
+    PF = pkg.proforma(F, I)
+    return PF, float(PF["resid"])
+
+
+def _grown(F, g):
+    """Copy of the facts with every building's footprint and the impervious area scaled by g (the search model)."""
+    F2 = json.loads(json.dumps(F, default=str))
+    for b in F2["buildings"]:
+        b["footprint_sf"] = pkg._num(b.get("footprint_sf")) * g
+    F2["plan"]["impervious_sf"] = pkg._num(F["plan"].get("impervious_sf")) * g ** 0.85
+    return F2
+
+
+def size_program(job_id, job, prog, res, regenerate, log=print):
+    """Grow the program until the residual land value meets program['min_rlv']. Returns (prog, res). The site decides the
+    ceiling: when the layout cannot hold the building area needed the result keeps the best layout and says so."""
+    try:
+        mn = float(prog.get("min_rlv"))
+    except (TypeError, ValueError):
+        return prog, res
+    job0 = {**job, "program": prog}
+    F0 = pkg.facts({**job0, "layout": res["metrics"]})
+    plan0 = json.loads(json.dumps(F0["plan"], default=str))
+    I0 = None
+    try:
+        prev = json.loads(supa.download(job_id, "package_inputs.json"))
+        if prev.get("plan") == plan0 and prev.get("inputs"):
+            I0 = prev["inputs"]
+    except Exception:  # noqa: BLE001
+        pass
+    if I0 is None:
+        log("residual land value: researching rents, costs and cap rate")
+        I0 = pkg.research_inputs(F0)
+    base_gfa = float(res["metrics"].get("gfa_sf") or 0)
+    PF0, r0 = _resid(F0, I0)
+    note = {"min": mn, "cap_rate": PF0["cap"], "base_residual": round(r0, -3), "base_gfa_sf": round(base_gfa)}
+    best_prog, best_res, best_r = prog, res, r0
+    cur_prog, cur_res, cur_F, cur_r = prog, res, F0, r0
+    max_st = int(pkg._num((job.get("zoning") or {}).get("max_stories"))) or None
+    if not max_st and pkg._num((job.get("zoning") or {}).get("max_height_ft")):
+        max_st = max(1, int(pkg._num(job["zoning"]["max_height_ft"]) // 12))
+    for it in range(4):
+        if cur_r >= mn:
+            break
+        # smallest uniform growth that reaches the minimum, on the cost model scaled from the researched inputs
+        g = next((x / 100 for x in range(105, 801, 5) if _resid(_grown(cur_F, x / 100), _scaled_inputs(I0, F0, _grown(cur_F, x / 100)))[1] >= mn), None)
+        if g is None:
+            note["unreachable"] = True
+            break
+        bl = [dict(b) for b in cur_prog["buildings"]]
+        stories = {int(b.get("stories") or 1) for b in bl}
+        if max_st and len(stories) == 1 and next(iter(stories)) < max_st:      # add floors first where the height limit allows
+            s0 = next(iter(stories))
+            s1 = min(max_st, max(s0 + 1, int(round(s0 * g))))
+            for b in bl:
+                b["stories"] = s1
+            g = g * s0 / s1
+        if g > 1.01:
+            for b in bl:
+                b["footprint_sf"] = round(float(b["footprint_sf"]) * g, -1)
+        newp = {**cur_prog, "buildings": bl}
+        req = (cur_prog.get("parking") or {}).get("required")
+        if isinstance(req, (int, float)) and req > 0:
+            newp["parking"] = {**cur_prog["parking"], "required": round(req * sum(float(b["footprint_sf"]) * int(b.get("stories") or 1) for b in bl)
+                                                                         / sum(float(b["footprint_sf"]) * int(b.get("stories") or 1) for b in cur_prog["buildings"]))}
+        log(f"residual land value ${cur_r:,.0f} < ${mn:,.0f}: growing the program (pass {it + 1})")
+        try:
+            r2 = regenerate(newp)
+        except RuntimeError:
+            note["site_limit"] = True
+            break
+        F2 = pkg.facts({**job, "program": newp, "layout": r2["metrics"]})
+        _, ra = _resid(F2, _scaled_inputs(I0, F0, F2))
+        if float(r2["metrics"].get("gfa_sf") or 0) <= float(cur_res["metrics"].get("gfa_sf") or 0) * 1.01:
+            note["site_limit"] = True        # the layout could not hold more building area
+            break
+        cur_prog, cur_res, cur_F, cur_r = newp, r2, F2, ra
+        if ra > best_r:
+            best_prog, best_res, best_r = newp, r2, ra
+    prog, res = best_prog, best_res
+    note.update({"residual": round(best_r, -3), "ok": best_r >= mn, "gfa_sf": round(float(res["metrics"].get("gfa_sf") or 0)),
+                 "value": None, "sized": res is not None and note.get("base_gfa_sf") != round(float(res["metrics"].get("gfa_sf") or 0))})
+    res["metrics"]["rlv"] = note
+    if not note["ok"]:
+        why = ("the site cannot hold more building area" if note.get("site_limit") else
+               "the researched rents and costs do not reach it at any building size" if note.get("unreachable") else "the program could not be grown enough")
+        res["metrics"].setdefault("warnings", []).append(
+            f"Residual land value about ${best_r:,.0f} is below the ${mn:,.0f} minimum: {why}.")
+    return prog, res

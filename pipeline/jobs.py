@@ -405,6 +405,20 @@ def step_layout(job_id):
             raise RuntimeError(f"{e} Only {fr.get(dr, 0):,} ft of this parcel fronts {dr}, too little to organize the site around. "
                                f"Pick Automatic or {best} ({fr[best]:,} ft of frontage) for the driveway.") from None
         raise
+    if (prog or {}).get("min_rlv") not in (None, ""):     # size the program to the minimum residual land value set on it
+        try:
+            from . import rlv
+            supa.update_job(job_id, progress="Sizing the program to the residual land value minimum")
+            regen = lambda p_: generate_layout(ctx["parcel_sp"], ctx["k"], ctx["rds"], ctx["wet"], ctx["fl"], setbacks, p_, rules=rules,  # noqa: E731
+                                               parking_setbacks_ft=psb, drive_road=rules.get("drive_road") or None,
+                                               keep_bldgs=[b["geom"] for b in keep], steep=steep, dem=dem,
+                                               reuse_pave=[p["geom"] for p in pave_keep], shared_stalls=shared,
+                                               tie_existing=rules.get("tie_existing", True) is not False)
+            prog, res = rlv.size_program(job_id, job, prog, res, regen)
+            if res["metrics"].get("rlv", {}).get("sized"):
+                supa.update_job(job_id, program=prog)
+        except Exception as e_:  # noqa: BLE001
+            res["metrics"].setdefault("warnings", []).append(f"Residual land value sizing did not run: {str(e_)[:120]}")
     supa.update_job(job_id, progress="Drawing the concept plan")
     L = job.get("listing") or {}
     title = [x for x in [L.get("street_address") and f"{L.get('lot') + ', ' if L.get('lot') else ''}{L.get('street_address')}",
@@ -422,13 +436,6 @@ def step_layout(job_id):
             res["metrics"]["earthwork"] = ew
             if ew["cut_cy"] + ew["fill_cy"] > 0 and ew["area_ac"] > 0 and (ew["cut_cy"] + ew["fill_cy"]) / ew["area_ac"] > 2500:
                 res["metrics"]["warnings"].append(f"Grading: about {ew['cut_cy']:,.0f} CY cut / {ew['fill_cy']:,.0f} CY fill to level the development area")
-    if (prog or {}).get("min_rlv") not in (None, ""):     # residual land value vs the minimum set on the program (flag only)
-        try:
-            from . import rlv
-            supa.update_job(job_id, progress="Checking residual land value")
-            rlv.check(job_id, job, res["metrics"])
-        except Exception as e_:  # noqa: BLE001
-            res["metrics"].setdefault("warnings", []).append(f"Residual land value check did not run: {str(e_)[:120]}")
     ex = [{"id": b["id"], "action": "keep", "geom": b["geom"], "sf": b["area_sf"], "label": b.get("kind")} for b in keep] + \
          [{"id": b["id"], "action": "demo", "geom": b["geom"], "sf": b["area_sf"], "label": b.get("kind")} for b in demo]
     ex += [{"id": p["id"], "action": "keep", "geom": p["geom"], "sf": p["area_sf"], "label": ("Parking" if p["kind"] == "parking" else "Drive") +
