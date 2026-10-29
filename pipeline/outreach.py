@@ -22,7 +22,8 @@ def to_instantly(job, pv, agent, F):
     if not key:
         return "skipped: no INSTANTLY_API_KEY"
     first, last = _names(agent.get("name"))
-    first = first or "there"       # listings that give only an email: the emails then open with "Hi there,"
+    if not first:
+        return "held: no agent name (emails open with the first name)"
     town = F.get("city") or ""
     body = {
         "campaign": CAMPAIGN_ID, "email": agent["email"], "first_name": first, "last_name": last,
@@ -59,12 +60,32 @@ def to_crm(job, pv, agent, F):
     return "added"
 
 
+def find_name(agent, F):
+    """The listing gave only an email: look the agent up on the web. Accept a name only when a page ties it to this email or this listing."""
+    from .claude import ask_json
+    try:
+        out = ask_json(
+            "Find the full name of a commercial real estate listing agent. Reply ONLY with JSON {\"name\": string or null, \"confidence\": \"high\"|\"low\"}. "
+            "Say high only when a page ties the name to this exact email address or to this exact listing; otherwise name null.",
+            f"Email: {agent.get('email')}\nBrokerage: {agent.get('company') or 'unknown'}\nListing: {F.get('address')}, {F.get('city')}, {F.get('state')}",
+            max_tokens=1500, web_search=3, label="Find agent name", model="claude-haiku-5-5")
+    except Exception:  # noqa: BLE001
+        return None
+    return out.get("name") if out.get("confidence") == "high" and out.get("name") else None
+
+
 def push(job_id, pv, agent, F):
     """Returns {"instantly": status, "crm": status}; never raises."""
     job = supa.get_job(job_id)
     out = {}
     if not agent.get("email"):
         return {"instantly": "skipped: no agent email in the listing", "crm": "skipped: no agent email in the listing"}
+    if not agent.get("name"):
+        agent = {**agent, "name": find_name(agent, F)}
+        if not agent["name"]:
+            agent.pop("name")
+        else:
+            out["name_found"] = agent["name"]
     for name, fn in (("instantly", to_instantly), ("crm", to_crm)):
         try:
             out[name] = fn(job, pv, agent, F)
