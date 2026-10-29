@@ -97,7 +97,14 @@ def advance(job_id, step):
         supa.update_job(job_id, parcel=cands[best], status="parcel_approved", step="ec", error=None, progress="Parcel confirmed")
         kick(job_id, "ec")
     elif st == "awaiting_zoning":
-        supa.update_job(job_id, status="zoning_approved", step="layout", error=None, progress="Starting the layout")
+        # an unattended concept is drawn for the cleared site: existing buildings and pavement are removed (never labelled on the plan),
+        # and the new development connects to the public road. A person reviewing would make the same call for a redevelopment concept.
+        summ = job.get("summary") or {}
+        z = {**(job.get("zoning") or {}),
+             "building_actions": {b["id"]: "demo" for b in summ.get("existing_buildings") or [] if b.get("id")},
+             "pavement_actions": {p["id"]: "remove" for p in summ.get("existing_pavement") or [] if p.get("id")},
+             "tie_existing": False}
+        supa.update_job(job_id, zoning=z, status="zoning_approved", step="layout", error=None, progress="Starting the layout")
         kick(job_id, "layout")
     elif st == "awaiting_layout":
         supa.update_job(job_id, status="layout_approved", step="deliverables", progress="Layout approved", render_status="queued", render_error=None)
