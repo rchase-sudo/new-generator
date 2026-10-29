@@ -414,6 +414,7 @@ def step_layout(job_id):
     psb = {k: float(psb[k]) for k in ("front", "side", "rear") if isinstance(psb.get(k), (int, float))}
     # Automatic jobs: the driveway goes to the best road the parcel fronts (arterial over local street), not just the longest frontage
     auto_dr = None
+    dr_note = None
     if not rules.get("drive_road") and (job.get("options") or {}).get("auto"):
         RANK = {"motorway": 5, "trunk": 5, "primary": 4, "secondary": 3, "tertiary": 2, "residential": 1}
         cands_ = [r for r in (summary.get("front_roads") or []) if r.get("frontage_ft", 0) >= 110]
@@ -425,9 +426,11 @@ def step_layout(job_id):
                                   parking_setbacks_ft=psb, drive_road=rules.get("drive_road") or auto_dr,
                                   keep_bldgs=[b["geom"] for b in keep], steep=steep, dem=dem,
                                   reuse_pave=[p["geom"] for p in pave_keep], shared_stalls=shared, tie_existing=rules.get("tie_existing", True) is not False)
-        except RuntimeError:
+        except RuntimeError as e_dr:
             if not auto_dr:
                 raise
+            dr_note = f"Driveway to {auto_dr} failed: {str(e_dr)[:200]}"
+            print(dr_note)
             auto_dr = None    # the preferred road did not work out: fall back to the automatic choice
             res = generate_layout(ctx["parcel_sp"], ctx["k"], ctx["rds"], ctx["wet"], ctx["fl"], setbacks, prog, rules=rules,
                                   parking_setbacks_ft=psb, drive_road=None,
@@ -477,6 +480,8 @@ def step_layout(job_id):
     ex += [{"id": p["id"], "action": "keep", "geom": p["geom"], "sf": p["area_sf"], "label": ("Parking" if p["kind"] == "parking" else "Drive") +
             (f" (about {p['est_stalls']} stalls)" if p.get("est_stalls") else ""), "kind": "pavement"} for p in pave_keep] + \
           [{"id": p["id"], "action": "demo", "geom": p["geom"], "sf": p["area_sf"], "label": "Parking" if p["kind"] == "parking" else "Drive", "kind": "pavement"} for p in pave_rm]
+    if dr_note:
+        res["metrics"].setdefault("warnings", []).append(dr_note)
     res["metrics"]["existing"] = [{"id": e["id"], "action": e["action"], "sf": round(e["sf"], -1), "label": e["label"], **({"kind": "pavement"} if e.get("kind") == "pavement" else {})} for e in ex if e.get("action") != "demo"]
     write_concept_sheet(os.path.join(out, "concept_plan.pdf"), os.path.join(out, "concept_plan.png"), ctx["parcel_sp"], env, wet, fl, rds,
                         ctx["aerial"], ctx["k"], res["sp"], res["labels"], title, res["metrics"], prog, rules, project=project, existing=ex,
