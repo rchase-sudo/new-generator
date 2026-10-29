@@ -649,7 +649,7 @@ def build_html(F, I, PF, T, plan_img, render_img, today=None):
         ("Stabilized Value", f(O["C"]["value"]), f"{f(O['C']['noi'])} / {PF['cap']:.3f}"),
         ("Stabilized Value / SF", f"${O['C']['value'] / tsf:,.0f} / SF", f"Over {tsf:,.0f} SF of building area"),
         ("Development Cost / SF (Land Excluded)", f"${C_['tdc'] / tsf:,.0f} / SF", f"Hard {f(C_['hard'])} + soft {f(C_['soft_total'])}"),
-        ("Residual Land Value", ("-" if PF["resid"] < 0 else "") + f(abs(PF["resid"])), (f"Net sales less {PF['profit_basis']} profit and {f(C_['tdc'])} development cost; land price not included" if PF["for_sale"] else f"{f(O['C']['value'])} value less {f(C_['tdc'])} development cost less {f(PF['profit'])} developer profit ({PF['profit_basis']}); land price not included"), {"cls": "tot"})])}
+        *([("Residual Land Value", f(PF["resid"]), (f"Net sales less {PF['profit_basis']} profit and {f(C_['tdc'])} development cost; land price not included" if PF["for_sale"] else f"{f(O['C']['value'])} value less {f(C_['tdc'])} development cost less {f(PF['profit'])} developer profit ({PF['profit_basis']}); land price not included"), {"cls": "tot"})] if PF["resid"] > 0 else [])])}
 <div class="lbl">STABILIZED VALUE SENSITIVITY — RENT AND CAP RATE</div>
 {_table([("RENT CASE", ""), (f"CAP {PF['cap'] * 100 - 0.5:.2f}%", "r"), (f"CAP {PF['cap'] * 100:.2f}%", "r"), (f"CAP {PF['cap'] * 100 + 0.5:.2f}%", "r")], sens_rows)}
 {_boxes(T.get("residual_boxes"))}
