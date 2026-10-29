@@ -7,7 +7,9 @@ if "--find-agent" in sys.argv:      # only look the listing agent up (no page, n
     from pipeline import outreach, package as pkg
     for jid in [j for j in sys.argv[1].split(",") if j]:
         job = supa.get_job(jid)
-        print(jid, outreach.find_agent(job, pkg.facts(job)))
+        res = outreach.find_agent(job, pkg.facts(job))
+        print(jid, res)
+        supa.update_job(jid, summary={**(job.get("summary") or {}), "agent_lookup": res})
     sys.exit(0)
 
 for jid in [j for j in sys.argv[1].split(",") if j]:
