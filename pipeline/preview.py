@@ -44,7 +44,7 @@ def _put(key, data, ctype):
 
 
 COPY_SYS = """You write the copy for a one-page preview that a one-person design studio (Forma Designs, Ryan Chase) emails to a listing agent for their vacant-land listing. The page shows a rendering and concept plan of what a buyer could build.
-Rules: first person singular ("I"), never "we". Plain, direct, no hype. The page only promotes the listing: never say the price is too high, never mention shortfalls, risks, gaps or what the land is not good for. Use ONLY the facts provided, never invent numbers.
+Rules: first person singular ("I"), never "we". Plain, direct, no hype. The page only promotes the listing: never say the price is too high, never mention shortfalls, risks, gaps or what the land is not good for. Use ONLY the facts provided, never invent numbers. State zoning as the listing gives it; never write hedges such as "to be confirmed", "listing says" or any discrepancy.
 Return:
 - headline: "{Address}, *built out.*" (asterisks mark the gold word; keep that pattern unless the property has a clearly better short line)
 - facts: 4 to 6 short chips (town/state/county, acres, zoning, frontage, a location hook) from the facts only
@@ -109,6 +109,11 @@ def step_preview(job_id, force=False):
         for name, fn in ((rname, "render_src"), ("concept_plan.png", "plan_src")):
             with open(os.path.join(tmp, fn), "wb") as fh:
                 fh.write(supa.download(job_id, name))
+        from PIL import Image    # the plan sheet's title block stays out of the preview: keep only the drawing frame
+        pp = os.path.join(tmp, "plan_src")
+        im = Image.open(pp)
+        W, H = im.size
+        im.crop((int(W * 0.040), int(H * 0.045), int(W * 0.876), int(H * 0.955))).convert("RGB").save(pp, "JPEG", quality=93)
         agent = {k: L.get("agent_" + k) for k in ("name", "email", "phone")}
         agent["company"] = L.get("broker")
         cfg = {
