@@ -96,6 +96,79 @@ def find_agent(job, F):
     return {}
 
 
+def _crm_headers():
+    key = os.environ.get("CRM_SERVICE_ROLE_KEY")
+    return {"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json", "Prefer": "return=minimal"} if key else None
+
+
+def crm_hold(job, pv, agent, F, reason):
+    """No agent email could be found: the contact still goes into the CRM, flagged needs_contact_info with the page link, so the email can be typed
+    in there and the CRM's send button then adds the agent to the Instantly campaign (see poll_requests)."""
+    h = _crm_headers()
+    if not h:
+        return "skipped: no CRM_SERVICE_ROLE_KEY"
+    addr = ", ".join(x for x in [F.get("address"), F.get("city"), F.get("state")] if x)
+    L = job.get("listing") or {}
+    note = (f"Drafted lite preview built for {addr}: {pv['url']}\nNo agent email found ({reason}). Type the agent's email into this contact and press send: "
+            "it is then added to the Instantly Free Preview campaign.")
+    r = requests.get(f"{CRM_URL}/rest/v1/contacts", params={"listing_address": f"eq.{addr}", "source": "eq.drafted-lite", "email": "is.null", "select": "id"}, headers=h, timeout=30)
+    r.raise_for_status()
+    if r.json():
+        return "held: already in the CRM"
+    row = {"name": agent.get("name") or f"Listing agent, {F.get('address')}", "company": agent.get("company") or L.get("broker"), "phone": agent.get("phone"),
+           "status": "prospect", "source": "drafted-lite", "company_type": "real_estate", "tags": ["listing-agent", "preview-page", "needs-email"],
+           "listing_address": addr, "website_url": pv["url"], "outreach_status": "needs_contact_info", "notes": note}
+    requests.post(f"{CRM_URL}/rest/v1/contacts", json=row, headers=h, timeout=30).raise_for_status()
+    return "held: added to the CRM flagged needs_contact_info"
+
+
+def poll_requests():
+    """Runs every few minutes (Modal schedule). Contacts the CRM's send button marked send_requested (preview-page contacts that now have an email)
+    are added to the Instantly campaign with their page link, then marked sent."""
+    h = _crm_headers()
+    if not h:
+        return
+    import datetime as dt
+    r = requests.get(f"{CRM_URL}/rest/v1/contacts", params={"outreach_status": "eq.send_requested", "website_url": "like.*/model/p/*",
+                                                          "select": "id,name,company,email,phone,website_url,notes,touch_count"}, headers=h, timeout=30)
+    r.raise_for_status()
+    for c in r.json():
+        res, extra = "error", ""
+        try:
+            slug = c["website_url"].rstrip("/").split("/")[-1]
+            jr = requests.get(f"{supa.URL}/rest/v1/pipeline_jobs", params={"summary->preview->>slug": f"eq.{slug}", "select": "id"}, headers=supa._h(), timeout=30)
+            jr.raise_for_status()
+            if not jr.json():
+                raise RuntimeError("no Drafted job for this page")
+            from . import package as pkg
+            job = supa.get_job(jr.json()[0]["id"])
+            pv = (job.get("summary") or {}).get("preview") or {}
+            F = pkg.facts(job)
+            nm = (c.get("name") or "").strip()
+            agent = {"email": c["email"], "company": c.get("company"), "phone": c.get("phone"),
+                     **({"name": nm} if nm and "@" not in nm and not nm.lower().startswith("listing agent") else {})}
+            if not agent.get("name"):
+                agent["name"] = find_name(agent, F)
+            if not agent.get("name"):
+                res, extra = "needs_name", "Needs the agent's name: put it in the Name field and press send again."
+            else:
+                out = to_instantly(job, pv, agent, F)
+                res = "sent" if out == "added" else "send_failed"
+                extra = f"Instantly: {out}"
+                s = job.get("summary") or {}
+                supa.update_job(job["id"], summary={**s, "preview": {**pv, "outreach": {**(pv.get("outreach") or {}), "instantly": out + " (CRM send)"}}})
+        except Exception as e:  # noqa: BLE001
+            res, extra = "send_failed", f"{type(e).__name__}: {e}"[:200]
+        today = dt.date.today().isoformat()
+        upd = {"outreach_status": {"sent": "sent", "needs_name": "needs_contact_info"}.get(res, "send_failed"),
+               "notes": ((c.get("notes") or "") + f"\n[{today}] CRM send -> {extra}").strip()}
+        if res == "sent":
+            upd.update({"last_contact": today, "touch_count": (c.get("touch_count") or 0) + 1, "campaign_active": True})
+            requests.post(f"{CRM_URL}/rest/v1/touches", json={"contact_id": c["id"], "date": today, "type": "email",
+                                                              "note": f"Added to Instantly campaign (Free Preview): {c['website_url']}"}, headers=h, timeout=30)
+        requests.patch(f"{CRM_URL}/rest/v1/contacts", params={"id": f"eq.{c['id']}"}, json=upd, headers=h, timeout=30)
+
+
 def push(job_id, pv, agent, F):
     """Returns {"instantly": status, "crm": status}; never raises."""
     job = supa.get_job(job_id)
@@ -103,7 +176,11 @@ def push(job_id, pv, agent, F):
     if not agent.get("email"):
         found = find_agent(job, F)
         if not found.get("email"):
-            return {"instantly": "held: no agent email found", "crm": "held: no agent email found"}
+            try:
+                crm = crm_hold(job, pv, agent, F, "web search found none")
+            except Exception as e:  # noqa: BLE001
+                crm = f"error: {type(e).__name__}: {e}"[:200]
+            return {"instantly": "held: no agent email found", "crm": crm}
         out["agent_found"] = {k: found[k] for k in ("name", "email", "source_url") if found.get(k)}
         agent = {**agent, **{k: v for k, v in found.items() if k != "source_url" and v}}
     if not agent.get("name"):

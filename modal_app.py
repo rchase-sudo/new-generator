@@ -51,6 +51,14 @@ def run_render(job_id: str):
     run(job_id, "render")
 
 
+@app.function(secrets=secrets, timeout=300, schedule=modal.Period(minutes=3))
+def poll_outreach():
+    """CRM send button -> Instantly: picks up contacts marked send_requested (see pipeline/outreach.py)."""
+    from pipeline import outreach
+
+    outreach.poll_requests()
+
+
 @app.function(secrets=secrets, timeout=60)
 @modal.asgi_app()
 def start():
