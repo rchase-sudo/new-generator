@@ -26,6 +26,9 @@ road_name        the road the site fronts
 utilities        short text on water/sewer as stated
 listing_id
 broker           listing broker / company
+agent_name       the listing agent's name if stated, else null
+agent_email      the listing agent's email if stated, else null
+agent_phone      the listing agent's phone if stated, else null
 summary          one sentence describing the property
 request          what the user asks to be designed, in their words (uses, sizes, counts, e.g. "retail strip and a
                  sit-down restaurant", "60-unit apartments", "tunnel car wash"); null if they did not ask for anything

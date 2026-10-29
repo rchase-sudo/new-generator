@@ -9,7 +9,7 @@ import modal
 
 image = (
     modal.Image.debian_slim(python_version="3.11")
-    .apt_install("libpango-1.0-0", "libpangoft2-1.0-0", "libharfbuzz0b", "libharfbuzz-subset0", "fontconfig")
+    .apt_install("libpango-1.0-0", "libpangoft2-1.0-0", "libharfbuzz0b", "libharfbuzz-subset0", "fontconfig", "fonts-inter")
     .pip_install(
         "requests==2.32.3", "shapely==2.0.6", "pyproj==3.7.0", "numpy==1.26.4", "pillow==10.4.0",
         "matplotlib==3.9.2", "scipy==1.13.1", "ezdxf==1.3.4", "fastapi[standard]==0.115.0", "weasyprint==70.0", "pydyf==0.13.0",

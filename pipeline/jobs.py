@@ -99,6 +99,9 @@ def _run(job_id, step):
             step_render_composite(job_id)
         elif step == "package":
             step_package(job_id)
+        elif step in ("preview", "preview_force"):
+            from . import preview
+            preview.step_preview(job_id, force=step == "preview_force")
         elif step == "design":
             step_design(job_id)
         else:
@@ -639,6 +642,9 @@ def step_package(job_id):
     outputs["package"] = {"package.pdf": key}
     summary = {**(supa.get_job(job_id).get("summary") or {}), "package_name": name}
     supa.update_job(job_id, outputs=outputs, summary=summary, package_status="completed", package_error=None)
+    if (job.get("options") or {}).get("lite"):   # lite jobs end in the warm-lead preview page (never fails the package)
+        from . import preview
+        preview.step_preview(job_id)
 
 
 def step_design(job_id):
