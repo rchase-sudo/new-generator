@@ -152,6 +152,13 @@ def step_preview(job_id, force=False):
                 key = slug + "/" + os.path.relpath(p, out).replace(os.sep, "/")
                 with open(p, "rb") as fh:
                     _put(key, fh.read(), "text/html" if f.endswith(".html") else "image/jpeg")
+        tok = os.environ.get("MODEL_REPO_TOKEN")
+        if tok:   # publish now instead of waiting for GitHub's unreliable schedule: start the model repo's sync workflow
+            try:
+                requests.post("https://api.github.com/repos/rchase-sudo/model/actions/workflows/sync_previews.yml/dispatches", json={"ref": "main"},
+                              headers={"Authorization": f"Bearer {tok}", "Accept": "application/vnd.github+json"}, timeout=30).raise_for_status()
+            except Exception as e:  # noqa: BLE001
+                print("sync dispatch failed:", repr(e))
         url = PAGES + slug + "/"
         show = SHOW + slug
         save(status="built", slug=slug, url=url, display=show, email_html=f'<a href="{html.escape(url)}">{show}</a>', reason=None,

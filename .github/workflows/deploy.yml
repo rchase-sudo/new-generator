@@ -21,6 +21,7 @@ jobs:
       GOOGLE_MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
       INSTANTLY_API_KEY: ${{ secrets.INSTANTLY_API_KEY }}
       CRM_SERVICE_ROLE_KEY: ${{ secrets.CRM_SERVICE_ROLE_KEY }}
+      MODEL_REPO_TOKEN: ${{ secrets.MODEL_REPO_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
@@ -47,7 +48,8 @@ jobs:
             ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
             GOOGLE_MAPS_API_KEY="$GOOGLE_MAPS_API_KEY" \
             INSTANTLY_API_KEY="$INSTANTLY_API_KEY" \
-            CRM_SERVICE_ROLE_KEY="$CRM_SERVICE_ROLE_KEY"
+            CRM_SERVICE_ROLE_KEY="$CRM_SERVICE_ROLE_KEY" \
+            MODEL_REPO_TOKEN="$MODEL_REPO_TOKEN"
 
       - name: Deploy
         run: modal deploy modal_app.py
@@ -56,7 +58,7 @@ jobs:
         run: |
           python - <<'PY'
           import os, requests
-          v = {"instantly": bool(os.environ.get("INSTANTLY_API_KEY")), "crm": bool(os.environ.get("CRM_SERVICE_ROLE_KEY"))}
+          v = {"instantly": bool(os.environ.get("INSTANTLY_API_KEY")), "crm": bool(os.environ.get("CRM_SERVICE_ROLE_KEY")), "model_repo": bool(os.environ.get("MODEL_REPO_TOKEN"))}
           h = {"apikey": os.environ["SUPABASE_SERVICE_ROLE_KEY"], "Authorization": "Bearer " + os.environ["SUPABASE_SERVICE_ROLE_KEY"], "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates"}
           requests.post(os.environ["SUPABASE_URL"] + "/rest/v1/pipeline_config", json={"key": "outreach_keys", "value": v}, headers=h, timeout=30).raise_for_status()
           PY
