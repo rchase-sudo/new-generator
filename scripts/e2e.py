@@ -41,6 +41,8 @@ if sys.argv[1].startswith("batch:"):   # batch:<listings file>[:lite] -- start a
     _, path, *flags = sys.argv[1].split(":")
     bid = api(action="start_batch", text=open(path).read(), lite="lite" in flags)["job_id"]
     print("batch", bid, flush=True)
+    if "nowait" in flags:
+        sys.exit(0)
     t0 = time.time()
     while time.time() - t0 < 3000:
         time.sleep(20)
