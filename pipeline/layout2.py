@@ -990,18 +990,23 @@ def _plan_stem(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, parking_setbacks_ft, 
     fr = Frame(parcel_sp, edges, k_ft, main=main)
     psb = {k: float((parking_setbacks_ft or {}).get(k, DEFAULT_PARK_SB[k])) for k in ("front", "side", "rear")}
     parts = [w["geom"] for w in wet] + [f["geom"] for f in fl if f.get("sfha") == "T"]
-    C = unary_union(parts) if parts else Polygon()
+    C = unary_union(parts) if parts else Polygon()        # wetland + flood: nothing is built here, but the ACCESS ROAD may cross it when it has to
+    Cw = fr.fwd(C.intersection(parcel_sp.buffer(50 / k_ft))) if not C.is_empty else Polygon()
+    Ch = Polygon()                                         # hard constraints for the road: kept buildings, steep ground
     if keep_bldgs:
-        C = unary_union([C, *[g.buffer(KEEP_CLEAR_FT / k_ft) for g in keep_bldgs]])
+        Ch = unary_union([Ch, *[g.buffer(KEEP_CLEAR_FT / k_ft) for g in keep_bldgs]])
+        C = unary_union([C, Ch])
     if steep:
+        Ch = unary_union([Ch, *steep])
         C = unary_union([C, *steep])
     C = fr.fwd(C.intersection(parcel_sp.buffer(50 / k_ft))) if not C.is_empty else Polygon()
+    Ch = fr.fwd(Ch.intersection(parcel_sp.buffer(50 / k_ft))) if not Ch.is_empty else Polygon()
     RPl = fr.fwd(unary_union(list(reuse_pave)).intersection(parcel_sp)) if reuse_pave else None
     pz = fr.fwd(envelope(parcel_sp, edges, psb, k_ft)).difference(C).buffer(0)
     if RPl is not None and not RPl.is_empty:
         pz = pz.difference(RPl.buffer(1.0)).buffer(0)
     # where the access road may run: inside the side / rear pavement setbacks (front setback is crossable), out of constraints
-    allowed = fr.fwd(envelope(parcel_sp, edges, {"front": 0, "side": psb["side"], "rear": psb["rear"]}, k_ft)).difference(C).buffer(0)
+    allowed = fr.fwd(envelope(parcel_sp, edges, {"front": 0, "side": psb["side"], "rear": psb["rear"]}, k_ft)).difference(Ch).buffer(0)
     corr = allowed.buffer(-AIS / 2)
     if corr.is_empty:
         print('stem: no corridor')
@@ -1029,6 +1034,8 @@ def _plan_stem(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, parking_setbacks_ft, 
         mult = 1.0 + (_topo.sample(dem, wx, wy, "slope") / 8.0) ** 2
     if RPl is not None and not RPl.is_empty:      # existing drives / lots: the access road follows them where it can
         mult = mult * np.where(shapely.contains_xy(RPl, gx, gy), 0.3, 1.0)
+    if not Cw.is_empty:                           # wetland / flood crossings are allowed but cost a lot, so the road crosses only where it must
+        mult = mult * np.where(shapely.contains_xy(Cw, gx, gy), 8.0, 1.0)
     ctry = {}
     for pod in pods[:3]:
         tgt = shapely.contains_xy(pod.buffer(-10) if pod.buffer(-10).area > 8000 else pod, gx, gy) & ok
@@ -1131,8 +1138,9 @@ def _plan_stem(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, parking_setbacks_ft, 
     flare = box(sx - AIS / 2 - r, y_r, sx + AIS / 2 + r, y_r + r)
     flare = flare.difference(Point(sx - AIS / 2 - r, y_r + r).buffer(r, 48)).difference(Point(sx + AIS / 2 + r, y_r + r).buffer(r, 48))
     stem_poly = stem_poly.union(flare).intersection(parcel_poly_ext(fr.fwd(parcel_sp), y_r)).buffer(0)
+    wet_ft = line.intersection(Cw).length if not Cw.is_empty else 0.0
     return {"entry": fr.inv(b_pt).coords[0], "angle": th - math.pi / 2 + fr.a,
-            "poly_sp": fr.inv(stem_poly), "pod_sp": fr.inv(pod.buffer(rho + 2)), "length_ft": line.length}
+            "poly_sp": fr.inv(stem_poly), "pod_sp": fr.inv(pod.buffer(rho + 2)), "length_ft": line.length, "wet_cross_ft": wet_ft}
 
 
 def parcel_poly_ext(P, y_r):
@@ -1181,6 +1189,8 @@ def generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, pa
             print("access-road layout failed:", e)
     if alt and (front is None or alt["metrics"]["building_sf"] >= 1.15 * m["building_sf"]):
         alt["metrics"]["warnings"].insert(0, f"Access road of about {stem['length_ft']:,.0f} ft from the frontage to the developable land behind it")
+        if stem.get("wet_cross_ft", 0) > 5:
+            alt["metrics"]["warnings"].insert(1, f"The access road crosses about {stem['wet_cross_ft']:,.0f} ft of wetland / flood area (permitting required)")
         return alt
     if front:
         return front
