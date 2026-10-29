@@ -483,6 +483,19 @@ def step_layout(job_id):
           [{"id": p["id"], "action": "demo", "geom": p["geom"], "sf": p["area_sf"], "label": "Parking" if p["kind"] == "parking" else "Drive", "kind": "pavement"} for p in pave_rm]
     if dr_note:
         res["metrics"].setdefault("warnings", []).append(dr_note)
+    # The project must connect to the SAME road as the listing's address, whichever frontage the layout was built on
+    try:
+        if not rules.get("drive_road"):
+            from .parcel import road_tokens
+            from .layout2 import add_road_link
+            want = {t for t in road_tokens((job.get("listing") or {}).get("street_address")) if not t.isdigit()}
+            addr_rd = next((r["key"] for r in (summary.get("front_roads") or []) if want & road_tokens(r.get("name"))), None)
+            if addr_rd and addr_rd != res["metrics"].get("drive_road"):
+                note = add_road_link(res, ctx["parcel_sp"], ctx["k"], ctx["rds"] if isinstance(ctx["rds"], list) else [], addr_rd)
+                if note:
+                    res["metrics"].setdefault("warnings", []).append(note)
+    except Exception as e_l:  # noqa: BLE001
+        res["metrics"].setdefault("warnings", []).append(f"Link to the address road failed: {type(e_l).__name__}: {e_l}"[:200])
     summary["drive_choice"] = {"auto": auto_dr_first, "used": res["metrics"].get("drive_road"), "fallback": dr_note,
                                "roads": [(r.get("key"), r.get("class"), r.get("frontage_ft")) for r in (summary.get("front_roads") or [])]}
     res["metrics"]["existing"] = [{"id": e["id"], "action": e["action"], "sf": round(e["sf"], -1), "label": e["label"], **({"kind": "pavement"} if e.get("kind") == "pavement" else {})} for e in ex if e.get("action") != "demo"]

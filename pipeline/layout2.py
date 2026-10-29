@@ -1195,3 +1195,50 @@ def generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, pa
     if front:
         return front
     raise err
+
+
+def add_road_link(res, parcel_sp, k_ft, rds, target_key, width_ft=24.0):
+    """The site is laid out on whichever frontage fits, but the listing's own road must be where the project connects. Add a two-way drive from the
+    laid-out pavement to the frontage on `target_key` (kept clear of the parcel corners), never through a building. Returns a note or None."""
+    from shapely.ops import nearest_points, substring
+    named = [r for r in rds if r["class"] != "service"]
+    keys = [road_key(r) for r in named]
+    edges = classify_edges(parcel_sp, [r["centerline"] for r in named], k_ft, keys)
+    on = [e for e in edges if e["kind"] == "front" and e.get("road") == target_key]
+    sp = res["sp"]
+    pave = sp.get("pave")
+    if not on or pave is None or pave.is_empty:
+        return None
+    best = None
+    bl = unary_union([b for b in (sp.get("bldgs") or []) if b is not None])
+    for e in sorted(on, key=lambda e: -e["len_ft"]):
+        line, L = e["line"], e["line"].length
+        clear = min(30.0 / k_ft, L * 0.3)
+        seg = substring(line, clear, L - clear) if L - 2 * clear > L * 0.05 else line
+        a_, b_ = nearest_points(pave, seg)
+        dx, dy = b_.x - a_.x, b_.y - a_.y
+        d = math.hypot(dx, dy)
+        if d * k_ft < 1:
+            return f"The drive already reaches {target_key}"
+        n = e["normal"]
+        c_ = Point(b_.x + n[0] * 12.0 / k_ft, b_.y + n[1] * 12.0 / k_ft)     # out to the road edge
+        link = LineString([a_, b_, c_]).buffer(width_ft / 2 / k_ft, cap_style=2, join_style=2)
+        link = link.intersection(parcel_sp.buffer(14 / k_ft)).buffer(0)
+        if not bl.is_empty and link.intersects(bl.buffer(2.0 / k_ft)):
+            continue
+        if best is None or d < best[0]:
+            best = (d, link)
+    if best is None:
+        return None
+    link = best[1]
+    sp["pave"] = unary_union([pave, link]).buffer(0)
+    sp["drive"] = unary_union([sp["drive"], link]) if sp.get("drive") is not None else link
+    keep = [g for g in (sp.get("stalls") or []) if not g.intersects(link)]
+    dropped = len(sp.get("stalls") or []) - len(keep)
+    sp["stalls"] = keep
+    m = res["metrics"]
+    m["drive_road"] = target_key
+    m["impervious_sf"] = round(m.get("impervious_sf", 0) + link.area * k_ft * k_ft, -1)
+    if dropped:
+        m["stalls"] = max(0, int(m.get("stalls", 0)) - dropped)
+    return f"Drive connects to {target_key} (about {best[0] * k_ft:,.0f} ft of new paving)"
