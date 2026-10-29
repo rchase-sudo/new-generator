@@ -616,7 +616,11 @@ def step_render_composite(job_id):
         if r.status_code >= 300:
             raise RuntimeError(f"Nano Banana hand-off failed: {r.status_code} {r.text[:300]}")
         return
-    if not (os.environ.get("RENDER_LOT_ONLY") or (job.get("zoning") or {}).get("render_lot_only")):
+    # Nothing proposed may appear outside the property line: automatic (lite) renders keep the photoreal pass inside the lot only; the surroundings
+    # come from the 3D model's real aerial. (render_lot_only=False in zoning turns this off for a job.)
+    lot_only = bool(os.environ.get("RENDER_LOT_ONLY") or (job.get("zoning") or {}).get("render_lot_only")
+                    or ((job.get("options") or {}).get("auto") and (job.get("zoning") or {}).get("render_lot_only") is not False))
+    if not lot_only:
         # the whole frame is the photoreal pass (like the Pocahontas render): surroundings included, no seam with the 3D model texture
         path = os.path.join(tempfile.mkdtemp(), "render.jpg")
         raw.save(path, quality=94)
