@@ -74,12 +74,38 @@ def find_name(agent, F):
     return out.get("name") if out.get("confidence") == "high" and out.get("name") else None
 
 
+def find_agent(job, F):
+    """The pasted listing has no agent email: search the web for the listing agent. A result is accepted only when the email address itself
+    appears on a page (brokerage staff page, listing page, profile), never a guessed pattern."""
+    from .claude import ask_json
+    L = job.get("listing") or {}
+    try:
+        out = ask_json(
+            "You find the listing agent for a commercial real estate listing and their business email. Search the web (LoopNet / CREXi / brokerage "
+            "websites / the broker's staff page). Reply ONLY with JSON {\"name\": string or null, \"email\": string or null, \"company\": string or null, "
+            "\"phone\": string or null, \"source_url\": string or null, \"confidence\": \"high\"|\"low\"}. Say high ONLY when the email address is written "
+            "on a page you saw and that page ties this person to this listing or to this brokerage. Never guess an email from a name pattern; if you "
+            "cannot see the email on a page, return email null.",
+            f"Listing: {F.get('address')}, {F.get('city')}, {F.get('state')} {F.get('zip') or ''}\nAcres: {F.get('acres')}  Asking: {F.get('asking_price')}\n"
+            f"Listing brokerage: {L.get('broker') or 'unknown'}\nLoopNet listing ID: {L.get('listing_id') or 'unknown'}\nListing summary: {F.get('listing_summary')}",
+            max_tokens=2500, web_search=5, label="Find listing agent", model="claude-sonnet-5-5")
+    except Exception:  # noqa: BLE001
+        return {}
+    if out.get("confidence") == "high" and out.get("email") and "@" in str(out["email"]):
+        return {k: out[k] for k in ("name", "email", "company", "phone") if out.get(k)} | {"source_url": out.get("source_url")}
+    return {}
+
+
 def push(job_id, pv, agent, F):
     """Returns {"instantly": status, "crm": status}; never raises."""
     job = supa.get_job(job_id)
     out = {}
     if not agent.get("email"):
-        return {"instantly": "skipped: no agent email in the listing", "crm": "skipped: no agent email in the listing"}
+        found = find_agent(job, F)
+        if not found.get("email"):
+            return {"instantly": "held: no agent email found", "crm": "held: no agent email found"}
+        out["agent_found"] = {k: found[k] for k in ("name", "email", "source_url") if found.get(k)}
+        agent = {**agent, **{k: v for k, v in found.items() if k != "source_url" and v}}
     if not agent.get("name"):
         agent = {**agent, "name": find_name(agent, F)}
         if not agent["name"]:

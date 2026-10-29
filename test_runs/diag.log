@@ -1,0 +1,9 @@
+buildings: 107
+osm pavement: [('drive', 1845), ('drive', 13708), ('drive', 26093), ('drive', 2348), ('drive', 32138), ('drive', 10610), ('drive', 3615), ('drive', 15016), ('drive', 16308), ('drive', 22876), ('drive', 24268), ('drive', 4775), ('drive', 5305), ('drive', 9929), ('drive', 15708), ('drive', 5134), ('drive', 13353), ('drive', 8856), ('drive', 8925), ('drive', 9390), ('drive', 3031), ('drive', 2148), ('drive', 834), ('drive', 1543), ('drive', 5070), ('drive', 4175), ('drive', 2507)]
+Traceback (most recent call last):
+  File "/home/runner/work/new-generator/new-generator/scripts/diag.py", line 34, in <module>
+    _det = _pv.detect(_a, ctx["parcel_sp"], ctx["k"], ctx.get("bld"), osm=pv if isinstance(pv, list) else [])
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/work/new-generator/new-generator/pipeline/pavement.py", line 36, in detect
+    from scipy import ndimage as ndi
+ModuleNotFoundError: No module named 'scipy'

@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       job_ids: {description: "Job id(s), comma separated", required: true}
+      extra: {description: "Extra flag: --find-agent to only look the agent up", required: false, default: ""}
       force: {description: "Build even when residual land value is under the asking price (true/false)", required: false, default: "false"}
 
 jobs:
@@ -20,4 +21,4 @@ jobs:
         with: {python-version: "3.11"}
       - run: sudo apt-get update -qq && sudo apt-get install -y -qq fonts-inter fonts-liberation fonts-crosextra-carlito || true
       - run: pip install -r requirements.txt
-      - run: python scripts/preview.py "${{ inputs.job_ids }}" $([ "${{ inputs.force }}" = "true" ] && echo --force)
+      - run: python scripts/preview.py "${{ inputs.job_ids }}" $([ "${{ inputs.force }}" = "true" ] && echo --force) ${{ inputs.extra }}
