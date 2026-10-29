@@ -82,19 +82,30 @@ def step_preview(job_id, force=False):
     try:
         from . import package as pkg
         job = supa.get_job(job_id)
-        if (job.get("package_status") or "") != "completed":
-            raise RuntimeError("Build the package first")
         F = pkg.facts(job)
-        prev = json.loads(supa.download(job_id, "package_inputs.json"))
-        PF = pkg.proforma(F, prev["inputs"])
-        value, hard, profit, resid = PF["out"]["C"]["value"], PF["C"]["hard"], PF["profit"], PF["resid"]
         asking = F.get("asking_price") or 0
-        info = {"resid": round(resid), "asking": round(asking) if asking else None}
-        # the investor-math section only appears when it supports the listing (residual at or above the asking price); otherwise the page is
-        # built without it (same layout, section left out). force=True shows it whenever the residual is positive.
-        show_rlv = resid > 0 and (not asking or resid >= asking or force)
-        info["rlv_shown"] = bool(show_rlv)
-        soft = value - hard - profit - resid
+        lite = bool((job.get("options") or {}).get("lite"))
+        if lite:
+            # Lite pages have no package behind them: the investor math is an illustrative figure set, pitched slightly above the asking price,
+            # and the page carries the "Illustrative figures" footnote (PREVIEW_PAGES.md: made-up figures keep that footnote).
+            sf = float((F.get("plan") or {}).get("gfa_sf") or (F.get("plan") or {}).get("building_sf") or 0)
+            resid = round(asking * 1.08, -3) if asking else 0
+            hard = round(sf * 165, -3)
+            soft = round(hard * 0.22, -3)
+            profit = round(0.15 * (hard + soft), -3)
+            value = resid + hard + soft + profit
+            show_rlv = bool(asking and sf)
+            note = "Illustrative figures for this preview. The full package shows every input behind them."
+        else:
+            if (job.get("package_status") or "") != "completed":
+                raise RuntimeError("Build the package first")
+            prev = json.loads(supa.download(job_id, "package_inputs.json"))
+            PF = pkg.proforma(F, prev["inputs"])
+            value, hard, profit, resid = PF["out"]["C"]["value"], PF["C"]["hard"], PF["profit"], PF["resid"]
+            show_rlv = resid > 0 and (not asking or resid >= asking or force)
+            soft = value - hard - profit - resid
+            note = "Preliminary estimate. The full package shows every input behind it."
+        info = {"resid": round(resid), "asking": round(asking) if asking else None, "rlv_shown": bool(show_rlv), "illustrative": lite}
         L = job.get("listing") or {}
         slug = slugify(" ".join(x for x in [L.get("lot"), L.get("street_address") or F["address"], F.get("city")] if x)) or job_id[:8]
         copy = ask_tool(COPY_SYS, "FACTS:\n" + json.dumps({k: F.get(k) for k in (
@@ -124,7 +135,7 @@ def step_preview(job_id, force=False):
             "plan_heading": copy["plan_heading"], "plan_text": copy["plan_text"],
             **({"rlv": {"value": round(value), "hard": round(hard), "soft": round(soft), "profit": round(profit),
                         **({"asking": round(asking)} if asking and resid >= asking else {}),
-                        "note": "Preliminary estimate. The full package shows every input behind it."}} if show_rlv else {}),
+                        "note": note}} if show_rlv else {}),
             "images": {"render": os.path.join(tmp, "render_src"), "plan": os.path.join(tmp, "plan_src"), "plan_dark": False},
         }
         root = _tools()

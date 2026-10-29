@@ -110,8 +110,11 @@ def advance(job_id, step):
         supa.update_job(job_id, status="layout_approved", step="deliverables", progress="Layout approved", render_status="queued", render_error=None)
         kick(job_id, "render")
     elif st == "layout_approved" and step == "render_composite" and job.get("render_status") == "completed" and not job.get("package_status"):
-        supa.update_job(job_id, package_status="queued", package_error=None)
-        kick(job_id, "package")
+        if opts.get("lite"):    # lite jobs skip the due diligence package: the render and plan go straight into the preview page
+            kick(job_id, "preview")
+        else:
+            supa.update_job(job_id, package_status="queued", package_error=None)
+            kick(job_id, "package")
 
 
 def retry_layout(job_id, err=None):
