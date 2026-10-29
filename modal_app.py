@@ -57,6 +57,11 @@ def poll_outreach():
     from pipeline import outreach
 
     outreach.poll_requests()
+    from pipeline import auto
+    try:
+        auto.refresh_batches()
+    except Exception as e:  # noqa: BLE001
+        print("refresh_batches failed:", repr(e))
 
 
 @app.function(secrets=secrets, timeout=60)

@@ -158,3 +158,29 @@ def retry_layout(job_id, err=None):
     except Exception as e:  # noqa: BLE001
         supa.update_job(job_id, status="error", step="layout", error=f"{type(e).__name__}: {e}"[:500])
         return retry_layout(job_id, e)
+
+
+def refresh_batches():
+    """Keep each batch row's progress text current (it was written once, at the split, and said "N listings running" forever)."""
+    import requests
+    r = requests.get(f"{supa.URL}/rest/v1/pipeline_jobs", params={"options->>batch_parent": "eq.true", "status": "eq.batch_running", "select": "id"},
+                     headers=supa._h(), timeout=30)
+    r.raise_for_status()
+    for p in r.json():
+        kr = requests.get(f"{supa.URL}/rest/v1/pipeline_jobs", params={"options->>batch_id": f"eq.{p['id']}", "id": f"neq.{p['id']}",
+                          "select": "id,status,progress,package_status,options,preview_status:summary->preview->>status"}, headers=supa._h(), timeout=30)
+        kr.raise_for_status()
+        kids = kr.json()
+        if not kids:
+            continue
+        done = bad = 0
+        for k in kids:
+            lite = (k.get("options") or {}).get("lite")
+            if (lite and k.get("preview_status") == "built") or k.get("package_status") == "completed":
+                done += 1
+            elif k.get("status") == "error" or k.get("preview_status") == "error" or k.get("package_status") == "failed" \
+                    or str(k.get("progress") or "").startswith("Needs parcel confirmation"):
+                bad += 1
+        run = len(kids) - done - bad
+        txt = f"{done} of {len(kids)} done" + (f", {bad} need attention" if bad else "") + (f", {run} running" if run else "")
+        supa.update_job(p["id"], progress=txt, **({"status": "batch_done"} if not run else {}))
