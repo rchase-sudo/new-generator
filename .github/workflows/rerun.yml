@@ -1,0 +1,14 @@
+name: Rerun a job step
+on:
+  workflow_dispatch:
+    inputs:
+      job_id: {required: true}
+      step: {default: "layout"}
+jobs:
+  rerun:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          curl -sS -X POST "https://mmaqwemqbxwngqxtnsug.supabase.co/functions/v1/pipeline" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" -H "Content-Type: application/json" \
+            -d '{"action":"rerun","job_id":"${{ inputs.job_id }}","step":"${{ inputs.step }}"}'
