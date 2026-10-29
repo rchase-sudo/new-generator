@@ -22,6 +22,7 @@ def to_instantly(job, pv, agent, F):
     if not key:
         return "skipped: no INSTANTLY_API_KEY"
     first, last = _names(agent.get("name"))
+    first = first or "there"       # listings that give only an email: the emails then open with "Hi there,"
     town = F.get("city") or ""
     body = {
         "campaign": CAMPAIGN_ID, "email": agent["email"], "first_name": first, "last_name": last,
