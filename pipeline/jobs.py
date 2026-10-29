@@ -534,7 +534,10 @@ def step_render(job_id):
     import requests
     from . import render3d
     job = supa.get_job(job_id)
-    supa.update_job(job_id, render_status="modeling", render_error=None)
+    z0 = dict(job.get("zoning") or {})
+    if z0.get("render_notes") and "The last attempt added extra parking" in z0["render_notes"]:
+        z0["render_notes"] = z0["render_notes"].split(" The last attempt added extra parking")[0].strip() or None
+    supa.update_job(job_id, render_status="modeling", render_error=None, options={**(job.get("options") or {}), "render_retries": 0}, zoning=z0)
     ctx = _load_ctx(job_id)
     lay = pickle.loads(supa.download(job_id, "layout.pkl"))
     k, epsg = ctx["k"], ctx["epsg"]
@@ -565,6 +568,14 @@ def step_render(job_id):
         raise RuntimeError(f"Nano Banana hand-off failed: {r.status_code} {r.text[:300]}")
 
 
+def _jpeg(im, w=1200):
+    b = io.BytesIO()
+    im = im.copy()
+    im.thumbnail((w, w))
+    im.save(b, "JPEG", quality=85)
+    return b.getvalue()
+
+
 def step_render_composite(job_id):
     """Keep the Nano Banana pass inside the lot only: its output is used inside the property (and the building
     volumes standing on it); everything outside comes from the 3D model render, i.e. the real surroundings."""
@@ -577,6 +588,34 @@ def step_render_composite(job_id):
     if not raw_name:
         raise RuntimeError("Nano Banana output missing")
     raw = Image.open(io.BytesIO(supa.download(job_id, raw_name))).convert("RGB")
+    # The photoreal pass sometimes invents extra parking. Compare it with the 3D model and, if it did, run the pass again (max 2 retries)
+    # with a note naming the problem; after that the last result is used.
+    retries = int((job.get("options") or {}).get("render_retries") or 0)
+    try:
+        from .claude import ask_images
+        mdl = supa.download(job_id, "model_front.png")
+        small = lambda im: _jpeg(im)  # noqa: E731
+        txt = ask_images(
+            "You compare a 3D model render of a proposed site with a photorealistic version of it. Reply with JSON only.",
+            "Image 1 is the 3D model. Image 2 is the photoreal version of the same scene. Count the parking stalls / parking rows / paved lots inside the proposed "
+            "development in each. Did image 2 add parking, paving or driveways that image 1 does not have (e.g. an extra lot, extra stall rows, a second driveway)? "
+            'Reply {"model_parking":"<short>","photo_parking":"<short>","extra_parking":true|false}',
+            [("image/jpeg", small(Image.open(io.BytesIO(mdl)).convert("RGB"))), ("image/jpeg", small(raw))], label="Render parking check", model="claude-haiku-5-5")
+        verdict = json.loads(txt[txt.index("{"):txt.rindex("}") + 1])
+    except Exception:  # noqa: BLE001  (the check never blocks a render)
+        verdict = {}
+    if verdict.get("extra_parking") is True and retries < 2:
+        import requests
+        opts = {**(job.get("options") or {}), "render_retries": retries + 1}
+        z = dict(job.get("zoning") or {})
+        z["render_notes"] = ((z.get("render_notes") or "") + f" The last attempt added extra parking ({verdict.get('photo_parking')}). The model has only: "
+                             f"{verdict.get('model_parking')}. Draw exactly that parking and no other paving; leave every other area as lawn or woods.").strip()[-1400:]
+        supa.update_job(job_id, options=opts, zoning=z, render_status="nanobanana", render_error=None)
+        r = requests.post(f"{supa.URL}/functions/v1/pipeline-banana", json={"job_id": job_id},
+                          headers=supa._h({"Content-Type": "application/json"}), timeout=60)
+        if r.status_code >= 300:
+            raise RuntimeError(f"Nano Banana hand-off failed: {r.status_code} {r.text[:300]}")
+        return
     if not (os.environ.get("RENDER_LOT_ONLY") or (job.get("zoning") or {}).get("render_lot_only")):
         # the whole frame is the photoreal pass (like the Pocahontas render): surroundings included, no seam with the 3D model texture
         path = os.path.join(tempfile.mkdtemp(), "render.jpg")

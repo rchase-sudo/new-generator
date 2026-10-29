@@ -101,6 +101,13 @@ def advance(job_id, step):
             supa.update_job(job_id, progress="Needs parcel confirmation: the listing has no street number or parcel ID")
             return
         best = max(range(len(cands)), key=lambda i: (cands[i].get("score") or 0, -i))
+        c0 = cands[best]
+        pool = {(p_.get("apn"), p_.get("acres")): p_.get("dist_m") for p_ in ((job.get("debug") or {}).get("pool") or [])}
+        dist = pool.get((c0.get("apn"), c0.get("acres")))
+        if not c0.get("apn_match") and not c0.get("address_match") and not c0.get("assemblage") and dist is not None and dist > 1500:
+            # the nearest parcel is kilometres from the geocoded listing (e.g. a brand-new lot missing from the parcel data): never build on it unattended
+            supa.update_job(job_id, progress=f"Needs parcel confirmation: the closest parcel in the data is {dist/1000:.1f} km from the listing")
+            return
         supa.update_job(job_id, parcel=cands[best], status="parcel_approved", step="ec", error=None, progress="Parcel confirmed")
         kick(job_id, "ec")
     elif st == "awaiting_zoning":

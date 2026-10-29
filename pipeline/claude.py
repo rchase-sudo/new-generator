@@ -115,3 +115,17 @@ def ask_tool(system, user, name, description, max_tokens=8000, timeout=300, prop
                 raise RuntimeError(f"{name}: output hit max_tokens usage={js.get('usage')} blocks={kinds} tail={tail}")
             return b.get("input") or {}
     raise RuntimeError(f"{name}: no tool call (stop_reason={js.get('stop_reason')}, error={js.get('error')})")
+
+
+def ask_images(system, user, images, max_tokens=600, timeout=120, label="vision", model=None):
+    """One Messages call with images (list of (media_type, bytes)); returns the text."""
+    import base64
+    content = [{"type": "image", "source": {"type": "base64", "media_type": mt, "data": base64.b64encode(b).decode()}} for mt, b in images]
+    content.append({"type": "text", "text": user})
+    r = post("https://api.anthropic.com/v1/messages",
+             headers={"x-api-key": os.environ["ANTHROPIC_API_KEY"], "anthropic-version": "2023-06-01", "content-type": "application/json"},
+             json={"model": model or MODEL, "max_tokens": max_tokens, "system": system, "messages": [{"role": "user", "content": content}]},
+             timeout=timeout, tries=2)
+    js = r.json()
+    record(js, label)
+    return "".join(b.get("text", "") for b in js.get("content", []) if b.get("type") == "text")
