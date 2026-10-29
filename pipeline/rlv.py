@@ -26,7 +26,7 @@ def check(job_id, job, metrics, log=print):
         pass
     if I is None:
         log("residual land value: researching rents, costs and cap rate")
-        I = pkg.research_inputs(F)
+        I = pkg.research_inputs(F, lite=bool((job.get("options") or {}).get("lite")))
         import os, tempfile
         d = tempfile.mkdtemp()
         p = os.path.join(d, "package_inputs.json")
@@ -113,7 +113,7 @@ def _size_once(job_id, job, prog, res, regenerate, log=print, base=None):
             pass
     if I0 is None:
         log("residual land value: researching rents, costs and cap rate")
-        I0 = pkg.research_inputs(F0)
+        I0 = pkg.research_inputs(F0, lite=bool((job.get("options") or {}).get("lite")))
         try:    # keep the research so a rerun and the due diligence package reuse it
             import os, tempfile
             d_ = tempfile.mkdtemp()

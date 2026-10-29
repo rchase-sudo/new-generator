@@ -422,7 +422,7 @@ def step_layout(job_id):
             raise RuntimeError(f"{e} Only {fr.get(dr, 0):,} ft of this parcel fronts {dr}, too little to organize the site around. "
                                f"Pick Automatic or {best} ({fr[best]:,} ft of frontage) for the driveway.") from None
         raise
-    if True:     # always: land cost is part of every layout's economics; the program is sized to cover it (and any minimum set on it)
+    if prog.get("min_rlv") not in (None, ""):     # only when a minimum residual land value is set: sizing needs the researched costs (a web-search pass)
         try:
             from . import rlv
             supa.update_job(job_id, progress="Checking the residual land value")
