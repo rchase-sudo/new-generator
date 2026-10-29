@@ -23,6 +23,7 @@ REGRID = "https://app.regrid.com/api/v2"
 STATEWIDE = {
     "NH": ["https://nhgeodata.unh.edu/nhgeodata/rest/services/CAD/ParcelMosaic/MapServer",
            "https://granit24a.sr.unh.edu/hosting/rest/services/Hosted/CAD_ParcelMosaic/FeatureServer"],
+    "ME": ["https://services1.arcgis.com/RbMX0mRVOFNTdLzd/ArcGIS/rest/services/Parcels/FeatureServer/38"],   # Maine GeoLibrary parcels (geometry + Parcel_ID only)
     "VA": ["https://vginmaps.vdem.virginia.gov/arcgis/rest/services/VA_Base_Layers/VA_Parcels/FeatureServer/0"],
 }
 
