@@ -64,7 +64,7 @@ def find_name(agent, F):
     """The listing gave only an email: look the agent up on the web. Accept a name only when a page ties it to this email or this listing."""
     from .claude import ask_json
     try:
-        out = ask_json(
+        out, _ = ask_json(
             "Find the full name of a commercial real estate listing agent. Reply ONLY with JSON {\"name\": string or null, \"confidence\": \"high\"|\"low\"}. "
             "Say high only when a page ties the name to this exact email address or to this exact listing; otherwise name null.",
             f"Email: {agent.get('email')}\nBrokerage: {agent.get('company') or 'unknown'}\nListing: {F.get('address')}, {F.get('city')}, {F.get('state')}",
@@ -80,7 +80,7 @@ def find_agent(job, F):
     from .claude import ask_json
     L = job.get("listing") or {}
     try:
-        out = ask_json(
+        out, _ = ask_json(
             "You find the listing agent for a commercial real estate listing and their business email. Search the web (LoopNet / CREXi / brokerage "
             "websites / the broker's staff page). Reply ONLY with JSON {\"name\": string or null, \"email\": string or null, \"company\": string or null, "
             "\"phone\": string or null, \"source_url\": string or null, \"confidence\": \"high\"|\"low\"}. Say high ONLY when the email address is written "
