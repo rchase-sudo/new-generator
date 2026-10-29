@@ -115,23 +115,23 @@ def advance(job_id, step):
 
 
 def retry_layout(job_id, err=None):
-    """An unattended job whose layout fails because the researched program does not fit: shrink the program (60%, then 35% and two buildings)
+    """An unattended job whose layout fails because the researched program does not fit: shrink the program (to 60%, once)
     and lay it out again, instead of stopping at an error nobody is there to fix. Returns True once a layout exists."""
     job = supa.get_job(job_id)
     opts = job.get("options") or {}
     n = int(opts.get("layout_retries") or 0)
-    if not opts.get("auto") or n >= 2:
+    if not opts.get("auto") or n >= 1:
         return False
     prog = job.get("program") or {}
     blds = prog.get("buildings") or []
     if not blds:
         return False
-    f = 0.6 if n == 0 else 0.35
-    new_b = [{**b, "footprint_sf": max(1500.0, round(float(b.get("footprint_sf") or 5000) * f, -2))} for b in (blds if n == 0 else blds[:2])]
+    f = 0.6
+    new_b = [{**b, "footprint_sf": max(1500.0, round(float(b.get("footprint_sf") or 5000) * f, -2))} for b in blds]
     par = dict(prog.get("parking") or {})
     if par.get("required"):
         par["required"] = max(4, round(float(par["required"]) * f))
-    note = f"Program reduced to {int(f * 100)}% so it fits the site" if n == 0 else "Program reduced to the two main buildings so it fits the site"
+    note = f"Program reduced to {int(f * 100)}% so it fits the site"
     supa.update_job(job_id, program={**prog, "buildings": new_b, "parking": par, "auto_note": note}, options={**opts, "layout_retries": n + 1},
                     status="zoning_approved", error=None, progress=note)
     from . import jobs
