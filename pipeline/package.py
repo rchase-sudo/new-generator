@@ -161,7 +161,26 @@ where research is missing use mid-range (typical, standard-quality) regional ben
 Use mid-range costs (standard finishes) and market rents / sale prices (local median comps): no low-end rents, no high-end costs."""
 
 
-def research_inputs(F):
+LITE_SYS = """You turn a property and its approved concept plan into proforma inputs for a FORMA due diligence package WITHOUT web research.
+Use mid-range regional benchmarks for a standard-quality speculative project in this market (state and county are given), scale every cost to the
+plan quantities (impervious SF, building SF, stalls, development acres), and use realistic market rents (high end of the local range for new
+construction) and cap rates for the use. Building names must match the program exactly. Where a figure cannot be known without research
+(demographics, traffic counts, exact fee schedules), set demographic numbers to null, write the traffic field as what to pull and from where,
+and give a typical fee amount labelled as an estimate. Use real agency TYPES for permits (e.g. town planning board, state DOT district office,
+state environmental agency) and typical timelines; do not invent named people, ordinance numbers or URLs. Leave sources empty."""
+
+
+def research_inputs(F, lite=False):
+    if lite:   # no web search: one structured call from benchmarks (about a tenth of the full research cost)
+        user = (f"Property and approved concept plan:\n{json.dumps(F, default=str)}\n\n"
+                f"Call submit_inputs with an object in exactly this shape (comments describe the fields):\n{INPUTS_SCHEMA}\n"
+                "If the asking price is null, estimate a land price from typical land values for this county and say so in land.basis.")
+        sys_ = LITE_SYS + "\nSELF-STORAGE:" + RESEARCH_SYS.split("SELF-STORAGE:", 1)[1]
+        data = claude.ask_tool(sys_, user, "submit_inputs", "Submit the proforma inputs.", max_tokens=12000, timeout=600,
+                               label="Package: cost & rent inputs (lite)")
+        data["sources"] = []
+        data["research_notes"] = ""
+        return data
     notes, src = claude.ask(RESEARCH_SYS, f"Property and approved concept plan:\n{json.dumps(F, default=str)}",
                             max_tokens=12000, web_search=12, timeout=900, label="Package: research")
     user = (f"Property and approved concept plan:\n{json.dumps(F, default=str)}\n\nRESEARCH NOTES:\n{notes}\n\n"

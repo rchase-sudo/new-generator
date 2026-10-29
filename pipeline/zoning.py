@@ -84,7 +84,7 @@ def _cache_put(key, rules):
                   headers=supa._h({"Content-Type": "application/json", "Prefer": "resolution=merge-duplicates"}), timeout=30)
 
 
-def research(listing, parcel, summary):
+def research(listing, parcel, summary, lite=False):
     """Zoning rules for the parcel's district. Uses the parcel-data zoning code when present, else the listing's."""
     attrs = (parcel or {}).get("attrs") or {}
     district = (parcel or {}).get("zoning") or attrs.get("zoning") or listing.get("zoning")
@@ -94,7 +94,7 @@ def research(listing, parcel, summary):
                                   listing.get("state")] if x)
     juris_hint = attrs.get("zoning_description") or attrs.get("city") or listing.get("county") or listing.get("city") or ""
     key = _cache_key(listing.get("state"), place, district)
-    cached = _cache_get(key)
+    cached = _cache_get(key) or (_cache_get(key + "|lite") if lite else None)   # a lite result is only reused by lite runs
     if cached:
         cached["_cached"] = True
         return cached
@@ -107,10 +107,10 @@ def research(listing, parcel, summary):
             "convenience store with fuel, car wash, laundromat, medical office, professional office, bank with drive-through, "
             "self-storage, contractor/flex warehouse, light industrial, daycare, multifamily, hotel, auto repair) "
             "and the parking ratio for each of those uses where the ordinance gives one.")
-    rules, sources = ask_json(ZONING_SYSTEM, user, max_tokens=6000, web_search=8, timeout=480, label="Zoning research")
+    rules, sources = ask_json(ZONING_SYSTEM, user, max_tokens=4500 if lite else 6000, web_search=3 if lite else 8, timeout=480, label="Zoning research" + (" (lite)" if lite else ""))
     rules["sources"] = list(dict.fromkeys((rules.get("sources") or []) + sources))[:12]
     rules["researched_at"] = dt.date.today().isoformat()
-    _cache_put(key, rules)
+    _cache_put(key + "|lite" if lite else key, rules)
     return rules
 
 

@@ -55,6 +55,15 @@ def run(job_id, step):
     t0 = _t.time()
     try:
         _run(job_id, step)
+        try:    # auto jobs (batch / unattended) take the next approval themselves
+            from . import auto
+            auto.advance(job_id, step)
+        except Exception as e:  # noqa: BLE001
+            print("auto advance failed:", e)
+            try:
+                supa.update_job(job_id, error=f"Auto-advance failed: {e}"[:300])
+            except Exception:  # noqa: BLE001
+                pass
     finally:
         cores, gib = STEP_RESOURCES.get(step, (2.0, 4.0))
         usage.modal_compute(step, _t.time() - t0, cores, gib)
@@ -63,7 +72,10 @@ def run(job_id, step):
 
 def _run(job_id, step):
     try:
-        if step == "parse":
+        if step == "batch":
+            from . import auto
+            auto.step_batch(job_id)
+        elif step == "parse":
             step_parse(job_id)
         elif step == "ec":
             step_ec(job_id)
@@ -336,7 +348,7 @@ def step_zoning(job_id):
     job = supa.get_job(job_id)
     supa.update_job(job_id, status="researching_zoning", step="zoning", progress="Researching the zoning ordinance", error=None)
     listing, summary = job.get("listing") or {}, job.get("summary") or {}
-    rules = zoning_mod.research(listing, job.get("parcel"), summary)
+    rules = zoning_mod.research(listing, job.get("parcel"), summary, lite=bool((job.get("options") or {}).get("lite")))
     setbacks = job.get("setbacks") or zoning_mod.setbacks_from(rules)
     # buildable area with the researched setbacks, so the program is sized to the real envelope
     ctx = _load_ctx(job_id)
@@ -606,7 +618,7 @@ def step_package(job_id):
             I = prev["inputs"]
     except Exception:  # noqa: BLE001
         pass
-    I = I or pkg.research_inputs(F)
+    I = I or pkg.research_inputs(F, lite=bool((job.get("options") or {}).get("lite")))
     with open(os.path.join(out, "package_inputs.json"), "w") as fh:
         json.dump({"plan": F["plan"], "inputs": I}, fh, default=str)
     supa.upload(job_id, os.path.join(out, "package_inputs.json"))

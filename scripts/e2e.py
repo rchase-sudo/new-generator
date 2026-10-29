@@ -37,6 +37,20 @@ def wait(job_id, until, timeout=1500):
     raise SystemExit("timed out")
 
 
+if sys.argv[1].startswith("batch:"):   # batch:<listings file>[:lite] -- start an unattended batch and report on it until every child has a package (or failed)
+    _, path, *flags = sys.argv[1].split(":")
+    bid = api(action="start_batch", text=open(path).read(), lite="lite" in flags)["job_id"]
+    print("batch", bid, flush=True)
+    t0 = time.time()
+    while time.time() - t0 < 3000:
+        time.sleep(20)
+        kids = api(action="list", batch=bid, limit=100)["jobs"]
+        kids = [k for k in kids if k["id"] != bid]
+        print(f"[{int(time.time()-t0):4d}s]", [(k["status"], k.get("render_status"), k.get("package_status")) for k in kids], flush=True)
+        if kids and all(k["status"] == "error" or k.get("package_status") in ("completed", "failed") for k in kids):
+            break
+    sys.exit(0)
+
 if sys.argv[1].startswith("rerun:"):   # rerun:<job_id>:<step> -- re-run one step of an existing job and report
     _, job_id, step = sys.argv[1].split(":", 2)
     api(action="rerun", job_id=job_id, step=step)

@@ -29,9 +29,9 @@ def record(js, label, model=None):
                   "searches": searches, "cost_usd": round(cost, 4)})
 
 
-def ask(system, user, max_tokens=4000, web_search=0, timeout=300, label="claude"):
+def ask(system, user, max_tokens=4000, web_search=0, timeout=300, label="claude", model=None):
     msgs = [{"role": "user", "content": user}]
-    body = {"model": MODEL, "max_tokens": max_tokens, "system": system, "messages": msgs}
+    body = {"model": model or MODEL, "max_tokens": max_tokens, "system": system, "messages": msgs}
     if web_search:
         body["tools"] = [{"type": "web_search_20250305", "name": "web_search", "max_uses": web_search}]
     blocks = []
@@ -90,10 +90,10 @@ def ask_json(system, user, **kw):
     return data, sources
 
 
-def ask_tool(system, user, name, description, max_tokens=8000, timeout=300, properties=None, label=None):
+def ask_tool(system, user, name, description, max_tokens=8000, timeout=300, properties=None, label=None, model=None):
     """Structured output via a forced tool call: the API returns the tool input as parsed JSON (never malformed)."""
     schema = {"type": "object", "properties": properties or {}, "additionalProperties": not properties}
-    body = {"model": MODEL, "max_tokens": max_tokens, "system": system, "messages": [{"role": "user", "content": user}],
+    body = {"model": model or MODEL, "max_tokens": max_tokens, "system": system, "messages": [{"role": "user", "content": user}],
             "tools": [{"name": name, "description": description, "input_schema": schema}],
             "tool_choice": {"type": "tool", "name": name}}
     hdr = {"x-api-key": os.environ["ANTHROPIC_API_KEY"], "anthropic-version": "2023-06-01", "content-type": "application/json"}

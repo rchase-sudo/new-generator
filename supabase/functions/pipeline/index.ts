@@ -8,6 +8,9 @@
 //   approve_layout  { job_id }                                                    -> { ok }  (starts the 3D model + render)
 //   render          { job_id }                                                    -> { ok }  (re-run the render)
 //   package         { job_id }                                                    -> { ok }  (due diligence package, after the render)
+//   design          { job_id, sewer?: boolean, water?: boolean, utilities?: "municipal"|"onsite" } -> { ok }  (optional full design phase, after the layout is approved)
+//   start_batch     { text, lite? }  -> { job_id }  (many listings in one field: the worker splits them and runs each one unattended to its package)
+//   start also takes options { lite?, auto? }: lite = cheap package research (same plan + render), auto = no approval checkpoints
 //   rerun           { job_id, step: "parse"|"ec"|"zoning"|"layout"|"buildings"|"topo" }              -> { ok }
 //   status          { job_id }                                                    -> job row + signed file URLs
 //   list            { limit? }                                                    -> recent jobs (your own; service role: all)
@@ -84,17 +87,30 @@ Deno.serve(async (req) => {
     const action = body.action;
     const who = await caller(req);
     if (!who.admin && !who.uid) return json({ error: "Sign in required" }, 401);
-    if (action !== "start" && action !== "list" && !(await ownJob(who, body.job_id))) return json({ error: "Job not found" }, 404);
+    if (action !== "start" && action !== "start_batch" && action !== "list" && !(await ownJob(who, body.job_id))) return json({ error: "Job not found" }, 404);
 
     if (action === "start") {
       const text = String(body.listing_text ?? "").trim();
       if (text.length < 20) return json({ error: "Paste the full listing text" }, 400);
       const { data, error } = await db.from("pipeline_jobs")
         .insert({ listing_text: text, source: body.source ?? "tool", crm_ref: body.crm_ref ?? null, status: "queued", step: "parse",
-                  created_by: who.uid })
+                  created_by: who.uid, options: { lite: !!body.options?.lite, auto: !!body.options?.auto } })
         .select("id").single();
       if (error) throw error;
       await kickWorker(data.id, "parse");
+      return json({ job_id: data.id });
+    }
+
+    if (action === "start_batch") {   // many listing descriptions in one field -> the worker splits them and starts one auto job per listing
+      const text = String(body.text ?? "").trim();
+      if (text.length < 20) return json({ error: "Paste the listings" }, 400);
+      const { data, error } = await db.from("pipeline_jobs")
+        .insert({ listing_text: text, source: "batch", status: "queued", step: "batch", progress: "Splitting the listings",
+                  created_by: who.uid, options: { batch_parent: true, lite: !!body.lite, auto: true } })
+        .select("id").single();
+      if (error) throw error;
+      await db.from("pipeline_jobs").update({ options: { batch_parent: true, batch_id: data.id, lite: !!body.lite, auto: true } }).eq("id", data.id);
+      await kickWorker(data.id, "batch");
       return json({ job_id: data.id });
     }
 
@@ -167,6 +183,30 @@ Deno.serve(async (req) => {
       return json({ ok: true });
     }
 
+    if (action === "design") {   // optional full design phase: preliminary civil plan set from the approved layout (independent of render / package)
+      const { data: job, error } = await db.from("pipeline_jobs").select("status,design_status,zoning").eq("id", body.job_id).single();
+      if (error) throw error;
+      if (job.status !== "layout_approved") return json({ error: "Approve the layout first" }, 409);
+      if (job.design_status === "queued" || job.design_status === "designing") return json({ error: "The plan set is already being built" }, 409);
+      const patch: Record<string, unknown> = { design_status: "queued", design_error: null };
+      const z: Record<string, unknown> = { ...(job.zoning ?? {}) };
+      let touched = false;
+      if (typeof body.sewer === "boolean" || typeof body.water === "boolean") {
+        // true = municipal service, false = private (septic / well). design_utilities keeps the old both-or-neither meaning for older readers.
+        const sewer = typeof body.sewer === "boolean" ? body.sewer : z.design_sewer !== false;
+        const water = typeof body.water === "boolean" ? body.water : z.design_water !== false;
+        z.design_sewer = sewer; z.design_water = water;
+        z.design_utilities = sewer && water ? "municipal" : (!sewer && !water ? "onsite" : "mixed");
+        touched = true;
+      } else if (body.utilities === "municipal" || body.utilities === "onsite") {
+        z.design_utilities = body.utilities; z.design_sewer = body.utilities === "municipal"; z.design_water = body.utilities === "municipal"; touched = true;
+      }
+      if (touched) patch.zoning = z;
+      await db.from("pipeline_jobs").update(patch).eq("id", body.job_id);
+      await kickWorker(body.job_id, "design");
+      return json({ ok: true });
+    }
+
     if (action === "rerun") {
       if (!["parse", "ec", "zoning", "layout", "buildings", "topo"].includes(body.step)) return json({ error: "Unknown step" }, 400);
       await db.from("pipeline_jobs").update({ error: null, progress: `Re-running ${body.step}` }).eq("id", body.job_id);
@@ -190,9 +230,10 @@ Deno.serve(async (req) => {
 
     if (action === "list") {
       let q = db.from("pipeline_jobs")
-        .select("id,created_at,updated_at,source,crm_ref,status,step,progress,error,listing->street_address,listing->lot,listing->city,listing->state,program->use")
+        .select("id,created_at,updated_at,source,crm_ref,status,step,progress,error,render_status,package_status,options,listing->street_address,listing->lot,listing->city,listing->state,program->use")
         .order("created_at", { ascending: false }).limit(Math.min(Number(body.limit ?? 30), 100));
       if (!who.admin) q = q.eq("created_by", who.uid);
+      if (body.batch) q = q.eq("options->>batch_id", String(body.batch));
       const { data, error } = await q;
       if (error) throw error;
       return json({ jobs: data });
