@@ -93,6 +93,13 @@ def advance(job_id, step):
         cands = job.get("candidates") or []
         if not cands:
             return
+        L = job.get("listing") or {}
+        street = (L.get("street_address") or "").strip()
+        if not L.get("apn") and not (street and street.split()[0][:1].isdigit()):
+            # a listing with no street number and no parcel ID only gives a road name: the best-scoring parcel along a long road is often
+            # the wrong one (Pocahontas Trl picked a lot 7 km away), so an unattended run stops for a person to confirm the parcel
+            supa.update_job(job_id, progress="Needs parcel confirmation: the listing has no street number or parcel ID")
+            return
         best = max(range(len(cands)), key=lambda i: (cands[i].get("score") or 0, -i))
         supa.update_job(job_id, parcel=cands[best], status="parcel_approved", step="ec", error=None, progress="Parcel confirmed")
         kick(job_id, "ec")
