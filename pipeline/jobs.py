@@ -54,7 +54,12 @@ def run(job_id, step):
     usage.USAGE[:] = []
     t0 = _t.time()
     try:
-        _run(job_id, step)
+        try:
+            _run(job_id, step)
+        except Exception as e_:  # noqa: BLE001
+            from . import auto
+            if not (step == "layout" and auto.retry_layout(job_id, e_)):   # unattended jobs shrink the program and try again
+                raise
         try:    # auto jobs (batch / unattended) take the next approval themselves
             from . import auto
             auto.advance(job_id, step)

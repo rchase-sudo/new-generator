@@ -105,3 +105,32 @@ def advance(job_id, step):
     elif st == "layout_approved" and step == "render_composite" and job.get("render_status") == "completed" and not job.get("package_status"):
         supa.update_job(job_id, package_status="queued", package_error=None)
         kick(job_id, "package")
+
+
+def retry_layout(job_id, err=None):
+    """An unattended job whose layout fails because the researched program does not fit: shrink the program (60%, then 35% and two buildings)
+    and lay it out again, instead of stopping at an error nobody is there to fix. Returns True once a layout exists."""
+    job = supa.get_job(job_id)
+    opts = job.get("options") or {}
+    n = int(opts.get("layout_retries") or 0)
+    if not opts.get("auto") or n >= 2:
+        return False
+    prog = job.get("program") or {}
+    blds = prog.get("buildings") or []
+    if not blds:
+        return False
+    f = 0.6 if n == 0 else 0.35
+    new_b = [{**b, "footprint_sf": max(1500.0, round(float(b.get("footprint_sf") or 5000) * f, -2))} for b in (blds if n == 0 else blds[:2])]
+    par = dict(prog.get("parking") or {})
+    if par.get("required"):
+        par["required"] = max(4, round(float(par["required"]) * f))
+    note = f"Program reduced to {int(f * 100)}% so it fits the site" if n == 0 else "Program reduced to the two main buildings so it fits the site"
+    supa.update_job(job_id, program={**prog, "buildings": new_b, "parking": par, "auto_note": note}, options={**opts, "layout_retries": n + 1},
+                    status="zoning_approved", error=None, progress=note)
+    from . import jobs
+    try:
+        jobs.step_layout(job_id)
+        return True
+    except Exception as e:  # noqa: BLE001
+        supa.update_job(job_id, status="error", step="layout", error=f"{type(e).__name__}: {e}"[:500])
+        return retry_layout(job_id, e)
