@@ -15,7 +15,7 @@ raw = supa.download(job_id, "context.pkl")
 open(f"{out}/context.pkl", "wb").write(raw)
 j = supa.get_job(job_id)
 json.dump({k: j.get(k) for k in ("program", "zoning", "setbacks", "summary", "layout", "error", "listing")}, open(f"{out}/job.json", "w"), default=str)
-for nm in ("concept_plan.png", "existing_conditions.png"):
+for nm in ("concept_plan.png", "existing_conditions.png", "render.jpg", "model_front.png"):
     try:
         open(f"{out}/{nm}", "wb").write(supa.download(job_id, nm))
     except Exception as e:  # noqa: BLE001

@@ -605,8 +605,10 @@ def step_render_composite(job_id):
         small = lambda im: _jpeg(im)  # noqa: E731
         txt = ask_images(
             "You compare a 3D model render of a proposed site with a photorealistic version of it. Reply with JSON only.",
-            "Image 1 is the 3D model. Image 2 is the photoreal version of the same scene. Count the parking stalls / parking rows / paved lots inside the proposed "
-            "development in each. Did image 2 add parking, paving or driveways that image 1 does not have (e.g. an extra lot, extra stall rows, a second driveway)? "
+            "Image 1 is the 3D model. Image 2 is the photoreal version of the same scene and must match the model exactly. Compare the proposed development: buildings, "
+            "parking lots and stall rows, driveways, paving, and anything proposed outside the property. Did image 2 add, remove or change ANY of these relative to image 1 "
+            "(an extra lot or stall rows, a second driveway, a different building count or shape, a new road, paving or building outside the development)? Ignore "
+            "texture, lighting and realism of trees, lawn and neighboring land. "
             'Reply {"model_parking":"<short>","photo_parking":"<short>","extra_parking":true|false}',
             [("image/jpeg", small(Image.open(io.BytesIO(mdl)).convert("RGB"))), ("image/jpeg", small(raw))], label="Render parking check", model="claude-haiku-5-5")
         verdict = json.loads(txt[txt.index("{"):txt.rindex("}") + 1])
@@ -624,10 +626,7 @@ def step_render_composite(job_id):
         if r.status_code >= 300:
             raise RuntimeError(f"Nano Banana hand-off failed: {r.status_code} {r.text[:300]}")
         return
-    # Nothing proposed may appear outside the property line: automatic (lite) renders keep the photoreal pass inside the lot only; the surroundings
-    # come from the 3D model's real aerial. (render_lot_only=False in zoning turns this off for a job.)
-    lot_only = bool(os.environ.get("RENDER_LOT_ONLY") or (job.get("zoning") or {}).get("render_lot_only")
-                    or ((job.get("options") or {}).get("auto") and (job.get("zoning") or {}).get("render_lot_only") is not False))
+    lot_only = bool(os.environ.get("RENDER_LOT_ONLY") or (job.get("zoning") or {}).get("render_lot_only"))   # default: the whole frame is the photoreal pass (Elm St style)
     if not lot_only:
         # the whole frame is the photoreal pass (like the Pocahontas render): surroundings included, no seam with the 3D model texture
         path = os.path.join(tempfile.mkdtemp(), "render.jpg")
