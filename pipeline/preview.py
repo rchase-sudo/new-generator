@@ -90,10 +90,10 @@ def step_preview(job_id, force=False):
         value, hard, profit, resid = PF["out"]["C"]["value"], PF["C"]["hard"], PF["profit"], PF["resid"]
         asking = F.get("asking_price") or 0
         info = {"resid": round(resid), "asking": round(asking) if asking else None}
-        if resid <= 0:
-            return save(status="held", reason="Residual land value is not positive", **info)
-        if asking and resid < asking and not force:
-            return save(status="held", reason=f"Residual land value ${resid:,.0f} is under the asking price ${asking:,.0f}", **info)
+        # the investor-math section only appears when it supports the listing (residual at or above the asking price); otherwise the page is
+        # built without it (same layout, section left out). force=True shows it whenever the residual is positive.
+        show_rlv = resid > 0 and (not asking or resid >= asking or force)
+        info["rlv_shown"] = bool(show_rlv)
         soft = value - hard - profit - resid
         L = job.get("listing") or {}
         slug = slugify(" ".join(x for x in [L.get("lot"), L.get("street_address") or F["address"], F.get("city")] if x)) or job_id[:8]
@@ -117,9 +117,9 @@ def step_preview(job_id, force=False):
             "agent": {k: v for k, v in agent.items() if v},
             "headline": copy["headline"], "facts": copy["facts"][:6], "note": copy["note"], "use": copy["use"], "numbers": copy["numbers"],
             "plan_heading": copy["plan_heading"], "plan_text": copy["plan_text"],
-            "rlv": {"value": round(value), "hard": round(hard), "soft": round(soft), "profit": round(profit),
-                    **({"asking": round(asking)} if asking and resid >= asking else {}),
-                    "note": "Preliminary estimate. The full package shows every input behind it."},
+            **({"rlv": {"value": round(value), "hard": round(hard), "soft": round(soft), "profit": round(profit),
+                        **({"asking": round(asking)} if asking and resid >= asking else {}),
+                        "note": "Preliminary estimate. The full package shows every input behind it."}} if show_rlv else {}),
             "images": {"render": os.path.join(tmp, "render_src"), "plan": os.path.join(tmp, "plan_src"), "plan_dark": False},
         }
         root = _tools()
