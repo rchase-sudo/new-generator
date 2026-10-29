@@ -420,6 +420,7 @@ def step_layout(job_id):
         cands_ = [r for r in (summary.get("front_roads") or []) if r.get("frontage_ft", 0) >= 110]
         if len(cands_) > 1:
             auto_dr = max(cands_, key=lambda r: (RANK.get(r.get("class"), 0), r.get("frontage_ft", 0)))["key"]
+    auto_dr_first = auto_dr
     try:
         try:
             res = generate_layout(ctx["parcel_sp"], ctx["k"], ctx["rds"], ctx["wet"], ctx["fl"], setbacks, prog, rules=rules,
@@ -482,6 +483,8 @@ def step_layout(job_id):
           [{"id": p["id"], "action": "demo", "geom": p["geom"], "sf": p["area_sf"], "label": "Parking" if p["kind"] == "parking" else "Drive", "kind": "pavement"} for p in pave_rm]
     if dr_note:
         res["metrics"].setdefault("warnings", []).append(dr_note)
+    summary["drive_choice"] = {"auto": auto_dr_first, "used": res["metrics"].get("drive_road"), "fallback": dr_note,
+                               "roads": [(r.get("key"), r.get("class"), r.get("frontage_ft")) for r in (summary.get("front_roads") or [])]}
     res["metrics"]["existing"] = [{"id": e["id"], "action": e["action"], "sf": round(e["sf"], -1), "label": e["label"], **({"kind": "pavement"} if e.get("kind") == "pavement" else {})} for e in ex if e.get("action") != "demo"]
     write_concept_sheet(os.path.join(out, "concept_plan.pdf"), os.path.join(out, "concept_plan.png"), ctx["parcel_sp"], env, wet, fl, rds,
                         ctx["aerial"], ctx["k"], res["sp"], res["labels"], title, res["metrics"], prog, rules, project=project, existing=ex,
