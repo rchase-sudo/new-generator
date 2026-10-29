@@ -1,0 +1,72 @@
+"""After a lite job's preview page is built: add the listing agent to the Instantly campaign (with the page link) and to the CRM.
+
+Needs INSTANTLY_API_KEY and CRM_SERVICE_ROLE_KEY in the worker environment (repo secrets, synced to Modal on deploy); each part is skipped when its key is
+missing. Leads land in a campaign that is still a draft, so nothing is emailed until the campaign is started in Instantly."""
+import os
+
+import requests
+
+from . import supa
+
+CAMPAIGN_ID = os.environ.get("INSTANTLY_CAMPAIGN_ID", "b8d2dc10-ce22-4d46-b22f-37c87fec1686")   # Forma — Free Preview (3-step)
+CRM_URL = os.environ.get("CRM_URL", "https://qrmqmtcxrkexazovtlev.supabase.co").rstrip("/")
+
+
+def _names(full):
+    parts = (full or "").replace(",", " ").split()
+    return (parts[0] if parts else ""), (" ".join(parts[1:]) if len(parts) > 1 else "")
+
+
+def to_instantly(job, pv, agent, F):
+    key = os.environ.get("INSTANTLY_API_KEY")
+    if not key:
+        return "skipped: no INSTANTLY_API_KEY"
+    first, last = _names(agent.get("name"))
+    town = F.get("city") or ""
+    body = {
+        "campaign": CAMPAIGN_ID, "email": agent["email"], "first_name": first, "last_name": last,
+        "company_name": (agent.get("company") or ""), "skip_if_in_campaign": True,
+        "custom_variables": {
+            "town": town, "parcel": f"{F.get('acres')}-acre" + (f" {town}" if town else ""), "listing_phrase": "vacant land listing",
+            "listing_short": F.get("address") or "", "preview_link": pv["email_html"],
+        },
+    }
+    r = requests.post("https://api.instantly.ai/api/v2/leads", json=body, headers={"Authorization": f"Bearer {key}"}, timeout=60)
+    return "added" if r.status_code < 300 else f"error {r.status_code}: {r.text[:200]}"
+
+
+def to_crm(job, pv, agent, F):
+    key = os.environ.get("CRM_SERVICE_ROLE_KEY")
+    if not key:
+        return "skipped: no CRM_SERVICE_ROLE_KEY"
+    h = {"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json", "Prefer": "return=minimal"}
+    addr = ", ".join(x for x in [F.get("address"), F.get("city"), F.get("state")] if x)
+    r = requests.get(f"{CRM_URL}/rest/v1/contacts", params={"email": f"eq.{agent['email']}", "select": "id,notes"}, headers=h, timeout=30)
+    r.raise_for_status()
+    rows = r.json()
+    note = f"Drafted lite preview built for {addr}: {pv['url']}"
+    if rows:
+        upd = {"listing_address": addr, "website_url": pv["url"], "notes": ((rows[0].get("notes") or "") + "\n" + note).strip()}
+        r = requests.patch(f"{CRM_URL}/rest/v1/contacts", params={"id": f"eq.{rows[0]['id']}"}, json=upd, headers=h, timeout=30)
+        r.raise_for_status()
+        return "updated"
+    row = {"name": agent.get("name") or agent["email"], "company": agent.get("company"), "email": agent["email"], "phone": agent.get("phone"),
+           "status": "prospect", "source": "drafted-lite", "company_type": "real_estate", "tags": ["listing-agent", "preview-page"],
+           "listing_address": addr, "website_url": pv["url"], "notes": note}
+    r = requests.post(f"{CRM_URL}/rest/v1/contacts", json=row, headers=h, timeout=30)
+    r.raise_for_status()
+    return "added"
+
+
+def push(job_id, pv, agent, F):
+    """Returns {"instantly": status, "crm": status}; never raises."""
+    job = supa.get_job(job_id)
+    out = {}
+    if not agent.get("email"):
+        return {"instantly": "skipped: no agent email in the listing", "crm": "skipped: no agent email in the listing"}
+    for name, fn in (("instantly", to_instantly), ("crm", to_crm)):
+        try:
+            out[name] = fn(job, pv, agent, F)
+        except Exception as e:  # noqa: BLE001
+            out[name] = f"error: {type(e).__name__}: {e}"[:250]
+    return out

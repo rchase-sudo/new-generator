@@ -19,6 +19,8 @@ jobs:
       REGRID_TOKEN: ${{ secrets.REGRID_TOKEN }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       GOOGLE_MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
+      INSTANTLY_API_KEY: ${{ secrets.INSTANTLY_API_KEY }}
+      CRM_SERVICE_ROLE_KEY: ${{ secrets.CRM_SERVICE_ROLE_KEY }}
     steps:
       - uses: actions/checkout@v4
 
@@ -43,7 +45,9 @@ jobs:
             SUPABASE_SERVICE_ROLE_KEY="$SUPABASE_SERVICE_ROLE_KEY" \
             REGRID_TOKEN="$REGRID_TOKEN" \
             ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
-            GOOGLE_MAPS_API_KEY="$GOOGLE_MAPS_API_KEY"
+            GOOGLE_MAPS_API_KEY="$GOOGLE_MAPS_API_KEY" \
+            INSTANTLY_API_KEY="$INSTANTLY_API_KEY" \
+            CRM_SERVICE_ROLE_KEY="$CRM_SERVICE_ROLE_KEY"
 
       - name: Deploy
         run: modal deploy modal_app.py

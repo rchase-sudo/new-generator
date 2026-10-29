@@ -156,6 +156,9 @@ def step_preview(job_id, force=False):
         show = SHOW + slug
         save(status="built", slug=slug, url=url, display=show, email_html=f'<a href="{html.escape(url)}">{show}</a>', reason=None,
              agent={k: v for k, v in agent.items() if v}, **info)
+        from . import outreach
+        pv = (supa.get_job(job_id).get("summary") or {}).get("preview") or {}
+        save(outreach=outreach.push(job_id, pv, {k: v for k, v in agent.items() if v}, F))
     except Exception as e:  # noqa: BLE001
         try:
             save(status="error", reason=f"{type(e).__name__}: {e}"[:500])

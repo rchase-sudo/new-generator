@@ -12,6 +12,8 @@ jobs:
     env:
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      INSTANTLY_API_KEY: ${{ secrets.INSTANTLY_API_KEY }}
+      CRM_SERVICE_ROLE_KEY: ${{ secrets.CRM_SERVICE_ROLE_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
