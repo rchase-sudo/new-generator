@@ -412,11 +412,27 @@ def step_layout(job_id):
     summary["front_roads"] = front_roads(ctx["parcel_sp"], ctx["rds"], ctx["k"], ctx["epsg"])
     psb = rules.get("pavement_setbacks_ft") or zoning_mod.pavement_setbacks(rules, setbacks)
     psb = {k: float(psb[k]) for k in ("front", "side", "rear") if isinstance(psb.get(k), (int, float))}
+    # Automatic jobs: the driveway goes to the best road the parcel fronts (arterial over local street), not just the longest frontage
+    auto_dr = None
+    if not rules.get("drive_road") and (job.get("options") or {}).get("auto"):
+        RANK = {"motorway": 5, "trunk": 5, "primary": 4, "secondary": 3, "tertiary": 2, "residential": 1}
+        cands_ = [r for r in (summary.get("front_roads") or []) if r.get("frontage_ft", 0) >= 110]
+        if len(cands_) > 1:
+            auto_dr = max(cands_, key=lambda r: (RANK.get(r.get("class"), 0), r.get("frontage_ft", 0)))["key"]
     try:
-        res = generate_layout(ctx["parcel_sp"], ctx["k"], ctx["rds"], ctx["wet"], ctx["fl"], setbacks, prog, rules=rules,
-                              parking_setbacks_ft=psb, drive_road=rules.get("drive_road") or None,
-                              keep_bldgs=[b["geom"] for b in keep], steep=steep, dem=dem,
-                              reuse_pave=[p["geom"] for p in pave_keep], shared_stalls=shared, tie_existing=rules.get("tie_existing", True) is not False)
+        try:
+            res = generate_layout(ctx["parcel_sp"], ctx["k"], ctx["rds"], ctx["wet"], ctx["fl"], setbacks, prog, rules=rules,
+                                  parking_setbacks_ft=psb, drive_road=rules.get("drive_road") or auto_dr,
+                                  keep_bldgs=[b["geom"] for b in keep], steep=steep, dem=dem,
+                                  reuse_pave=[p["geom"] for p in pave_keep], shared_stalls=shared, tie_existing=rules.get("tie_existing", True) is not False)
+        except RuntimeError:
+            if not auto_dr:
+                raise
+            auto_dr = None    # the preferred road did not work out: fall back to the automatic choice
+            res = generate_layout(ctx["parcel_sp"], ctx["k"], ctx["rds"], ctx["wet"], ctx["fl"], setbacks, prog, rules=rules,
+                                  parking_setbacks_ft=psb, drive_road=None,
+                                  keep_bldgs=[b["geom"] for b in keep], steep=steep, dem=dem,
+                                  reuse_pave=[p["geom"] for p in pave_keep], shared_stalls=shared, tie_existing=rules.get("tie_existing", True) is not False)
     except RuntimeError as e:
         dr = rules.get("drive_road")
         fr = {r["key"]: r["frontage_ft"] for r in (summary.get("front_roads") or [])}
