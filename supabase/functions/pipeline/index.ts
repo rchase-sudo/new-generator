@@ -11,6 +11,7 @@
 //   design          { job_id, sewer?: boolean, water?: boolean, utilities?: "municipal"|"onsite" } -> { ok }  (optional full design phase, after the layout is approved)
 //   start_batch     { text, lite? }  -> { job_id }  (many listings in one field: the worker splits them and runs each one unattended to its package)
 //   start also takes options { lite?, auto? }: lite = cheap package research (same plan + render), auto = no approval checkpoints
+//   preview         { job_id, push?: boolean, force?: boolean } -> { ok }  (preview page for a finished manual job; push = also add the agent to Instantly + CRM)
 //   rerun           { job_id, step: "parse"|"ec"|"zoning"|"layout"|"buildings"|"topo" }              -> { ok }
 //   status          { job_id }                                                    -> job row + signed file URLs
 //   list            { limit? }                                                    -> recent jobs (your own; service role: all)
@@ -207,6 +208,18 @@ Deno.serve(async (req) => {
       return json({ ok: true });
     }
 
+    if (action === "preview") {   // warm-lead preview page for a finished (manual) job: same page the lite pipeline builds, from the approved layout, render and package
+      const { data: job, error } = await db.from("pipeline_jobs").select("status,render_status,package_status,options,summary").eq("id", body.job_id).single();
+      if (error) throw error;
+      if (job.status !== "layout_approved" || job.render_status !== "completed") return json({ error: "Finish the render first" }, 409);
+      if (!job.options?.lite && job.package_status !== "completed") return json({ error: "Build the due diligence package first" }, 409);
+      if (["queued", "building"].includes(job.summary?.preview?.status)) return json({ error: "The preview page is already being built" }, 409);
+      const options = { ...(job.options ?? {}), preview_push: !!body.push };
+      await db.from("pipeline_jobs").update({ options, summary: { ...(job.summary ?? {}), preview: { ...(job.summary?.preview ?? {}), status: "queued", reason: null, outreach: null } } }).eq("id", body.job_id);
+      await kickWorker(body.job_id, body.force ? "preview_force" : "preview");
+      return json({ ok: true });
+    }
+
     if (action === "rerun") {
       if (!["parse", "ec", "zoning", "layout", "buildings", "topo"].includes(body.step)) return json({ error: "Unknown step" }, 400);
       await db.from("pipeline_jobs").update({ error: null, progress: `Re-running ${body.step}` }).eq("id", body.job_id);
@@ -230,7 +243,7 @@ Deno.serve(async (req) => {
 
     if (action === "list") {
       let q = db.from("pipeline_jobs")
-        .select("id,created_at,updated_at,source,crm_ref,status,step,progress,error,render_status,package_status,options,listing->street_address,listing->lot,listing->city,listing->state,program->use")
+        .select("id,created_at,updated_at,source,crm_ref,status,step,progress,error,render_status,package_status,options,listing->street_address,listing->lot,listing->city,listing->state,program->use,preview_status:summary->preview->>status")
         .order("created_at", { ascending: false }).limit(Math.min(Number(body.limit ?? 30), 100));
       if (!who.admin) q = q.eq("created_by", who.uid);
       if (body.batch) q = q.eq("options->>batch_id", String(body.batch));

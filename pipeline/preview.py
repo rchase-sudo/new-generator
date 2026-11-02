@@ -80,6 +80,7 @@ def step_preview(job_id, force=False):
         s = job.get("summary") or {}
         supa.update_job(job_id, summary={**s, "preview": {**(s.get("preview") or {}), **kw}})
     try:
+        save(status="building")
         from . import package as pkg
         job = supa.get_job(job_id)
         F = pkg.facts(job)
@@ -164,8 +165,13 @@ def step_preview(job_id, force=False):
         save(status="built", slug=slug, url=url, display=show, email_html=f'<a href="{html.escape(url)}">{show}</a>', reason=None,
              agent={k: v for k, v in agent.items() if v}, **info)
         from . import outreach
-        pv = (supa.get_job(job_id).get("summary") or {}).get("preview") or {}
-        save(outreach=outreach.push(job_id, pv, {k: v for k, v in agent.items() if v}, F))
+        j2 = supa.get_job(job_id)
+        pv = (j2.get("summary") or {}).get("preview") or {}
+        opts = j2.get("options") or {}
+        if lite or opts.get("preview_push"):   # lite jobs always go out; a manual job only when the "add to outreach" box was ticked
+            save(outreach=outreach.push(job_id, pv, {k: v for k, v in agent.items() if v}, F))
+        else:
+            save(outreach={"instantly": "not sent (manual job)", "crm": "not sent (manual job)"})
     except Exception as e:  # noqa: BLE001
         try:
             save(status="error", reason=f"{type(e).__name__}: {e}"[:500])
