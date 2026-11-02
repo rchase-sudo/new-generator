@@ -169,10 +169,44 @@ def poll_requests():
         requests.patch(f"{CRM_URL}/rest/v1/contacts", params={"id": f"eq.{c['id']}"}, json=upd, headers=h, timeout=30)
 
 
+def quality_flags(job):
+    """Reasons a built page should not go out automatically (checked before anything is pushed to Instantly / the CRM)."""
+    from .parcel import road_tokens, has_house_number
+    flags = []
+    L = job.get("listing") or {}
+    S = job.get("summary") or {}
+    try:
+        la, pa = float(L.get("acres") or 0), float(S.get("parcel_acres") or (job.get("parcel") or {}).get("acres") or 0)
+        if la and pa and abs(pa - la) / la > 0.30:
+            flags.append(f"parcel is {pa:.2f} ac but the listing says {la:.2f} ac")
+    except (TypeError, ValueError):
+        pass
+    lay = job.get("layout") or {}
+    dr = lay.get("drive_road") or S.get("drive_choice")
+    street = L.get("street_address")
+    if dr and street and has_house_number(street):
+        want = {t for t in road_tokens(street) if not t.isdigit()}
+        fr = {r.get("key"): r for r in (S.get("front_roads") or [])}
+        name = (fr.get(dr) or {}).get("name") or str(dr)
+        if want and not (want & road_tokens(name)):
+            flags.append(f"driveway road ({name}) is not the listing's road ({street})")
+    if not (S.get("front_roads") or []):
+        flags.append("no road frontage found")
+    if any("FAR" in str(w) or "long" in str(w).lower() for w in (lay.get("warnings") or [])):
+        flags.append("driveway link is long")
+    return flags
+
+
 def push(job_id, pv, agent, F):
     """Returns {"instantly": status, "crm": status}; never raises."""
     job = supa.get_job(job_id)
     out = {}
+    try:
+        qf = quality_flags(job)
+    except Exception as e:  # noqa: BLE001
+        qf = [f"quality check failed: {type(e).__name__}"]
+    if qf:
+        return {"instantly": "held: needs review (" + "; ".join(qf) + ")", "crm": "held: needs review"}
     if not agent.get("email"):
         found = find_agent(job, F)
         if not found.get("email"):

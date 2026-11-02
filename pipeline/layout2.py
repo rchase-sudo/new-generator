@@ -707,15 +707,17 @@ def _generate_inner(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=N
     pieces = [g for g in _polys(pz) if g.area > 5000]
     if not pieces:
         raise RuntimeError("No usable land left after setbacks, wetlands and flood zones.")
-    pz = max(pieces, key=lambda g: g.area) if stem else min(pieces, key=lambda g: (round(g.distance(front_ln) / 50), -g.area))
+    if stem:
+        ordered = [max(pieces, key=lambda g: g.area)]
+    else:   # nearest-the-frontage piece first, then the rest by size: a small frontage sliver must not sink a big site
+        ordered = sorted(pieces, key=lambda g: (round(g.distance(front_ln) / 50), -g.area))
+        ordered = ordered[:1] + sorted(ordered[1:], key=lambda g: -g.area)
     lo, hi = fx[0] + 50, fx[1] - 50
     if hi < lo:
         lo = hi = (fx[0] + fx[1]) / 2
     if stem:
         lo = hi = 0.0
-    shapely.prepare(pz)
     shapely.prepare(bz)
-    ctx = {"P": P, "pz": pz, "bz": bz, "R": R, "y0": math.ceil(pz.bounds[1]), "drive_lo": lo, "drive_hi": hi}
 
     buildings = program.get("buildings") or [{"name": "Building", "use": "retail", "footprint_sf": 8000, "depth_ft": 80, "stories": 1}]
     gfa = sum(b["footprint_sf"] * b.get("stories", 1) for b in buildings)
@@ -724,17 +726,22 @@ def _generate_inner(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=N
     req0 = max(req0 - max(0, int(shared_stalls or 0)), 0.0)   # existing stalls the new program may share
 
     best, scale, req, dropped = None, 1.0, math.ceil(req0), []
-    # shrink the program first; if it still doesn't fit, drop buildings from the end of the list (lowest priority)
-    for keep in range(len(buildings), 0, -1):
-        sub = buildings[:keep]
-        frac = sum(b["footprint_sf"] * b.get("stories", 1) for b in sub) / gfa
-        for scale in (1.0, 0.9, 0.8, 0.7, 0.6, 0.5):
-            req = math.ceil(req0 * frac * scale)
-            best = (_dense_search if program.get("dense_layout") else _search)(ctx, sub, scale, req)
+    for pz in ordered:
+        shapely.prepare(pz)
+        ctx = {"P": P, "pz": pz, "bz": bz, "R": R, "y0": math.ceil(pz.bounds[1]), "drive_lo": lo, "drive_hi": hi}
+        # shrink the program first; if it still doesn't fit, drop buildings from the end of the list (lowest priority)
+        for keep in range(len(buildings), 0, -1):
+            sub = buildings[:keep]
+            frac = sum(b["footprint_sf"] * b.get("stories", 1) for b in sub) / gfa
+            for scale in (1.0, 0.9, 0.8, 0.7, 0.6, 0.5):
+                req = math.ceil(req0 * frac * scale)
+                best = (_dense_search if program.get("dense_layout") else _search)(ctx, sub, scale, req)
+                if best:
+                    break
             if best:
+                dropped = [b.get("name") or b.get("use") for b in buildings[keep:]]
                 break
         if best:
-            dropped = [b.get("name") or b.get("use") for b in buildings[keep:]]
             break
     if best is None:
         raise RuntimeError("Even the first building at half size does not fit the usable land. Reduce the program or adjust setbacks.")
