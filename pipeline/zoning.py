@@ -84,6 +84,35 @@ def _cache_put(key, rules):
                   headers=supa._h({"Content-Type": "application/json", "Prefer": "resolution=merge-duplicates"}), timeout=30)
 
 
+# Public zoning layers for places whose parcel data carries no zoning code. (state, regex on the place text, layer url, fields tried in order)
+ZONING_LAYERS = [
+    ("NC", r"charlotte", "https://gis.charlottenc.gov/arcgis/rest/services/PLN/Zoning/MapServer/0", ("ZoneDes", "ZoneClass")),
+]
+
+
+def zone_from_layer(listing, parcel, place):
+    """District code at the parcel from a public zoning layer (None when the place has no known layer or no polygon covers the point)."""
+    from shapely.geometry import shape
+    for st, rx, url, fields in ZONING_LAYERS:
+        if (listing.get("state") or "").upper() != st or not re.search(rx, place or "", re.I):
+            continue
+        try:
+            pt = shape(parcel["geometry"]).representative_point()
+            r = requests.get(url + "/query", params={"geometry": f"{pt.x},{pt.y}", "geometryType": "esriGeometryPoint", "inSR": 4326, "spatialRel": "esriSpatialRelIntersects",
+                                                     "outFields": "*", "returnGeometry": "false", "f": "json"}, timeout=40)
+            feats = (r.json().get("features") or []) if r.ok else []
+            if not feats:
+                continue
+            a = feats[0].get("attributes") or {}
+            code = next((str(a[f]).strip() for f in fields if a.get(f)), None)
+            if code:
+                ov = str(a.get("Overlay") or "").strip()
+                return code + (f" ({ov} overlay)" if ov and ov.lower() not in ("none", "null") else "")
+        except Exception:  # noqa: BLE001
+            continue
+    return None
+
+
 def research(listing, parcel, summary, lite=False):
     """Zoning rules for the parcel's district. Uses the parcel-data zoning code when present, else the listing's."""
     attrs = (parcel or {}).get("attrs") or {}
@@ -93,8 +122,12 @@ def research(listing, parcel, summary, lite=False):
     place = ", ".join(x for x in [listing.get("city"), (listing.get("county") or attrs.get("county")) and f"{listing.get('county') or attrs.get('county')} County",
                                   listing.get("state")] if x)
     juris_hint = attrs.get("zoning_description") or attrs.get("city") or listing.get("county") or listing.get("city") or ""
-    key = _cache_key(listing.get("state"), place, district)
-    cached = _cache_get(key) or (_cache_get(key + "|lite") if lite else None)   # a lite result is only reused by lite runs
+    if not district:
+        district = zone_from_layer(listing, parcel, place)
+    # With no known district the research is for THIS property: never share it through the cache (a guess for one lot was being reused for every lot in the town)
+    key = _cache_key(listing.get("state"), place, district) if district else _cache_key(listing.get("state"), place, f"addr {listing.get('street_address') or listing.get('address') or id(listing)}")
+    shared = bool(district)
+    cached = (_cache_get(key) or (_cache_get(key + "|lite") if lite else None)) if shared else None   # a lite result is only reused by lite runs
     if cached:
         cached["_cached"] = True
         return cached
@@ -110,7 +143,8 @@ def research(listing, parcel, summary, lite=False):
     rules, sources = ask_json(ZONING_SYSTEM, user, max_tokens=4500 if lite else 6000, web_search=3 if lite else 8, timeout=480, label="Zoning research" + (" (lite)" if lite else ""))
     rules["sources"] = list(dict.fromkeys((rules.get("sources") or []) + sources))[:12]
     rules["researched_at"] = dt.date.today().isoformat()
-    _cache_put(key + "|lite" if lite else key, rules)
+    if shared:
+        _cache_put(key + "|lite" if lite else key, rules)
     return rules
 
 

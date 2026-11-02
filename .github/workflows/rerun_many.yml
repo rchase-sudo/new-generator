@@ -1,0 +1,19 @@
+name: Rerun a step for many jobs
+on:
+  workflow_dispatch:
+    inputs:
+      step: {default: "zoning"}
+      hours: {default: "8"}
+      only_status: {description: "space-separated statuses to include; blank = all", default: ""}
+jobs:
+  rerun:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - run: pip install requests==2.32.3
+      - run: python scripts/rerun_many.py "${{ inputs.step }}" "${{ inputs.hours }}" ${{ inputs.only_status }}
