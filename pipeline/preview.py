@@ -2,8 +2,8 @@
 
 The worker fetches the current template + generator from the model repo (so editing the template there changes every future page), builds
 p/<slug>/ with the watermark baked into the images, and uploads the folder to the public `previews` bucket. A cron workflow in the model repo
-copies new folders into p/ and GitHub Pages serves them. The job summary keeps the link and the email snippet (visible text formatted as the
-formadesigns.io/p/<slug> address, real href on GitHub Pages)."""
+copies new folders into p/ and GitHub Pages serves them at go.formadesigns.io/p/<slug>/. The job summary keeps the link and the email
+snippet (visible text = the same address)."""
 import html
 import json
 import os
@@ -19,9 +19,9 @@ from . import supa
 from .claude import ask_tool
 
 RAW = "https://raw.githubusercontent.com/rchase-sudo/model/main/tools/"
-PAGES = "https://rchase-sudo.github.io/model/p/"
+PAGES = "https://go.formadesigns.io/p/"   # GitHub Pages custom domain (CNAME in rchase-sudo/model)
 BUCKET = "previews"
-SHOW = "formadesigns.io/p/"
+SHOW = "go.formadesigns.io/p/"   # visible text matches the real link
 
 
 def slugify(s):
