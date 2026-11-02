@@ -410,6 +410,40 @@ def suggest_assemblage(cands, target, geocode_pt, max_parts=3, near_m=250):
             "assemblage": True, "suggested": True, "parts": len(parts), "score": round(max(c["score"] for c in parts) + 45, 1)}
 
 
+ADDRESS_POINT_LAYERS = [("gis.charlottenc.gov", "https://gis.charlottenc.gov/arcgis/rest/services/CountyData/MasterAddress/MapServer/0")]
+
+
+def address_point_hit(listing, lat, lon, county_layer):
+    """Counties that publish address points (each with its parcel ID): find the point for the listing's street address near the geocode.
+    Returns {"pid": [...], "lat": y, "lon": x} or None. Field names differ by county, so every attribute is scanned: the point whose values contain the
+    house number and a street-name word is the address; any PID / PARCEL attribute on it is the parcel."""
+    street = listing.get("street_address") or ""
+    hn, words = _addr_key(street)
+    base = next((u for host, u in ADDRESS_POINT_LAYERS if host in str(county_layer or "")), None)
+    if not base or not hn or not words:
+        return None
+    try:
+        r = requests.get(base + "/query", params={"geometry": f"{lon},{lat}", "geometryType": "esriGeometryPoint", "inSR": 4326, "outSR": 4326, "spatialRel": "esriSpatialRelIntersects",
+                                                  "distance": 400, "units": "esriSRUnit_Meter", "outFields": "*", "returnGeometry": "true", "resultRecordCount": 300, "f": "json"}, timeout=40)
+        feats = r.json().get("features") or []
+    except Exception:  # noqa: BLE001
+        return None
+    for f in feats:
+        a = f.get("attributes") or {}
+        txt = [str(v).upper() for v in a.values() if isinstance(v, (str, int)) and v not in ("", None)]
+        toks = {t for v in txt for t in re.findall(r"[A-Za-z0-9]+", v)}
+        if hn not in {t.lstrip("0") or t for t in toks} and hn not in toks:
+            continue
+        if not (words & toks):
+            continue
+        pids = [str(v).strip() for k, v in a.items() if re.search(r"PID|PARCEL|PIN", k, re.I) and v not in (None, "") and not re.search(r"TYPE|FLAG|COUNT", k, re.I)]
+        g = f.get("geometry") or {}
+        if "x" not in g and not pids:
+            continue
+        return {"pid": pids, "lat": g.get("y"), "lon": g.get("x")}
+    return None
+
+
 def find_parcels(listing, lat, lon, road_geom_ll=None, county_layer=None, max_out=6, corridor_ll=None):
     """corridor_ll: lon/lat polygon along the listing's road, used when the listing has no street number."""
     epsg = state_plane_epsg(lat, lon)
@@ -435,7 +469,17 @@ def find_parcels(listing, lat, lon, road_geom_ll=None, county_layer=None, max_ou
     if _addr_key(listing.get("street_address"))[0]:
         from .context import road_aliases
         aliases = road_aliases(lat, lon)
-    ranked = rank(cands, listing, lat, lon, road_geom_ll, aliases, geocode_pt)
+    rank_listing = listing
+    try:
+        ap = address_point_hit(listing, geocode_pt[0], geocode_pt[1], county_layer) if source == "arcgis" else None
+    except Exception:  # noqa: BLE001
+        ap = None
+    if ap:
+        if ap.get("pid") and not listing.get("apn"):
+            rank_listing = {**listing, "apn": ap["pid"]}
+        if ap.get("lat") and ap.get("lon"):
+            geocode_pt = (ap["lat"], ap["lon"])
+    ranked = rank(cands, rank_listing, lat, lon, road_geom_ll, aliases, geocode_pt)
     zipc = str(listing.get("zip") or "")[:5]
     decided = ranked and (ranked[0].get("apn_match") or ranked[0].get("address_match") or ranked[0].get("assemblage"))
     if zipc and len(ranked) > 1 and not decided:
