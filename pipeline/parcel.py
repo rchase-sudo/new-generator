@@ -197,7 +197,7 @@ def find_layer(service_url):
     return f"{service_url.rstrip('/')}/{best['id']}" if best else None
 
 
-APN_KEYS = ("PARCELID", "PARCEL_ID", "PIN", "GPIN", "APN", "TAXMAP", "TAX_MAP", "MAP_NUM", "MAPNUM", "PARCELNUMB", "PARCELNUM", "PARCEL_NUM", "LOCALID", "PARCEL")
+APN_KEYS = ("PID", "NC_PIN", "PARCELID", "PARCEL_ID", "PIN", "GPIN", "APN", "TAXMAP", "TAX_MAP", "MAP_NUM", "MAPNUM", "PARCELNUMB", "PARCELNUM", "PARCEL_NUM", "LOCALID", "PARCEL")
 OWNER_KEYS = ("OWNER", "OWNER1", "OWNERNAME", "OWNER_NAME", "OWNNAME")
 
 
@@ -308,10 +308,15 @@ def _addr_key(a):
     if not a:
         return None, set()
     toks = re.findall(r"[A-Za-z0-9]+", str(a).upper())
-    if not toks or not toks[0].isdigit():
+    if not toks or not toks[0].isdigit() or not toks[0].strip("0"):   # "00 Lochfoot Dr" / "000 Sardis Rd" is a vacant lot with no number, not house 0
         return None, set()
     skip = ROAD_WORDS
     return toks[0], {t for t in toks[1:] if t not in skip}
+
+
+def has_house_number(street):
+    """A real street number (not empty, not the 0 / 00 / 000 placeholder vacant-land listings use)."""
+    return bool(_addr_key(street)[0])
 
 
 def rank(cands, listing, lat, lon, road_geom_ll=None, aliases=None, geocode_pt=None):
@@ -347,6 +352,8 @@ def rank(cands, listing, lat, lon, road_geom_ll=None, aliases=None, geocode_pt=N
         # where the address actually is (Google / Census point): inside the parcel, or right next to it
         d_geo = g.distance(geo_pt) * 111320
         c["dist_m"] = round(d_geo)
+        if hn and d_geo > 400:
+            score -= 100         # the address was placed precisely: a look-alike parcel kilometres away must never beat the ones around it
         if d_geo == 0:
             score += 110
         else:

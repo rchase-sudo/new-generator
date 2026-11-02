@@ -1197,7 +1197,7 @@ def generate(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=None, pa
     raise err
 
 
-def add_road_link(res, parcel_sp, k_ft, rds, target_key, width_ft=24.0):
+def add_road_link(res, parcel_sp, k_ft, rds, target_key, width_ft=24.0, max_ft=None):
     """The site is laid out on whichever frontage fits, but the listing's own road must be where the project connects. Add a two-way drive from the
     laid-out pavement to the frontage on `target_key` (kept clear of the parcel corners), never through a building. Returns a note or None."""
     from shapely.ops import nearest_points, substring
@@ -1209,7 +1209,7 @@ def add_road_link(res, parcel_sp, k_ft, rds, target_key, width_ft=24.0):
     pave = sp.get("pave")
     if not on or pave is None or pave.is_empty:
         return None
-    best = None
+    best, far = None, False
     bl = unary_union([b for b in (sp.get("bldgs") or []) if b is not None])
     for e in sorted(on, key=lambda e: -e["len_ft"]):
         line, L = e["line"], e["line"].length
@@ -1220,6 +1220,9 @@ def add_road_link(res, parcel_sp, k_ft, rds, target_key, width_ft=24.0):
         d = math.hypot(dx, dy)
         if d * k_ft < 1:
             return f"The drive already reaches {target_key}"
+        if max_ft is not None and d * k_ft > max_ft:
+            far = True
+            continue
         n = e["normal"]
         c_ = Point(b_.x + n[0] * 12.0 / k_ft, b_.y + n[1] * 12.0 / k_ft)     # out to the road edge
         link = LineString([a_, b_, c_]).buffer(width_ft / 2 / k_ft, cap_style=2, join_style=2)
@@ -1229,7 +1232,7 @@ def add_road_link(res, parcel_sp, k_ft, rds, target_key, width_ft=24.0):
         if best is None or d < best[0]:
             best = (d, link)
     if best is None:
-        return None
+        return "FAR" if far else None
     link = best[1]
     sp["pave"] = unary_union([pave, link]).buffer(0)
     sp["drive"] = unary_union([sp["drive"], link]) if sp.get("drive") is not None else link

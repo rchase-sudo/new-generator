@@ -95,18 +95,29 @@ def advance(job_id, step):
             return
         L = job.get("listing") or {}
         street = (L.get("street_address") or "").strip()
-        if not L.get("apn") and not (street and street.split()[0][:1].isdigit()):
-            # a listing with no street number and no parcel ID only gives a road name: the best-scoring parcel along a long road is often
-            # the wrong one (Pocahontas Trl picked a lot 7 km away), so an unattended run stops for a person to confirm the parcel
-            supa.update_job(job_id, progress="Needs parcel confirmation: the listing has no street number or parcel ID")
-            return
-        best = max(range(len(cands)), key=lambda i: (cands[i].get("score") or 0, -i))
+        from .parcel import has_house_number
+        target = L.get("acres")
+        near = [i for i, c in enumerate(cands) if target and c.get("acres") and abs(c["acres"] - target) / target <= 0.08]
+        if not L.get("apn") and not has_house_number(street):
+            # no street number or parcel ID: only a road name. The best-scoring parcel along a long road is often the wrong one, so an unattended
+            # run takes one only when exactly one candidate has the listing's acreage
+            if len(near) != 1:
+                supa.update_job(job_id, progress="Needs parcel confirmation: the listing has no street number or parcel ID")
+                return
+            best = near[0]
+        else:
+            best = max(range(len(cands)), key=lambda i: (cands[i].get("score") or 0, -i))
         c0 = cands[best]
         pool = {(p_.get("apn"), p_.get("acres")): p_.get("dist_m") for p_ in ((job.get("debug") or {}).get("pool") or [])}
         dist = pool.get((c0.get("apn"), c0.get("acres")))
-        if not c0.get("apn_match") and not c0.get("address_match") and not c0.get("assemblage") and dist is not None and dist > 1500:
-            # the nearest parcel is kilometres from the geocoded listing (e.g. a brand-new lot missing from the parcel data): never build on it unattended
+        sure = c0.get("apn_match") or c0.get("address_match") or c0.get("assemblage")
+        if not sure and has_house_number(street) and dist is not None and dist > 800:
+            # the nearest parcel is far from the geocoded listing (e.g. a brand-new lot missing from the parcel data): never build on it unattended
             supa.update_job(job_id, progress=f"Needs parcel confirmation: the closest parcel in the data is {dist/1000:.1f} km from the listing")
+            return
+        if not sure and target and c0.get("acres") and abs(c0["acres"] - target) / target > 0.30 and not (len(near) == 1 and near[0] == best):
+            # the parcel is not the size the listing describes (a piece of a larger site, or the wrong lot): a person confirms which parcels make up the listing
+            supa.update_job(job_id, progress=f"Needs parcel confirmation: the parcel found is {c0['acres']:.2f} ac but the listing says {target} ac")
             return
         supa.update_job(job_id, parcel=cands[best], status="parcel_approved", step="ec", error=None, progress="Parcel confirmed")
         kick(job_id, "ec")

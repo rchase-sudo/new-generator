@@ -141,7 +141,8 @@ def step_parse(job_id):
     # whole named road near the town/ZIP and let acreage + frontage pick the parcel.
     corridor = None
     street = listing.get("street_address") or ""
-    if not (street and street.split()[0][:1].isdigit()):
+    from .parcel import has_house_number
+    if not has_house_number(street):
         supa.update_job(job_id, progress="Tracing the road named in the listing")
         town = geocode({"city": listing.get("city"), "state": listing.get("state"), "zip": listing.get("zip"),
                         "road_name": None, "street_address": None, "county": listing.get("county")})
@@ -416,10 +417,23 @@ def step_layout(job_id):
     auto_dr = None
     dr_note = None
     if not rules.get("drive_road") and (job.get("options") or {}).get("auto"):
-        RANK = {"motorway": 5, "trunk": 5, "primary": 4, "secondary": 3, "tertiary": 2, "residential": 1}
-        cands_ = [r for r in (summary.get("front_roads") or []) if r.get("frontage_ft", 0) >= 110]
-        if len(cands_) > 1:
-            auto_dr = max(cands_, key=lambda r: (RANK.get(r.get("class"), 0), r.get("frontage_ft", 0)))["key"]
+        # never a freeway / ramp (no driveway connects to one): the listing's own road first, else the best ordinary road the parcel fronts
+        from .parcel import road_tokens
+        RANK = {"primary": 4, "secondary": 3, "tertiary": 2, "residential": 1}
+        FREEWAY = {"motorway", "trunk", "motorway_link", "trunk_link"}
+        fr_ok = [r for r in (summary.get("front_roads") or []) if r.get("class") not in FREEWAY]
+        if not fr_ok and (summary.get("front_roads") or []):
+            raise RuntimeError("The only road this parcel fronts is a freeway or ramp: no driveway connection is possible from the public data")
+        want = {t for t in road_tokens((job.get("listing") or {}).get("street_address")) if not t.isdigit()}
+        addr_first = next((r for r in fr_ok if want & road_tokens(r.get("name")) and r.get("frontage_ft", 0) >= 60), None)
+        if addr_first:
+            auto_dr = addr_first["key"]
+        else:
+            cands_ = [r for r in fr_ok if r.get("frontage_ft", 0) >= 110]
+            if len(cands_) > 1:
+                auto_dr = max(cands_, key=lambda r: (RANK.get(r.get("class"), 0), r.get("frontage_ft", 0)))["key"]
+        if not summary.get("front_roads"):
+            raise RuntimeError("No public road found along this parcel in the road data, so the development cannot be connected to one. Rerun, or pick the road")
     auto_dr_first = auto_dr
     try:
         try:
@@ -491,8 +505,21 @@ def step_layout(job_id):
             want = {t for t in road_tokens((job.get("listing") or {}).get("street_address")) if not t.isdigit()}
             addr_rd = next((r["key"] for r in (summary.get("front_roads") or []) if want & road_tokens(r.get("name"))), None)
             if addr_rd and addr_rd != res["metrics"].get("drive_road"):
-                note = add_road_link(res, ctx["parcel_sp"], ctx["k"], ctx["rds"] if isinstance(ctx["rds"], list) else [], addr_rd)
-                if note:
+                note = add_road_link(res, ctx["parcel_sp"], ctx["k"], ctx["rds"] if isinstance(ctx["rds"], list) else [], addr_rd, max_ft=200.0)
+                if note == "FAR":
+                    # the layout that fits sits far from the address road: lay it out on that road's frontage instead of paving a long strip to it
+                    try:
+                        res = generate_layout(ctx["parcel_sp"], ctx["k"], ctx["rds"], ctx["wet"], ctx["fl"], setbacks, prog, rules=rules,
+                                              parking_setbacks_ft=psb, drive_road=addr_rd,
+                                              keep_bldgs=[b["geom"] for b in keep], steep=steep, dem=dem,
+                                              reuse_pave=[p["geom"] for p in pave_keep], shared_stalls=shared, tie_existing=rules.get("tie_existing", True) is not False)
+                    except RuntimeError as e_far:
+                        if (job.get("options") or {}).get("auto"):
+                            raise RuntimeError(f"The development cannot be connected to {addr_rd} (the road in the listing's address) without a long new drive: {str(e_far)[:160]}") from None
+                        note = f"The drive does not reach {addr_rd}; the layout that fits is far from it"
+                    else:
+                        note = None
+                if note and note != "FAR":
                     res["metrics"].setdefault("warnings", []).append(note)
     except Exception as e_l:  # noqa: BLE001
         res["metrics"].setdefault("warnings", []).append(f"Link to the address road failed: {type(e_l).__name__}: {e_l}"[:200])
