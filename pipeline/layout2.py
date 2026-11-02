@@ -733,7 +733,7 @@ def _generate_inner(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=N
         for keep in range(len(buildings), 0, -1):
             sub = buildings[:keep]
             frac = sum(b["footprint_sf"] * b.get("stories", 1) for b in sub) / gfa
-            for scale in (1.0, 0.9, 0.8, 0.7, 0.6, 0.5):
+            for scale in (1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3):
                 req = math.ceil(req0 * frac * scale)
                 best = (_dense_search if program.get("dense_layout") else _search)(ctx, sub, scale, req)
                 if best:
