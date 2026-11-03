@@ -452,13 +452,27 @@ def step_layout(job_id):
                                   keep_bldgs=[b["geom"] for b in keep], steep=steep, dem=dem,
                                   reuse_pave=[p["geom"] for p in pave_keep], shared_stalls=shared, tie_existing=rules.get("tie_existing", True) is not False)
     except RuntimeError as e:
-        dr = rules.get("drive_road")
-        fr = {r["key"]: r["frontage_ft"] for r in (summary.get("front_roads") or [])}
-        if dr and "does not fit" in str(e) and fr:
-            best = max(fr, key=fr.get)
-            raise RuntimeError(f"{e} Only {fr.get(dr, 0):,} ft of this parcel fronts {dr}, too little to organize the site around. "
-                               f"Pick Automatic or {best} ({fr[best]:,} ft of frontage) for the driveway.") from None
-        raise
+        res = None
+        if "does not fit" in str(e) and steep:   # the slope limit left too little land: treat steep ground as buildable (flagged) before giving up
+            try:
+                res = generate_layout(ctx["parcel_sp"], ctx["k"], ctx["rds"], ctx["wet"], ctx["fl"], setbacks, prog, rules=rules,
+                                      parking_setbacks_ft=psb, drive_road=rules.get("drive_road") or auto_dr_first,
+                                      keep_bldgs=[b["geom"] for b in keep], steep=[], dem=dem,
+                                      reuse_pave=[p["geom"] for p in pave_keep], shared_stalls=shared, tie_existing=rules.get("tie_existing", True) is not False)
+                res["metrics"].setdefault("warnings", []).append("The slope limit left too little buildable land, so ground steeper than it is used for the pad (extra grading)")
+                steep = []
+            except RuntimeError:
+                res = None
+        if res is not None:
+            pass
+        else:
+            dr = rules.get("drive_road")
+            fr = {r["key"]: r["frontage_ft"] for r in (summary.get("front_roads") or [])}
+            if dr and "does not fit" in str(e) and fr:
+                best = max(fr, key=fr.get)
+                raise RuntimeError(f"{e} Only {fr.get(dr, 0):,} ft of this parcel fronts {dr}, too little to organize the site around. "
+                                   f"Pick Automatic or {best} ({fr[best]:,} ft of frontage) for the driveway.") from None
+            raise
     if prog.get("min_rlv") not in (None, ""):     # only when a minimum residual land value is set: sizing needs the researched costs (a web-search pass)
         try:
             from . import rlv
