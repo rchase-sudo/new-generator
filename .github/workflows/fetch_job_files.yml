@@ -1,0 +1,21 @@
+name: Fetch job files (read-only)
+on:
+  workflow_dispatch:
+    inputs:
+      job_id: {description: "pipeline job id"}
+      files: {description: "space-separated file names", default: "concept_plan.png render.jpg render_raw.jpg model_front.png"}
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+    steps:
+      - run: |
+          mkdir out
+          for f in ${{ inputs.files }}; do
+            curl -sf -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+              "https://mmaqwemqbxwngqxtnsug.supabase.co/storage/v1/object/pipeline/${{ inputs.job_id }}/$f" -o "out/$f" || echo "missing $f"
+          done
+          ls -la out
+      - uses: actions/upload-artifact@v4
+        with: {name: job-files, path: out}
