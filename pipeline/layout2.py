@@ -722,7 +722,10 @@ def _generate_inner(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=N
     buildings = program.get("buildings") or [{"name": "Building", "use": "retail", "footprint_sf": 8000, "depth_ft": 80, "stories": 1}]
     gfa = sum(b["footprint_sf"] * b.get("stories", 1) for b in buildings)
     req0 = (program.get("parking") or {}).get("required")
-    req0 = float(req0) if isinstance(req0, (int, float)) and req0 > 0 else gfa / 1000 * 4
+    # an ordinance that explicitly requires zero stalls (downtown districts) is not "unknown": the plan gets whatever parking fits, never
+    # the 4 / 1,000 SF fallback (a 6-story mid-rise would otherwise need ~100 stalls on a quarter-acre lot)
+    zero_req = isinstance(req0, (int, float)) and not isinstance(req0, bool) and req0 <= 0 and req0 is not None
+    req0 = float(req0) if isinstance(req0, (int, float)) and req0 > 0 else (gfa / 1000 * 1.0 if zero_req else gfa / 1000 * 4)
     req0 = max(req0 - max(0, int(shared_stalls or 0)), 0.0)   # existing stalls the new program may share
 
     best, scale, req, dropped = None, 1.0, math.ceil(req0), []
@@ -734,8 +737,11 @@ def _generate_inner(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=N
             sub = buildings[:keep]
             frac = sum(b["footprint_sf"] * b.get("stories", 1) for b in sub) / gfa
             for scale in (1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3):
-                req = math.ceil(req0 * frac * scale)
-                best = (_dense_search if program.get("dense_layout") else _search)(ctx, sub, scale, req)
+                base = math.ceil(req0 * frac * scale)
+                for req in ([base, math.ceil(base / 2), 0] if zero_req else [base]):   # zero-minimum sites: as much parking as fits, building first
+                    best = (_dense_search if program.get("dense_layout") else _search)(ctx, sub, scale, req)
+                    if best:
+                        break
                 if best:
                     break
             if best:
@@ -963,6 +969,25 @@ def _generate_inner(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=N
 STEM_CELL = 6.0
 
 
+def _generate_ring_fallback(*a, **kw):
+    """The drive loop around the buildings is 24 ft wide. On a shallow or narrow lot that alone can rule out any layout, so when nothing fits
+    the loop is tried at 16 ft and then 12 ft (a one-way fire lane) before the layout is declared impossible."""
+    global RING
+    r0, last = RING, None
+    try:
+        for ring in (r0, 16.0, 12.0):
+            RING = ring
+            try:
+                return _generate_inner(*a, **kw)
+            except RuntimeError as e:
+                if "does not fit" not in str(e):
+                    raise
+                last = e
+        raise last
+    finally:
+        RING = r0
+
+
 def _generate(*a, **kw):
     """program['gap_ft'] sets the clear space (walks + lawn) between buildings in a row; default GAP. Used for open-space layouts
     where fewer, larger buildings sit apart with lawn between them."""
@@ -973,7 +998,7 @@ def _generate(*a, **kw):
         gp = float(prog.get("gap_ft") or 0)
         if gp > 0:
             GAP = gp
-        return _generate_inner(*a, **kw)
+        return _generate_ring_fallback(*a, **kw)
     finally:
         GAP = g0
 
