@@ -608,12 +608,239 @@ def _dense_try(ctx, proto, office, T, d, k, x0, W, H, req, scale, name):
             "m": k, "bpos": "dense", "scale": scale, "x0": x0, "W": W, "Hd": H}
 
 
+FRONT_GAP = 20.0
+import os
+DBG = bool(os.environ.get('FRONTDBG'))
+
+
+def _front_row(bzc, dims, yf, pcx, xmin, xmax, avoid=None):
+    """Buildings side by side along y = yf (fronts toward -y), grouped around pcx, clear of the `avoid` band; a building too long for
+    the width is turned 90 degrees. Returns the rectangles, or None if they do not all fit."""
+    def ok(r):
+        return bzc.contains(r) and (avoid is None or not r.intersects(avoid))
+    xs, ds, x = [], [], xmin
+    for w, d in dims:
+        got = None
+        for (w_, d_) in ((w, d), (d, w)):
+            xx = x
+            while xx + w_ <= xmax + 0.1 and not ok(box(xx, yf, xx + w_, yf + d_)):
+                xx += 5.0
+            if xx + w_ <= xmax + 0.1 and (got is None or xx - x < got[0] - x):
+                got = (xx, w_, d_)
+            if got is not None and got[0] - x < 1:
+                break
+        if got is None:
+            return None
+        xs.append(got[0]); ds.append((got[1], got[2]))
+        x = got[0] + got[1] + FRONT_GAP
+    ideal = pcx - (xs[0] + xs[-1] + ds[-1][0]) / 2
+    for k in range(int(abs(ideal) // 5), -1, -1):
+        dx = math.copysign(k * 5.0, ideal)
+        rects = [box(x_ + dx, yf, x_ + dx + w, yf + d) for x_, (w, d) in zip(xs, ds)]
+        if all(ok(r) for r in rects):
+            return rects
+    return None
+
+
+def _front_cols(pzc, block, xd, ytop, pminy, nbays, ):
+    """'Along' bays: 24 ft aisles running into the site from the road with a stall column each side, joined by a cross aisle at
+    y = ytop. Returns (Stalls, aisles) for bays centred on xd, nearest bays first."""
+    S, aisles = Stalls(), []
+    order = [0]
+    for j in range(1, nbays):
+        order.append(j if j % 2 else -j)
+    order = order[:nbays]
+    cols = []
+    for j in order:
+        xa = xd + 60.0 * j
+        a = box(xa - AIS / 2, pminy, xa + AIS / 2, ytop).intersection(pzc)
+        if a.is_empty or a.area < AIS * 40:
+            continue
+        got = 0
+        for x0 in (xa - AIS / 2 - SD, xa + AIS / 2):
+            valid, ys = [], list(np.arange(pminy + 2, ytop - AIS - SW, SW))
+            for y in ys:
+                s_ = box(x0, y, x0 + SD, y + SW)
+                valid.append(pzc.contains(s_) and not s_.intersects(block))
+            for run in _runs(valid):
+                for ch in _chunk(run):
+                    S.add_run([[box(x0, ys[i], x0 + SD, ys[i] + SW)] for i in ch])
+                    got += len(ch)
+        if got:
+            aisles.append(a)
+            cols.append(xa)
+    if not cols:
+        return None
+    cross = box(min(cols) - AIS / 2, ytop - AIS, max(cols) + AIS / 2, ytop).intersection(pzc)
+    return S, aisles + [cross]
+
+
+def _front_search(ctx, buildings, scale, req):
+    """Frontage layout (program["front_layout"]): buildings in one or more rows at the back of the buildable land, a parking
+    field of double-loaded bays in front of them, and one 24 ft entry drive straight in from the road. No loop drive."""
+    pz, bz = ctx["pz"], ctx["bz"]
+    prog = ctx.get("program") or {}
+    tgt = int((prog.get("parking") or {}).get("target") or 0)
+    fill = bool(prog.get("fill_parking"))
+    want = max(int(req), tgt)
+    dims = [_bldg_dims(b, scale) for b in buildings]
+    n = len(buildings)
+    pminx, pminy, pmaxx, pmaxy = pz.bounds
+    bminx, bminy, bmaxx, bmaxy = bz.bounds
+    bzc, pzc = bz.buffer(0.05), pz.buffer(0.05)
+    pcx = (pminx + pmaxx) / 2
+    dmax = max(d for _, d in dims)
+    lo, hi = ctx["drive_lo"], ctx["drive_hi"]
+    xds = [x for x in np.arange(pminx + AIS, pmaxx - AIS, 6.0)]
+    if hi >= lo:
+        xds = [x for x in xds if lo <= x <= hi] or xds
+    xds.sort(key=lambda x: abs(x - pcx))
+    xds = xds[:12]
+    xs_grid = list(np.arange(pminx + 2, pmaxx - SW + 0.01, SW))
+    pitch = dmax + 2 * WALK + AIS
+
+    def stalls_for(nb, yfront, xd, ytop_spine, block):
+        spine = box(xd - AIS / 2, yfront - nb * 60, xd + AIS / 2, ytop_spine)
+        if not pzc.contains(spine) or spine.intersects(block):
+            return None
+        aisles, S = [], Stalls()
+        for k in range(nb):
+            ytop = yfront - 60 * k
+            bay_x = []
+            for y0 in (ytop - 18, ytop - 60):
+                valid = []
+                for x in xs_grid:
+                    s_ = box(x, y0, x + SW, y0 + SD)
+                    valid.append(pzc.contains(s_) and not s_.intersects(block) and not s_.intersects(spine))
+                for run in _runs(valid):
+                    for ch in _chunk(run):
+                        S.add_run([[box(xs_grid[i], y0, xs_grid[i] + SW, y0 + SD)] for i in ch])
+                        bay_x += [xs_grid[ch[0]], xs_grid[ch[-1]] + SW]
+            if bay_x:
+                aisles.append(box(min(bay_x + [spine.bounds[0]]), ytop - 42, max(bay_x + [spine.bounds[2]]), ytop - 18).intersection(pzc))
+        return S, aisles, spine
+
+    for nrows in range(1, n + 1):
+        sizes = [len(g) for g in np.array_split(np.arange(n), nrows)]
+        groups, i0 = [], 0
+        for sz in sizes:
+            groups.append(list(range(i0, i0 + sz)))
+            i0 += sz
+        yf0 = math.floor((bmaxy - dmax) / 5) * 5
+        while yf0 - (nrows - 1) * pitch - WALK >= pminy + 66:
+            for xd in xds:
+                gap = box(xd - AIS / 2 - WALK, -1e5, xd + AIS / 2 + WALK, 1e5) if nrows > 1 else None
+                rects = [None] * n
+                ok = True
+                for r_i, g in enumerate(groups):
+                    yf = yf0 - r_i * pitch
+                    rr = _front_row(bzc, [dims[i] for i in g], yf, pcx, bminx, bmaxx, avoid=gap if r_i > 0 else None)
+                    if rr is None:
+                        ok = False
+                        break
+                    for i, r_ in zip(g, rr):
+                        rects[i] = r_
+                if not ok:
+                    continue
+                if DBG: print('placed', nrows, yf0, xd)
+                yfront = yf0 - (nrows - 1) * pitch - WALK
+                nbmax = int((yfront - pminy + 0.1) // 60)
+                if nbmax < 1:
+                    continue
+                block = unary_union([r.buffer(WALK + 2, join_style=1) for r in rects])
+                ytop_spine = (yf0 - WALK) if nrows > 1 else yfront - 18
+                cross = []
+                if nrows > 1:
+                    for r_i in range(nrows - 1):
+                        yb = yf0 - r_i * pitch - WALK
+                        xs_ = [r_.bounds[0] for r_ in rects] + [r_.bounds[2] for r_ in rects]
+                        cross.append(box(min(xs_), yb - AIS, max(xs_), yb).intersection(pzc))
+                cand = []
+                for nb in (range(nbmax, 0, -1) if fill else range(1, nbmax + 1)):
+                    r_ = stalls_for(nb, yfront, xd, ytop_spine, block)
+                    if r_ is not None and r_[0].n >= want:
+                        S_, ais_, sp_ = r_
+                        cand.append((S_.n, nb, S_, ais_, [sp_]))
+                        break
+                if nrows == 1:
+                    for nbay in ((int((pmaxx - pminx) // 60) + 1, ) if fill else range(1, int((pmaxx - pminx) // 60) + 2)):
+                        for nb_ in ([nbay] if fill else [nbay]):
+                            r_ = _front_cols(pzc, block, xd, yfront, pminy, nb_)
+                            if r_ is not None and r_[0].n >= want:
+                                cand.append((r_[0].n, -nb_, r_[0], r_[1], []))
+                                break
+                    if fill and not cand:
+                        for nb_ in range(int((pmaxx - pminx) // 60), 0, -1):
+                            r_ = _front_cols(pzc, block, xd, yfront, pminy, nb_)
+                            if r_ is not None and r_[0].n >= want:
+                                cand.append((r_[0].n, -nb_, r_[0], r_[1], []))
+                                break
+                if DBG: print('nbmax', nbmax, 'cands', [(c[0], c[1]) for c in cand])
+                if not cand:
+                    continue
+                nst, nb, S, aisles, spine = max(cand, key=lambda c: c[0]) if fill else min(cand, key=lambda c: c[0])
+                row = []
+                for b, r_ in zip(buildings, rects):
+                    w, d = r_.bounds[2] - r_.bounds[0], r_.bounds[3] - r_.bounds[1]
+                    wk = r_.buffer(WALK, join_style=1).difference(r_)
+                    row.append({"b": b, "rect": r_, "lane": None, "legs": None, "walk": wk, "service": None, "env": unary_union([r_, wk]),
+                                "w": w, "d": d, "fp": w * d, "facing": -1})
+                D = unary_union(spine + aisles + cross).buffer(0)
+                return {"D": D, "I": Polygon(), "row": row, "aisles": aisles + cross, "S": S, "n": S.n, "blk": unary_union([r["env"] for r in row]),
+                        "med": 0.0, "m": nb, "bpos": "front", "scale": scale, "xd": xd, "keep": 10 ** 6 if fill else tgt}
+            yf0 -= 5
+    return None
+
+
+def _extra_parking(ctx, best, tgt):
+    """Add parking outside the loop (program["parking"]["target"]): double-loaded bays whose 24 ft aisle joins the existing pavement, laid on
+    land the layout left free. Adds stalls to best["S"], returns the new aisle polygons."""
+    pz, S = ctx["pz"].buffer(0.05), best["S"]
+    swap = lambda g: affinity.affine_transform(g, [0, 1, 1, 0, 0, 0])  # noqa: E731
+    blk = unary_union([r["env"] for r in best["row"]] + [best["I"]]).buffer(3)
+    pave0 = best["D"].difference(best["I"])
+    out = []
+    for _ in range(14):
+        if S.n >= tgt:
+            break
+        taken = unary_union([blk] + [g.buffer(0.3) for g in S.polys] + [a.buffer(0.3) for a in out])
+        found = None
+        for sw in (False, True):
+            f = swap if sw else (lambda g: g)
+            pz_, tk_, pv_ = f(pz), f(taken), f(pave0.union(unary_union(out)) if out else pave0)
+            x0, y0, x1, y1 = pz_.bounds
+            for ya in np.arange(y0 + SD, y1 - AIS - SD, 6.0):
+                strip = box(x0 - 1, ya, x1 + 1, ya + AIS).intersection(pz_).difference(tk_.difference(pv_))
+                for a in _polys(strip):
+                    xa0, xa1 = a.bounds[0], a.bounds[2]
+                    if xa1 - xa0 < 40 or not a.buffer(1.0).intersects(pv_):
+                        continue
+                    stalls, grid = [], list(np.arange(xa0, xa1 - SW + 0.01, SW))
+                    for ys in (ya + AIS, ya - SD):
+                        valid = [pz_.contains(box(x, ys, x + SW, ys + SD)) and not box(x, ys, x + SW, ys + SD).intersects(tk_) for x in grid]
+                        for run in _runs(valid):
+                            for ch in _chunk(run):
+                                stalls.append([box(grid[i], ys, grid[i] + SW, ys + SD) for i in ch])
+                    cnt = sum(len(c) for c in stalls)
+                    if cnt >= 4 and (found is None or cnt > found[0]):
+                        found = (cnt, a, stalls, f)
+        if not found:
+            break
+        _, a, stalls, f = found
+        for c in stalls:
+            S.add_run([[f(p_)] for p_ in c])
+        out.append(f(a))
+    return out
+
+
 # ---------------------------------------------------------------- driveway
 def _driveway(ctx, D, flare=True):
     P, R = ctx["P"], ctx["R"]
     dminx, _, dmaxx, _ = D.bounds
     lo, hi = max(ctx["drive_lo"], dminx + R_OUT + AIS / 2), min(ctx["drive_hi"], dmaxx - R_OUT - AIS / 2)
     xd = (lo + hi) / 2 if hi >= lo else min(max((dminx + dmaxx) / 2, ctx["drive_lo"]), ctx["drive_hi"])
+    if ctx.get("xd") is not None:
+        xd = ctx["xd"]
     # bias toward the middle of the frontage segment that faces the pad
     probe = LineString([(xd, D.bounds[3]), (xd, P.bounds[1] - 400)])
     hd = probe.intersection(D)
@@ -732,7 +959,7 @@ def _generate_inner(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=N
     best, scale, req, dropped = None, 1.0, math.ceil(req0), []
     for pz in ordered:
         shapely.prepare(pz)
-        ctx = {"P": P, "pz": pz, "bz": bz, "R": R, "y0": math.ceil(pz.bounds[1]), "drive_lo": lo, "drive_hi": hi}
+        ctx = {"P": P, "pz": pz, "bz": bz, "R": R, "y0": math.ceil(pz.bounds[1]), "drive_lo": lo, "drive_hi": hi, "program": program}
         # shrink the program first; if it still doesn't fit, drop buildings from the end of the list (lowest priority)
         for keep in range(len(buildings), 0, -1):
             sub = buildings[:keep]
@@ -740,7 +967,11 @@ def _generate_inner(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=N
             for scale in (1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3):
                 base = math.ceil(req0 * frac * scale)
                 for req in ([base, math.ceil(base / 2), 0] if zero_req else [base]):   # zero-minimum sites: as much parking as fits, building first
-                    best = (_dense_search if program.get("dense_layout") else _search)(ctx, sub, scale, req)
+                    best = None
+                    if program.get("front_layout"):
+                        best = _front_search(ctx, sub, scale, req)
+                    if not best:
+                        best = (_dense_search if program.get("dense_layout") else _search)(ctx, sub, scale, req)
                     if best:
                         break
                 if best:
@@ -754,6 +985,10 @@ def _generate_inner(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=N
         raise RuntimeError("Even the first building at half size does not fit the usable land. Reduce the program or adjust setbacks.")
 
     D, I, row = best["D"], best["I"], best["row"]
+    ctx["xd"] = best.get("xd")
+    tgt_st = int((program.get("parking") or {}).get("target") or 0)
+    if tgt_st and best.get("bpos") != "front" and best["S"].n < tgt_st:
+        best["aisles"] = list(best["aisles"]) + _extra_parking(ctx, best, tgt_st)
     drive, xd, y_r = _driveway(ctx, D, flare=not stem)
     if stem:
         drive = drive.union(fr.fwd(stem["poly_sp"]))
@@ -779,21 +1014,22 @@ def _generate_inner(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=N
         for rid, units in S.runs.items():
             S.runs[rid] = [u for u in units if _near(unary_union([S.polys[i] for i in S.units[u]]).centroid)]
     ucen = {u: unary_union([S.polys[i] for i in idx]).centroid for u, idx in S.units.items()}
-    while S.n > req:
+    trim_to = max(req, best.get("keep", 0), tgt_st)
+    while S.n > trim_to:
         cands = []
         for rid, units in S.runs.items():
             if not units:
                 continue
             for u in {units[0], units[-1]}:
                 size = len(S.units[u])
-                if S.n - size >= req:
+                if S.n - size >= trim_to:
                     cands.append((ucen[u].distance(fronts), rid, u))
         if not cands:
             break
         _, rid, u = max(cands)
         S.runs[rid].remove(u)
     for rid, units in list(S.runs.items()):   # no orphans: drop runs left shorter than MIN_RUN if parking allows
-        if 0 < len(units) < MIN_RUN and S.n - sum(len(S.units[u]) for u in units) >= req:
+        if 0 < len(units) < MIN_RUN and S.n - sum(len(S.units[u]) for u in units) >= trim_to:
             S.runs[rid] = []
     stalls = S.live()
     n_st = len(stalls)
@@ -837,7 +1073,7 @@ def _generate_inner(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=N
     imperv_sf = pave.area + walks.area + sum(b.area for b in bldgs) + (RPf.area if RPf is not None else 0.0)
     land = [g for g in _polys(P.difference(C)) if g.intersects(dev)]
     land = unary_union(land) if land else P
-    pond = _pond(land, dev.union(grass), C, max(3000.0, imperv_sf * 0.08))
+    pond = None if program.get("no_pond") else _pond(land, dev.union(grass), C, max(3000.0, imperv_sf * 0.08))
 
     # landscape pad: straight-sided outline around the development, like the reference render
     pad = dev.buffer(14, join_style=2, mitre_limit=1.6).simplify(4).intersection(P).difference(C)
