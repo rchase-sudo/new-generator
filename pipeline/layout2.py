@@ -23,7 +23,7 @@ from .layout import DEFAULT_PARK_SB, Frame, ada_required
 SW, SD, AIS, RING = 9.0, 18.0, 24.0, 24.0
 WALK = 6.0
 R_OUT = 32.0       # outer pavement corner radius
-R_JOIN = 18.0      # fillet where drives meet
+R_JOIN = 8.0       # fillet where drives meet (small: a big one widens the driveway mouth)
 GAP = 40.0         # between building envelopes (walks + grass)
 DT = 12.0          # drive-thru lane
 SERVICE = 10.0     # grass behind a building
@@ -627,7 +627,7 @@ def _driveway(ctx, D, flare=True):
         yb = [c[1] for g in getattr(b, "geoms", [b]) for c in g.coords if c[1] < y_d] if not b.is_empty else []
         y_r = (min(yb) if yb else 0.0) - 10
     drive = box(xd - AIS / 2, y_r, xd + AIS / 2, y_d + RING)
-    r = 25.0
+    r = 10.0     # curb returns; the driveway itself stays AIS (24 ft) wide
     fl_ = box(xd - AIS / 2 - r, y_r, xd + AIS / 2 + r, y_r + r)
     fl_ = fl_.difference(Point(xd - AIS / 2 - r, y_r + r).buffer(r, 48)).difference(Point(xd + AIS / 2 + r, y_r + r).buffer(r, 48))
     return (drive.union(fl_) if flare else drive), xd, y_r
@@ -725,7 +725,8 @@ def _generate_inner(parcel_sp, k_ft, rds, wet, fl, setbacks_ft, program, rules=N
     # an ordinance that explicitly requires zero stalls (downtown districts) is not "unknown": the plan gets whatever parking fits, never
     # the 4 / 1,000 SF fallback (a 6-story mid-rise would otherwise need ~100 stalls on a quarter-acre lot)
     zero_req = isinstance(req0, (int, float)) and not isinstance(req0, bool) and req0 <= 0 and req0 is not None
-    req0 = float(req0) if isinstance(req0, (int, float)) and req0 > 0 else (gfa / 1000 * 1.0 if zero_req else gfa / 1000 * 4)
+    resi = all(any(w in str(b.get("use", "")).lower() for w in ("multi", "resid", "apart", "duplex", "town", "condo", "dwelling")) for b in buildings)
+    req0 = float(req0) if isinstance(req0, (int, float)) and req0 > 0 else (gfa / 1000 * (2.0 if resi else 4.0) if zero_req else gfa / 1000 * 4)   # zero minimum: market parking (about 1.5 / unit for housing)
     req0 = max(req0 - max(0, int(shared_stalls or 0)), 0.0)   # existing stalls the new program may share
 
     best, scale, req, dropped = None, 1.0, math.ceil(req0), []
