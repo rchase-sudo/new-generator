@@ -73,8 +73,16 @@ def _tools():
     return d
 
 
+# Agent warm-outbound preview pages (go.formadesigns.io/p/<slug>/) were taken down in Nov 2026 when Forma moved to
+# property owners. Flip this back to True only together with a new owner-facing template.
+PREVIEWS_ENABLED = False
+
+
 def step_preview(job_id, force=False):
     """Build and publish the preview page for a job. Never raises: the outcome is stored in summary.preview."""
+    if not PREVIEWS_ENABLED:   # Nov 2026: Forma now targets property owners; agent preview pages are retired
+        print(f"preview pages are retired; skipping job {job_id}")
+        return
     def save(**kw):
         job = supa.get_job(job_id)
         s = job.get("summary") or {}

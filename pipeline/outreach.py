@@ -125,6 +125,9 @@ def crm_hold(job, pv, agent, F, reason):
 def poll_requests():
     """Runs every few minutes (Modal schedule). Contacts the CRM's send button marked send_requested (preview-page contacts that now have an email)
     are added to the Instantly campaign with their page link, then marked sent."""
+    from .preview import PREVIEWS_ENABLED
+    if not PREVIEWS_ENABLED:   # the preview pages this sends are retired, so nothing goes to Instantly
+        return
     h = _crm_headers()
     if not h:
         return
