@@ -126,7 +126,7 @@ def c7(meta, X, extra=()):
             "Dead-end access roads in excess of 150 ft shall be provided with an approved turnaround.",
             "Proposed buildings shall be provided with an automatic sprinkler system designed and installed per NFPA 13 and the local fire department regulations.",
             "Underground water mains serving sprinkler or standpipe systems shall be flushed per NFPA 24 and witnessed by the fire department.",
-            "Hydrant spacing and fire flow shall be confirmed with the water provider and the fire department. Plans for fire protection systems shall be submitted to the fire department for review and approval prior to construction."] + list(extra)
+            "Hydrant spacing and fire flow shall be confirmed with the water provider and the fire department. Plans for fire protection systems shall be submitted to the fire department for review and approval prior to construction."] + list(X.get("fire_notes") or []) + list(extra)
 
 
 def c8(meta, X, extra=()):

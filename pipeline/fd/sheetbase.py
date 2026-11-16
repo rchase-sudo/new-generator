@@ -97,6 +97,7 @@ class Sheet:
 
     def txt(self, x, y, s, size=7.0, rot=0, ha="center", va="center", weight="normal", color=INK, halo=False, z=30, family=FONT, box=True, **kw):
         t = self.ax.text(x, y, s, fontsize=size, rotation=rot, ha=ha, va=va, fontweight=weight, color=color, family=family, zorder=z, **kw)
+        t.set_clip_on(True)
         if halo:
             import matplotlib.patheffects as pe
             t.set_path_effects([pe.withStroke(linewidth=2.2, foreground="white")])

@@ -187,6 +187,9 @@ def proposed_base(S, X, labels=True, fill=True, existing=True):
     pond = P_["poly"]
     S.poly(pond, ec=INK, lw=1.1, z=9)
     S.poly(pond.buffer(-(P_["depth_ft"] * P_.get("side", 3.0))), ec=INK, lw=0.6, z=9)
+    if X["L"].get("turnaround") is not None:
+        c_ = X["L"]["turnaround"].centroid
+        S.txt(c_.x, c_.y, "FIRE APPARATUS TURNAROUND\n(120' HAMMERHEAD, 20' WIDE)", 5.2, halo=True, z=40)
 
 
 def stationing(S, X, step=50.0, size=5.2):

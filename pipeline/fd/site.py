@@ -495,31 +495,25 @@ def onsite(g, z_prop, ex_z, G, L, gpd, R, septic=True):
 
 
 def fire(g, G, L, util):
-    sp = G["spine"]
+    from . import firefix
+    sp = L.get("fire_route") or G["spine"]
     out = {"warnings": []}
-    # fire lane width along the spine
+    # clear width along the fire route (20 ft required)
     pv = L["pave"].union(L["drive"]) if L.get("drive") is not None else L["pave"]
     ok_w = 0
     n = 0
-    for s in np.arange(0, sp.length, 10.0):
+    for s in np.arange(15.0, sp.length - 10.0, 10.0):
         p = sp.interpolate(s)
         n += 1
-        if p.distance(pv.boundary) >= 11.0:
+        if p.distance(pv.boundary) >= 9.5:
             ok_w += 1
     out["lane_ok_pct"] = round(100.0 * ok_w / max(n, 1))
-    if out["lane_ok_pct"] < 85:
-        out["warnings"].append("Part of the access drive is narrower than 22 ft clear; widen for fire apparatus")
-    # min turning radius from the centerline
-    rmin = 1e9
-    pts = [sp.interpolate(s) for s in np.arange(0, sp.length, 10.0)]
-    for a, b, c in zip(pts, pts[1:], pts[2:]):
-        ab, bc, ac = a.distance(b), b.distance(c), a.distance(c)
-        area = abs((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y)) / 2
-        if area > 1e-6:
-            rmin = min(rmin, ab * bc * ac / (4 * area))
-    out["min_radius_ft"] = None if rmin > 1e8 else round(rmin)
-    if rmin < 30:
-        out["warnings"].append(f"Centerline turning radius of about {rmin:.0f} ft is tight for a 100 ft ladder truck (inside radius of 25 ft needed)")
+    if out["lane_ok_pct"] < 90:
+        out["warnings"].append(f"The fire lane is narrower than 20 ft clear along about {100 - out['lane_ok_pct']}% of the access route (buildings or the property line leave no room to widen it)")
+    r_cl = L.get("fire_rmin_cl")
+    out["min_radius_ft"] = None if r_cl is None else round(r_cl - firefix.LANE / 2)
+    if r_cl is not None and r_cl - firefix.LANE / 2 < firefix.R_IN - 1.0:
+        out["warnings"].append(f"One turn on the fire route has an inside radius of about {max(r_cl - firefix.LANE / 2, 0):.0f} ft (25 ft needed for a ladder truck); the drive legs there are too short to open it further")
     out["truck_envelope"] = (_off(sp, 6.5), _off(sp, -6.5))
     out["hydrants"] = util["hydrants"]
     out["cistern"] = util.get("cistern")
@@ -528,9 +522,11 @@ def fire(g, G, L, util):
     out["fdc"] = [nearest_points(sp, b)[1] for b in L["bldgs"]]
     out["fdc"] = [(p.x, p.y) for p in out["fdc"]]
     # dead end
-    out["dead_end_ft"] = round(sp.length)
-    if sp.length > 150:
-        out["warnings"].append("The access drive is a dead end longer than 150 ft; confirm an approved turnaround for apparatus")
+    loop = firefix.is_loop(pv, L["bldgs"])
+    out["dead_end_ft"] = 0 if loop else round(sp.length)
+    out["turnaround"] = L.get("turnaround")
+    if sp.length > 150 and not loop and L.get("turnaround") is None:
+        out["warnings"].append("The access drive is a dead end longer than 150 ft and there is no room for a hammerhead turnaround; provide an approved alternative with the fire marshal")
     return out
 
 

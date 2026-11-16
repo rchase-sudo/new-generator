@@ -317,7 +317,7 @@ def _chambers(g, z_prop, G, L, inlets, d_total, pre, warns):
     return pond
 
 
-def design(g, z_ex, z_prop, G, L, rain, soils, stype, parcel_area_sf, pond_override=None):
+def design(g, z_ex, z_prop, G, L, rain, soils, stype, parcel_area_sf, pond_override=None, floor_max=None):
     """G: grading result; L: local geometries. Returns the stormwater design dict (JSON-safe parts + geometries)."""
     warns = []
     pave_poly = L["pave"]
@@ -410,59 +410,88 @@ def design(g, z_ex, z_prop, G, L, rain, soils, stype, parcel_area_sf, pond_overr
                 top_el = lowered
     except Exception:  # noqa: BLE001
         pass
-    # the footprint is the concept layout's pond and does not change; volume comes from depth
     from shapely.ops import polylabel
-    try:
-        inr = pond_top.exterior.distance(polylabel(pond_top, 1.0))
-    except Exception:  # noqa: BLE001
-        inr = 20.0
     d_total = {s: hydro.hydrograph(area_ac, cn_post, tc_post, rain["d24"][s], stype) for s in hydro.STORMS}
-    res = None
-    last = None
-    # 3:1 earth slopes first; if the footprint is too narrow to go deep enough, steeper slopes / retaining walls
-    for side in (3.0, 2.0, 1.0):
-        max_depth = float(max(4.0, min(14.0, inr / side * 0.9)))
-        for depth in np.arange(4.0, max_depth + 0.01, 0.5):
-            bottom = round(top_el - depth, 1)
-            stage, area, stor = hydro.pond_geometry(pond_top, top_el, depth, side)
-            last = (depth, side)
-            if stor[-1] < 500:
-                continue
-            for dia in (0.25, 0.33, 0.5, 0.67, 0.83, 1.0, 1.25, 1.5, 2.0):
-                ok = True
-                out = {}
-                for s in hydro.STORMS:
-                    t, q = d_total[s]
-                    hp, qp, qo, hs = hydro.route_pond(t, q, stage, stor, (bottom + 0.5, dia), (top_el - 1.5, 10.0))
-                    out[s] = (hp, qp, float(q.max()))
-                    if s <= 50 and qp > pre[s] * 1.0:
-                        ok = False
-                if ok:
-                    break
-            if ok and out[100][0] <= top_el - 1.0:
-                res = {"poly": pond_top, "stage": stage, "stor": stor, "orifice_ft": dia, "out": out, "depth": float(depth), "side": side}
-                break
-        if res is not None:
-            break
-    if res is None:
-        depth, side = last or (4.0, 1.0)
+
+    def route(poly, depth, side, dia):
         bottom = round(top_el - depth, 1)
-        warns.append(f"Detention could not fully attenuate post to pre-development peaks within the layout's pond footprint at a {depth:.1f} ft depth; the footprint cannot change, so reduce impervious area or add underground storage")
-        stage, area, stor = hydro.pond_geometry(pond_top, top_el, depth, side)
-        dia = 0.5
+        stage, area, stor = hydro.pond_geometry(poly, top_el, depth, side)
         out = {}
         for s in hydro.STORMS:
             t, q = d_total[s]
             hp, qp, qo, hs = hydro.route_pond(t, q, stage, stor, (bottom + 0.5, dia), (top_el - 1.5, 10.0))
             out[s] = (hp, qp, float(q.max()))
-        res = {"poly": pond_top, "stage": stage, "stor": stor, "orifice_ft": dia, "out": out, "depth": float(depth), "side": side}
+        return stage, stor, out
+
+    def solve(poly, sides, cap):
+        """Shallowest basin in this footprint that holds post-development peaks at or below pre-development (2- to 50-yr) with 1 ft of freeboard."""
+        try:
+            inr = poly.exterior.distance(polylabel(poly, 1.0))
+        except Exception:  # noqa: BLE001
+            inr = 20.0
+        last = None
+        dmin = 4.0 if floor_max is None else max(4.0, math.ceil((top_el - floor_max) * 2.0) / 2.0)      # the floor sits at or below the incoming storm sewer
+        for side in sides:
+            max_depth = float(min(max(cap, dmin), inr / side * 0.9))
+            if max_depth < dmin:                      # too narrow to reach that depth at this slope
+                last = last or (dmin, side)
+                continue
+            for depth in np.arange(dmin, max_depth + 0.01, 0.5):
+                last = (float(depth), side)
+                if hydro.pond_geometry(poly, top_el, depth, side)[2][-1] < 500:
+                    continue
+                for dia in (0.25, 0.33, 0.5, 0.67, 0.83, 1.0, 1.25, 1.5, 2.0):
+                    stage, stor, out = route(poly, depth, side, dia)
+                    if all(out[s][1] <= pre[s] for s in hydro.STORMS if s <= 50):
+                        if out[100][0] <= top_el - 1.0:
+                            return {"poly": poly, "stage": stage, "stor": stor, "orifice_ft": dia, "out": out, "depth": float(depth), "side": side}, last
+                        break
+        return None, last
+
+    # candidate footprints: the concept pond, then the pond grown step by step into the open land beside it
+    # (never into paving, buildings, walks, wetlands or the 10 ft property line buffer)
+    cands = [pond_top]
+    keep = [x for x in [L.get("pave"), L.get("walk")] + list(L.get("bldgs") or []) if x is not None and not x.is_empty]
+    free = L["parcel"].buffer(-10.0).difference(unary_union(keep).buffer(12.0)) if keep else L["parcel"].buffer(-10.0)
+    if L.get("wet") is not None and not L["wet"].is_empty:
+        free = free.difference(L["wet"].buffer(25.0))
+    free = free.union(pond_top)
+    for k in range(1, 16):
+        cand = pond_top.buffer(8.0 * k).intersection(free).buffer(-6.0).buffer(6.0)
+        cps = [c_ for c_ in polys(cand) if c_.intersects(pond_top)]
+        if not cps:
+            break
+        cand = max(cps, key=lambda c_: c_.area).union(pond_top).buffer(0)
+        cand = max(polys(cand), key=lambda c_: c_.area).simplify(1.0)
+        if cand.area < cands[-1].area * 1.03:
+            break
+        cands.append(cand)
+    # 3:1 earth slopes up to 8 ft deep in the smallest footprint that works; then 2:1; then whatever the largest footprint can do
+    res, last = None, None
+    for sides, cap, pool in (((3.0,), 8.0, cands), ((2.0,), 10.0, cands), ((3.0, 2.0, 1.0), 14.0, cands[-1:])):
+        for cand in pool:
+            res, last = solve(cand, sides, cap)
+            if res is not None:
+                break
+        if res is not None:
+            break
+    grown = cands[-1]
+    if res is not None and not res["poly"].equals(pond_top):
+        warns.append(f"Detention pond enlarged from the concept footprint ({pond_top.area:,.0f} SF) to {res['poly'].area:,.0f} SF so the required volume fits at {res['side']:g}:1 slopes, {res['depth']:.1f} ft deep")
+    if res is None:
+        depth, side = last or (4.0, 1.0)
+        warns.append(f"Detention cannot bring post-development peaks down to pre-development in the open land available ({grown.area:,.0f} SF pond, {depth:.1f} ft deep); reduce impervious area or add underground storage")
+        stage, stor, out = route(grown, depth, side, 0.5)
+        res = {"poly": grown, "stage": stage, "stor": stor, "orifice_ft": 0.5, "out": out, "depth": float(depth), "side": side}
+    if not res["poly"].equals(pond_top):
+        L["pond"] = res["poly"]
     depth, side = res["depth"], res["side"]
     bottom = round(top_el - depth, 1)
     if side < 3.0:
-        warns.append(f"The concept pond footprint is too narrow for 3:1 slopes at the depth needed; interior slopes are {side:g}:1 (retaining walls / structural slopes) to hold the volume")
+        warns.append(f"The open land around the pond is too narrow for 3:1 slopes at the depth needed; interior slopes are {side:g}:1 (retaining walls / structural slopes) to hold the volume")
     if depth > 8.0:
-        warns.append(f"The pond is {depth:.1f} ft deep to hold the required volume inside the concept footprint; provide fencing / safety bench and confirm geotechnical and groundwater conditions")
-    pond = {"poly": res["poly"], "top_el": top_el, "bottom_el": bottom, "depth_ft": depth, "footprint_fixed": True, "side": res["side"], "orifice_in": round(res["orifice_ft"] * 12, 1),
+        warns.append(f"The pond is {depth:.1f} ft deep to hold the required volume in the land available; provide fencing / safety bench and confirm geotechnical and groundwater conditions")
+    pond = {"poly": res["poly"], "top_el": top_el, "bottom_el": bottom, "depth_ft": depth, "footprint_fixed": res["poly"].equals(pond_top), "side": res["side"], "orifice_in": round(res["orifice_ft"] * 12, 1),
             "weir_crest": round(top_el - 1.5, 2), "weir_len_ft": 10.0, "top_area_sf": float(res["poly"].area), "storage_cf": float(res["stor"][-1]),
             "table": [{"storm": s, "pre_cfs": round(pre[s], 2), "post_cfs": round(res["out"][s][2], 2), "out_cfs": round(res["out"][s][1], 2),
                        "stage": round(res["out"][s][0], 2)} for s in hydro.STORMS]}

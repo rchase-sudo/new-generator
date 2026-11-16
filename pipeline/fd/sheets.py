@@ -40,8 +40,58 @@ def _site_geom(X, extra=()):
     return unary_union([g for g in gs if g is not None and not g.is_empty])
 
 
+SPLIT = ("C2", "C3", "C4", "C5", "C6", "C7", "C8")      # plan sheets that are cut into match-lined windows on long sites
+
+
+def windows(X, panel_w=8.6, margin=45.0, max_scale=60):
+    """A site too long to read on one sheet is cut into windows along its long axis, each at 1 in = 60 ft or larger, joined by match lines.
+    Returns [] when one sheet is enough."""
+    from ..concept_drawing import TB_DRAW
+    from .sheetbase import PX_H, PX_W
+    x0, y0, x1, y1 = TB_DRAW
+    w_in, h_in = (x1 - x0) * PX_W - panel_w, (y1 - y0) * PX_H
+    minx, miny, maxx, maxy = _site_geom(X).bounds
+    dx, dy = maxx - minx, maxy - miny
+    if max((dx + 2 * margin) / w_in, (dy + 2 * margin) / h_in) <= max_scale:
+        return []
+    along_x = dx / w_in >= dy / h_in
+    long_ft, short_ft, long_in, short_in = (dx, dy, w_in, h_in) if along_x else (dy, dx, h_in, w_in)
+    best = None
+    for sc in (30, 40, 50, 60, 80, 100):
+        if (short_ft + 2 * margin) / short_in > sc:
+            continue
+        n = int(math.ceil(long_ft / (long_in * sc - 2 * margin)))
+        if n <= 8:
+            best = (sc, n)
+            break
+    if best is None or best[1] < 2:
+        return []
+    sc, n = best
+    step = long_ft / n
+    out = []
+    for i in range(n):
+        a = (minx if along_x else miny) + i * step
+        bx = box(a, miny, a + step, maxy) if along_x else box(minx, a, maxx, a + step)
+        out.append({"box": bx, "scale": sc, "k": i + 1, "n": n, "along_x": along_x, "cuts": [a] * (i > 0) + [a + step] * (i < n - 1)})
+    return out
+
+
 def _site(meta, X, no, title, extra=(), margin=45, **kw):
-    return Sheet(meta, no, title, (0, 0), fit_geom=_site_geom(X, extra), margin_ft=margin, panel=True, rotate_north=X["frame"].north_deg, **kw)
+    w = X.get("_win")
+    if not w:
+        return Sheet(meta, no, title, (0, 0), fit_geom=_site_geom(X, extra), margin_ft=margin, panel=True, rotate_north=X["frame"].north_deg, **kw)
+    c = w["box"].centroid
+    S = Sheet(meta, f"{no}.{w['k']}", f"{title} ({w['k']} OF {w['n']})", (c.x, c.y), scale=w["scale"], panel=True, rotate_north=X["frame"].north_deg, **kw)
+    bx0, by0, bx1, by1 = w["box"].bounds
+    for cut in w["cuts"]:
+        other = w["k"] - 1 if abs(cut - (bx0 if w["along_x"] else by0)) < 1e-6 else w["k"] + 1
+        if w["along_x"]:
+            xs, ys, tx, ty, rot = [cut, cut], [S.view[1], S.view[3]], cut, by0 - 0.55 * margin, 90
+        else:
+            xs, ys, tx, ty, rot = [S.left_view[0], S.left_view[2]], [cut, cut], bx0 + 0.2 * (bx1 - bx0), cut, 0
+        S.ax.plot(xs, ys, color=INK, lw=2.2, ls=(0, (14, 4, 3, 4)), zorder=57)
+        S.txt(tx, ty, f"MATCH LINE - SEE SHEET {no}.{other}", 8, rot=rot, weight="bold", z=58)
+    return S
 
 
 def _legend(S, fx, fy, items, title="LEGEND", w=2.7):
@@ -312,7 +362,7 @@ def c4(meta, X):
             S.txt(c.x, c.y, f"UNDERGROUND DETENTION\nTOP OF STONE {pond['stone_top_el']:.1f}  BOT {pond['bottom_el']:.1f}", 5.6, weight="bold", halo=True, z=30)
     else:
         c = pond["poly"].centroid
-        S.txt(c.x, c.y, f"DETENTION POND (CONCEPT FOOTPRINT)\nTOP {pond['top_el']:.1f}  BOT {pond['bottom_el']:.1f}  DEPTH {pond['depth_ft']:.1f}'\nWEIR {pond['weir_crest']:.1f}\n{pond.get('side', 3.0):g}:1 SIDE SLOPES", 5.8, weight="bold", halo=True, z=30)
+        S.txt(c.x, c.y, f"DETENTION POND{' (CONCEPT FOOTPRINT)' if pond.get('footprint_fixed') else ''}\nTOP {pond['top_el']:.1f}  BOT {pond['bottom_el']:.1f}  DEPTH {pond['depth_ft']:.1f}'\nWEIR {pond['weir_crest']:.1f}\n{pond.get('side', 3.0):g}:1 SIDE SLOPES", 5.8, weight="bold", halo=True, z=30)
     for s in X["net"]["structs"]:
         if s["kind"] in ("CB", "DMH"):
             S.ax.plot([s["xy"][0]], [s["xy"][1]], marker="s" if s["kind"] == "CB" else "o", ms=5, mfc="white", mec=INK, zorder=32)

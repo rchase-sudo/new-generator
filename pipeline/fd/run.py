@@ -72,6 +72,15 @@ def build(ctx, lay, job, rules, prog, log=print):
     wm = g.mask(L["wet"].buffer(2.0)) if L.get("wet") is not None and not L["wet"].is_empty else None
     out["wet_warnings"] = []
     G = grading.run(L, ex_z, g, road_all)
+    out["fire_notes"] = []
+    try:                                                    # fire apparatus access is built into the pavement, then the site is graded again
+        from . import firefix
+        a0 = L["pave"].area
+        out["fire_notes"] = firefix.apply(L, G["spine"])
+        if abs(L["pave"].area - a0) > 50:
+            G = grading.run(L, ex_z, g, road_all)
+    except Exception as e:  # noqa: BLE001
+        log(f"fire access design skipped: {type(e).__name__}: {e}")
     z0 = grading.surface(g, ex_z, G["z_design"], G["design_mask"], protect=wm)
     ew0 = grading.earthwork(g, ex_z, z0)
     G["lod_mask"] = ew0["dist_mask"]
@@ -81,26 +90,38 @@ def build(ctx, lay, job, rules, prog, log=print):
     rain = hydro.rainfall(*lat_lon)
     soils = soils_hsg(*lat_lon)
     stype = hydro.storm_type(*lat_lon)
-    D = drainage.design(g, ex_z, z0, G, L, rain, soils, stype, P.area)
-    pond = D["pond"]
-    # pond into the surface: bank at the top elevation, 3:1 inside to the floor, 6 ft berm top outside
-    chambers = pond.get("kind") == "chambers"          # underground: nothing to grade, the surface is the pavement already designed
-    if chambers:
-        pm = np.zeros(g.X.shape, bool)
-        rim = np.zeros(g.X.shape, bool)
-        zd = G["z_design"].copy()
-    else:       # the basin is written from the exact pond outline so the bank contours are smooth, not raster steps
-        zd, pm, rim, _zz = grading.pond_surface(g, G["z_design"], pond["poly"], pond["top_el"], pond["bottom_el"], pond.get("side", 3.0))
-        zd[rim & ~G["design_mask"]] = pond["top_el"]
-    dmask = G["design_mask"] | pm | rim
-    z_prop = grading.surface(g, ex_z, zd, dmask, protect=wm)
+    pond0_layout = L.get("pond")
+
+    def pond_pass(floor_max=None):
+        L["pond"] = pond0_layout
+        D = drainage.design(g, ex_z, z0, G, L, rain, soils, stype, P.area, floor_max=floor_max)
+        pond = D["pond"]
+        # pond into the surface: bank at the top elevation, 3:1 inside to the floor, 6 ft berm top outside
+        chambers = pond.get("kind") == "chambers"          # underground: nothing to grade, the surface is the pavement already designed
+        if chambers:
+            pm = np.zeros(g.X.shape, bool)
+            rim = np.zeros(g.X.shape, bool)
+            zd = G["z_design"].copy()
+        else:       # the basin is written from the exact pond outline so the bank contours are smooth, not raster steps
+            zd, pm, rim, _zz = grading.pond_surface(g, G["z_design"], pond["poly"], pond["top_el"], pond["bottom_el"], pond.get("side", 3.0))
+            zd[rim & ~G["design_mask"]] = pond["top_el"]
+        dmask = G["design_mask"] | pm | rim
+        z_prop = grading.surface(g, ex_z, zd, dmask, protect=wm)
+        if not chambers:
+            z_prop = grading.smooth_around(g, z_prop, dmask, g.mask(pond["poly"].buffer(80)))
+            z_prop = grading.taper_protect(g, z_prop, ex_z, wm, dmask)
+        ew = grading.earthwork(g, ex_z, z_prop)
+        G["lod_mask"] = ew["dist_mask"]
+        G["z_prop"], G["z_design2"], G["design_mask2"] = z_prop, zd, dmask
+        net = drainage.storm_network(g, z_prop, D, L, rain)
+        return D, pond, chambers, pm, rim, zd, dmask, z_prop, ew, net
+
+    D, pond, chambers, pm, rim, zd, dmask, z_prop, ew, net = pond_pass()
     if not chambers:
-        z_prop = grading.smooth_around(g, z_prop, dmask, g.mask(pond["poly"].buffer(80)))
-        z_prop = grading.taper_protect(g, z_prop, ex_z, wm, dmask)
-    ew = grading.earthwork(g, ex_z, z_prop)
-    G["lod_mask"] = ew["dist_mask"]
-    G["z_prop"], G["z_design2"], G["design_mask2"] = z_prop, zd, dmask
-    net = drainage.storm_network(g, z_prop, D, L, rain)
+        fes = next((s_ for s_ in net["structs"] if s_["kind"] == "FES"), None)
+        if fes is not None and fes.get("inv_in") is not None and fes["inv_in"] < pond["bottom_el"] - 0.05:
+            # the storm sewer arrives below the pond floor: size the pond again with its floor at or below the pipe
+            D, pond, chambers, pm, rim, zd, dmask, z_prop, ew, net = pond_pass(floor_max=fes["inv_in"] - 0.5)
     deep = max([s.get("rim", 0) - s.get("inv_out", 0) for s in net["structs"] if s["kind"] in ("CB", "DMH") and s.get("inv_out") is not None] or [0])
     tight = min([s_.get("cover", 9.0) for s_ in net["structs"] if s_["kind"] in ("CB", "DMH")] or [9.0])
     if False and (deep > 9.0 or tight < 1.5):     # the layout's pond sits too far below the pavement for a shallow gravity system: site it next to the lot instead
