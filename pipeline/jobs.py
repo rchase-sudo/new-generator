@@ -779,6 +779,8 @@ def step_design(job_id):
     files = {"plan_set.pdf": supa.upload(job_id, res["pdf"])}
     for p in res["pngs"]:
         files[os.path.basename(p)] = supa.upload(job_id, p)
+    for name, p in (res.get("files") or {}).items():      # CAD exports: layered DXF + LandXML surfaces and pipe networks
+        files[name] = supa.upload(job_id, p)
     outputs = supa.get_job(job_id).get("outputs") or {}
     outputs["design"] = files
     supa.update_job(job_id, outputs=outputs, design=planset.summary(res["X"]), design_status="completed", design_error=None, progress="Plan set ready")

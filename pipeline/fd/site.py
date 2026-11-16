@@ -249,35 +249,101 @@ def utilities(g, z_prop, ex_z, G, L, road_all, prog, fr, road_key=None, mode="mu
         if p - full[-1] > 20.0:
             full.append(p)
     full[-1] = S.length
-    inv_ex = z_road - 8.0                                      # assumed depth of the existing main
-    slope = 0.005
-    mh = []
-    for k, p in enumerate(full):
-        pt = _along(S, p)
-        inv = inv_ex + slope * p + 0.1 * k                     # 0.1 ft drop across each manhole
-        rim = float(g.at(z_prop if k else ex_z, [pt.x], [pt.y])[0])
-        mh.append({"id": "EX-SMH" if k == 0 else f"SMH-{k}", "xy": (pt.x, pt.y), "sta": p, "rim": round(rim, 2), "inv": round(inv, 2), "depth": round(rim - inv, 1), "existing": k == 0})
-    lift = [m for m in mh[1:] if m["depth"] < 4.0]
-    if lift:
-        out["warnings"].append(f"Gravity sewer cannot keep 4 ft of cover at {', '.join(m['id'] for m in lift)}; a lift station or grinder pumps are likely required")
-    deepm = [m for m in mh[1:] if m["depth"] > 14.0]
-    if deepm:
-        out["warnings"].append(f"Sewer manholes deeper than 14 ft at {', '.join(m['id'] for m in deepm)}; consider a lift station")
+    inv_ex = z_road - 8.0                                      # assumed invert of the existing main (to be confirmed by test pit / record drawings)
+    # ---- gravity design, upstream to downstream: under every building lateral, at least 4 ft of cover, never flatter than 0.40 % (8 in)
+    DIA, COVER, SMIN, SMAX, DROP, NMAN = 8, 4.0, 0.004, 0.08, 0.1, 0.013
+    n_mh = len(full)
+    pts = [_along(S, p_) for p_ in full]
+    rims = [float(g.at(z_prop if k else ex_z, [pt.x], [pt.y])[0]) for k, pt in enumerate(pts)]
+    lat_at = {}
+    for k, (b, l) in enumerate(zip(bl, sl)):
+        j = min(range(1, n_mh), key=lambda q: abs(full[q] - jpos[k])) if n_mh > 1 else 0
+        lat_at.setdefault(j, []).append(k)
+    def lat_inv_main(k):                                       # highest invert the main may have where building k's 6 in lateral (2 %) joins
+        return G["ffe"][k] - 4.5 - 0.02 * sl[k].length - DROP
+    top = max(lat_at) if lat_at else n_mh - 1                  # the main starts at the manhole serving the farthest building
+    inv_out, inv_in, slopes = {}, {}, {}
+    for k in range(top, 0, -1):
+        v = rims[k] - COVER - DIA / 12.0
+        for b_ in lat_at.get(k, []):
+            v = min(v, lat_inv_main(b_))
+        if k + 1 in inv_in:
+            v = min(v, inv_in[k + 1] - DROP)
+        inv_out[k] = v
+        L_ft = max(full[k] - full[k - 1], 1.0)
+        tgt = (rims[k - 1] - COVER - DIA / 12.0) if k - 1 >= 1 else inv_ex
+        s_ = min(max(SMIN, (v - tgt) / L_ft), SMAX)
+        s_ = math.ceil(s_ * 2000.0 - 1e-9) / 2000.0
+        slopes[k] = s_
+        inv_in[k] = v - s_ * L_ft                              # invert arriving at manhole k-1
+    arrive = inv_in.get(1, inv_ex)
+    depth = {k: rims[k] - inv_out[k] for k in inv_out}
+    ps = None
+    if arrive < inv_ex - 0.05 or any(d_ > 14.0 for d_ in depth.values()):
+        # gravity does not reach the main: pump station at the most downstream manhole that is still a reasonable depth
+        ps = top
+        for k in range(top, 0, -1):
+            if depth[k] > 14.0:
+                break
+            ps = k
+    qavg = gpd / 1440.0
+    qpeak = qavg * 4.0
+    cap_cfs = lambda s_: 0.463 / NMAN * (DIA / 12.0) ** (8.0 / 3.0) * math.sqrt(s_)     # noqa: E731
+    mh, spipes = [], []
+    mh.append({"id": "EX-SMH", "xy": (pts[0].x, pts[0].y), "sta": full[0], "rim": round(rims[0], 2), "inv": round(inv_ex if ps else min(inv_ex, arrive), 2),
+               "depth": round(rims[0] - inv_ex, 1), "existing": True, "kind": "EX"})
+    if not ps and arrive - inv_ex > 2.0:
+        mh[0]["drop"] = round(arrive - inv_ex, 1)
+    first = ps or 1
+    for k in range(first, top + 1):
+        is_ps = ps == k
+        mh.append({"id": "PS-1" if is_ps else f"SMH-{k - first + (0 if ps else 1)}", "xy": (pts[k].x, pts[k].y), "sta": full[k], "rim": round(rims[k], 2), "inv": round(inv_out[k], 2),
+                   "inv_in": round(inv_in[k + 1], 2) if k + 1 in inv_in else None, "depth": round(rims[k] - inv_out[k], 1), "existing": False, "kind": "PS" if is_ps else "SMH"})
+    ids = {round(m["sta"], 2): m["id"] for m in mh}
+    for k in range(top, first, -1) if ps else range(top, 0, -1):
+        c_ = cap_cfs(slopes[k])
+        spipes.append({"from": ids[round(full[k], 2)], "to": ids[round(full[k - 1], 2)], "len": full[k] - full[k - 1], "dia": DIA, "slope": slopes[k], "inv_up": round(inv_out[k], 2),
+                       "inv_dn": round(inv_in[k], 2), "q_gpm": round(qpeak, 1), "cap_gpm": round(c_ * 448.8), "v": round(c_ / (math.pi * (DIA / 24.0) ** 2), 1), "mat": "PVC SDR 35"})
+    if ps:
+        fm_len = full[ps] - full[0]
+        d_fm = 2.0 if qpeak <= 60 else 4.0
+        q_p = max(qpeak, 20.0 if d_fm == 2.0 else 80.0)
+        v_fm = q_p * 0.4085 / d_fm ** 2
+        wet_d = 6.0
+        work_ft = max(1.0, (q_p * 10.0 / 4.0) / 7.48 / (math.pi * wet_d ** 2 / 4))        # 10 minute cycle
+        on_el = inv_out[ps] - 0.5
+        off_el = on_el - work_ft
+        floor = off_el - 2.0
+        hi = max([rims[k] for k in range(0, ps + 1)]) - 5.0                               # force main at 5 ft cover: its high point
+        static = max(hi, inv_ex + 1.0) - off_el
+        hf = 10.44 * fm_len * q_p ** 1.852 / (120.0 ** 1.852 * d_fm ** 4.87)
+        tdh = static + hf * 1.1 + 5.0
+        out["pump_station"] = {"xy": mh[1]["xy"], "id": "PS-1", "rim": mh[1]["rim"], "inv_in": round(inv_out[ps], 2), "on_el": round(on_el, 2), "off_el": round(off_el, 2),
+                               "floor": round(floor, 2), "wet_dia_ft": wet_d, "q_gpm": round(q_p), "tdh_ft": round(tdh, 1), "static_ft": round(static, 1), "friction_ft": round(hf * 1.1, 1),
+                               "fm_dia_in": d_fm, "fm_len": round(fm_len), "fm_v": round(v_fm, 1), "duplex": True,
+                               "fm_line": substring(S, full[0], full[ps]) if fm_len > 1 else None}
+        mh[1]["depth"] = round(mh[1]["rim"] - floor, 1)
+        out["notes"].append(f"Gravity sewer cannot reach the assumed main invert ({inv_ex:.1f}), so a duplex submersible pump station (PS-1) and a {d_fm:.0f}\" force main "
+                            f"({fm_len:.0f} LF) discharge to the existing manhole. Pumps: {q_p:.0f} gpm at {tdh:.0f} ft TDH each. Confirm the main invert before final design: gravity service may be possible.")
     out["smh"] = mh
-    out["sewer_slope_pct"] = slope * 100
+    out["sewer_pipes"] = spipes
+    out["sewer_peak_gpm"] = round(qpeak, 1)
+    out["sewer_slope_pct"] = (min(p_["slope"] for p_ in spipes) * 100) if spipes else SMIN * 100
+    byi = {}
+    for j, ks in lat_at.items():
+        for k in ks:
+            byi[k] = j
     lat_rows = []
     for k, (b, l) in enumerate(zip(bl, sl)):
-        ffe = G["ffe"][k]
-        L_ft = l.length
-        p = jpos[k]
-        j = min(range(len(mh)), key=lambda q: abs(mh[q]["sta"] - p))
-        inv_j = mh[j]["inv"]
-        inv_b_req = inv_j + 0.1 + 0.02 * L_ft
-        inv_b_have = ffe - 4.5
-        lat_rows.append({"bldg": k + 1, "len": round(L_ft), "inv_main": round(inv_j, 2), "inv_bldg": round(inv_b_req, 2), "ok": inv_b_have >= inv_b_req - 0.01,
-                         "bldg_out_inv": round(inv_b_have, 2)})
-        if inv_b_have < inv_b_req - 0.01:
-            out["warnings"].append(f"Building {k + 1}: sewer lateral invert {inv_b_req:.1f} is above the building outlet {inv_b_have:.1f}; pump or deeper main required")
+        L_ft = max(l.length, 1.0)
+        j = byi.get(k, 1)
+        inv_j = inv_out.get(max(j, first), inv_ex)
+        inv_b = G["ffe"][k] - 4.5
+        s_lat = (inv_b - (inv_j + DROP)) / L_ft
+        lat_rows.append({"bldg": k + 1, "len": round(L_ft), "inv_main": round(inv_j + DROP, 2), "inv_bldg": round(inv_b, 2), "ok": s_lat >= 0.0099,
+                         "bldg_out_inv": round(inv_b, 2), "slope": s_lat})
+        if s_lat < 0.0099:
+            out["warnings"].append(f"Building {k + 1}: the sewer lateral has only {s_lat * 100:.1f}% of fall to the main; raise the floor or use an ejector pump")
     out["sewer_lat_rows"] = lat_rows
     out["notes"].append(f"Service corridor enters the site from {road_key or 'the nearest road'} at the property line and stays inside the parcel; " +
                         ("water and sewer tap the road mains there." if has_water else "the sewer taps the road main there."))

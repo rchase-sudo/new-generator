@@ -17,6 +17,9 @@ PRELIM = ("PRELIMINARY — FOR PLANNING AND PERMIT-PREPARATION REVIEW ONLY. NOT 
           "before any design is relied on.")
 
 
+from . import details  # noqa: E402
+
+
 def table(S, X0, Y0, col_w, rows, title=None, size=5.2, row_h=0.19, **kw):
     """Grid table; on panel sheets it goes at the panel cursor, scaled to the panel width."""
     if not getattr(S, "panel", False):
@@ -24,7 +27,8 @@ def table(S, X0, Y0, col_w, rows, title=None, size=5.2, row_h=0.19, **kw):
     k = (S.PW - 0.6) / sum(col_w)
     col_w = [c * k for c in col_w]
     top = S.cur - (0.32 * S.scale if title else 0)
-    y = _dtable(S, S.px, top, col_w, rows, title=title, size=max(size, 7.6), row_h=max(row_h, 0.3), **kw)
+    big = len(rows) > 9                                   # long schedules use a tighter row so the panel still holds the notes
+    y = _dtable(S, S.px, top, col_w, rows, title=title, size=6.4 if big else max(size, 7.6), row_h=0.22 if big else max(row_h, 0.3), **kw)
     S.cur = y - 0.4 * S.scale
     return y
 
@@ -398,10 +402,10 @@ def c5(meta, X):
             ["Orifice", f"{pond['orifice_in']:.1f}\" dia."], ["Weir crest / length", f"{pond['weir_crest']:.2f} / {pond['weir_len_ft']:.0f} ft"],
             ["CN pre / post", f"{D['cn_pre']:.0f} / {D['cn_post']:.0f}"], ["Tc pre / post", f"{D['tc_pre']:.1f} / {D['tc_post']:.1f} min"], ["Soil group", D["hsg"]]]
     y = table(S, X0, y - 0.3 * S.scale, [1.8, 2.1], info, size=6, row_h=0.2)
-    prow = [["PIPE", "FROM → TO", "LEN", "DIA", "SLOPE", "Q10", "CAP", "INV UP", "INV DN"]]
+    prow = [["PIPE", "FROM → TO", "LEN", "DIA", "SLOPE", "Q10", "CAP", "V", "INV UP", "INV DN", "COVER"]]
     for i, p in enumerate(net["pipes"], 1):
-        prow.append([f"P-{i}", f"{p['from']} → {p['to']}", f"{p['len']:.0f}'", f"{p['dia']}\"", f"{p['slope']*100:.2f}%", f"{p['q10']:.1f}", f"{p['cap']:.1f}", f"{p['inv_up']:.2f}", f"{p['inv_dn']:.2f}"])
-    table(S, X0, y - 0.3 * S.scale, [0.5, 1.4, 0.5, 0.45, 0.6, 0.5, 0.5, 0.65, 0.65], prow, size=5.6, row_h=0.2)
+        prow.append([f"P-{i}", f"{p['from']} → {p['to']}", f"{p['len']:.0f}'", f"{p['dia']}\"", f"{p['slope']*100:.2f}%", f"{p['q10']:.1f}", f"{p['cap']:.1f}", f"{p.get('v', 0):.1f}", f"{p['inv_up']:.2f}", f"{p['inv_dn']:.2f}", f"{p.get('cover_up', 0):.1f}"])
+    table(S, X0, y - 0.3 * S.scale, [0.45, 1.35, 0.45, 0.4, 0.55, 0.45, 0.45, 0.4, 0.6, 0.6, 0.5], prow, size=5.4, row_h=0.2, title="STORM SEWER DESIGN (RATIONAL, 10-YR; MANNING n = 0.012; Q, CAP in cfs; V in fps; COVER in ft)")
     _legend(S, 0.015, 0.40, [("line", dict(color=GREEN, lw=1.8), "Storm sewer"), ("mark", dict(marker="s", mfc="white", mec=INK, mew=1.2, ms=7), "Catch basin"),
                               ("mark", dict(marker="o", mfc="white", mec=GREEN, mew=1.4, ms=7), "Storm manhole (all bends / joints)"), ("mark", dict(marker="^", mfc="white", mec=INK, mew=1.2, ms=8), "Flared end section"), ("poly", dict(fc="#cfe4f5", ec=BLUE, lw=0.8), "Underground chambers" if chm else "Detention pond"),
                               ("line", dict(color="#d94f4f", lw=0.9, ls=(0, (7, 3))), "Subcatchment")])
@@ -439,7 +443,7 @@ def _profile(S, x0, y0, w, h, title, st, series, ylab="ELEV (ft)", vex=10, marks
 
 def c6(meta, X):
     G = X["G"]
-    S = Sheet(meta, "C6", "PROFILES", (0, 0), scale=1, scale_text="AS NOTED")
+    S = Sheet(meta, "C5A", "PROFILES & SCHEDULES", (0, 0), scale=1, scale_text="AS NOTED")
     W, H = S.W_in, S.H_in
     S.ax.set_xlim(0, W); S.ax.set_ylim(0, H); S.view = (0, 0, W, H)
     S.hscale = 40
@@ -512,10 +516,45 @@ def c6(meta, X):
         gz = [float(grid.at(X["z_prop"], [Sl.interpolate(t).x], [Sl.interpolate(t).y])[0]) for t in gs_]
         gz = [v if np.isfinite(v) else float(grid.at(X["ex_z"], [Sl.interpolate(t).x], [Sl.interpolate(t).y])[0]) for v, t in zip(gz, gs_)]
         fx3, fz3 = _profile(S, 8.6, y1, W - 8.6 - 1.0, 3.6, "SANITARY SEWER PROFILE (FROM EXISTING ROAD MAIN, ASSUMED DEPTH)", np.concatenate([s_, gs_]),
-                            [(gs_, gz, dict(color=GREY, lw=1.0, ls=(0, (6, 3)))), (s_, [m["rim"] for m in smh], dict(color=INK, lw=0.8)), (s_, [m["inv"] for m in smh], dict(color=BROWN, lw=1.8))], vex=10)
+                            [(gs_, gz, dict(color=GREY, lw=1.0, ls=(0, (6, 3)))), (s_, [m["rim"] for m in smh], dict(color=INK, lw=0.8))] +
+                            ([(s_[1:], [m["inv"] for m in smh[1:]], dict(color=BROWN, lw=1.8)), (gs_[gs_ <= s_[1]], [v - 5.0 for v, t in zip(gz, gs_) if t <= s_[1]], dict(color=BROWN, lw=1.4, ls=(0, (2, 2))))]
+                             if U.get("pump_station") else [(s_, [m["inv"] for m in smh], dict(color=BROWN, lw=1.8))]), vex=10)
+        if U.get("pump_station"):
+            q_ = U["pump_station"]
+            S.ax.plot([fx3(s_[1])] * 2, [max(fz3(q_["floor"]), y1), fz3(smh[1]["rim"])], color=BROWN, lw=3.0, zorder=65)
+            S.txt(fx3(s_[1] / 2), fz3(gz[0] - 5.0) - 0.3, f"{q_['fm_dia_in']:.0f}\" FORCE MAIN (5 FT COVER)", 5.2, color=BROWN, z=66)
         for m in smh:
             S.txt(fx3(m["sta"]), fz3(m["rim"]) + 0.25, f"{m['id']}\nRIM {m['rim']:.2f}\nINV {m['inv']:.2f}", 5.0, z=66)
-        S.txt(fx3(s_[len(s_) // 2]), fz3(smh[len(smh) // 2]["inv"]) - 0.35, f"8\" PVC SDR 35 @ {U['sewer_slope_pct']:.2f}% (+0.1 ft drop per manhole)", 5.8, color=BROWN, z=66)
+        S.txt(fx3(s_[len(s_) // 2]), fz3(smh[len(smh) // 2]["inv"]) - 0.35, f"8\" PVC SDR 35, MIN. {U['sewer_slope_pct']:.2f}% (0.1 ft drop per manhole)" + ("  -  PS-1 PUMPS TO EX. MAIN BY FORCE MAIN" if U.get("pump_station") else ""), 5.8, color=BROWN, z=66)
+    # ---- schedules under the profiles
+    yb = y1 - 1.1
+    rows = [["STRUCTURE", "TYPE", "RIM", "INV IN (FROM)", "INV OUT", "DEPTH", "REMARKS"]]
+    for st_ in net["structs"]:
+        ins = ", ".join(f"{b_:.2f} ({a_})" for a_, b_, _ in st_.get("inv_ins") or []) or (f"{st_['inv_in']:.2f}" if st_.get("inv_in") is not None else "-")
+        typ = {"CB": "CATCH BASIN, 4 FT DIA., 2 FT SUMP", "DMH": "DRAIN MANHOLE, 4 FT DIA.", "FES": "FLARED END SECTION + RIPRAP APRON"}.get(st_["kind"], st_["kind"])
+        io = st_.get("inv_out")
+        rem = "DROP STRUCTURE" if st_.get("drop") else ("ENERGY DISSIPATOR" if st_.get("dissipator") else "")
+        rows.append([st_["id"], typ, f"{st_['rim']:.2f}", ins, f"{io:.2f}" if io is not None else "-", f"{st_['rim'] - io + (2.0 if st_['kind'] == 'CB' else 0):.1f}'" if io is not None else "-", rem])
+    ye = table(S, 1.3, yb, [0.9, 2.6, 0.6, 2.2, 0.7, 0.6, 1.4], rows, size=5.6, row_h=0.2, title="STORM STRUCTURE SCHEDULE")
+    prow = [["PIPE", "FROM > TO", "LEN", "DIA", "MAT", "SLOPE", "Q10 cfs", "CAP cfs", "V fps", "INV UP", "INV DN", "COVER"]]
+    for i_, p_ in enumerate(net["pipes"], 1):
+        prow.append([f"P-{i_}", f"{p_['from']} > {p_['to']}", f"{p_['len']:.0f}'", f"{p_['dia']}\"", p_["mat"], f"{p_['slope'] * 100:.2f}%", f"{p_['q10']:.1f}", f"{p_['cap']:.1f}", f"{p_.get('v', 0):.1f}", f"{p_['inv_up']:.2f}", f"{p_['inv_dn']:.2f}", f"{p_.get('cover_up', 0):.1f}'"])
+    table(S, 1.3, ye - 0.55, [0.5, 1.5, 0.5, 0.45, 0.55, 0.6, 0.6, 0.6, 0.5, 0.65, 0.65, 0.6], prow, size=5.6, row_h=0.2, title="STORM PIPE SCHEDULE (10-YR RATIONAL, MANNING n = 0.012)")
+    if U.get("sewer_pipes"):
+        x2 = 11.8
+        rows = [["STRUCTURE", "TYPE", "RIM", "INV IN", "INV OUT", "DEPTH"]]
+        for m in U["smh"]:
+            typ = {"PS": "DUPLEX PUMP STATION, 6 FT DIA. WET WELL", "EX": "EXISTING MANHOLE (INVERT ASSUMED)"}.get(m.get("kind"), "SEWER MANHOLE, 4 FT DIA.")
+            rows.append([m["id"], typ, f"{m['rim']:.2f}", f"{m['inv_in']:.2f}" if m.get("inv_in") is not None else "-", f"{m['inv']:.2f}", f"{m['depth']:.1f}'"])
+        ye2 = table(S, x2, yb, [0.9, 3.0, 0.6, 0.7, 0.7, 0.6], rows, size=5.6, row_h=0.2, title="SANITARY STRUCTURE SCHEDULE")
+        rows = [["RUN", "LEN", "DIA", "MAT", "SLOPE", "INV UP", "INV DN", "PEAK gpm", "CAP gpm", "V fps"]] + [[f"{r['from']} > {r['to']}", f"{r['len']:.0f}'", f"{r['dia']}\"", "PVC SDR 35", f"{r['slope'] * 100:.2f}%", f"{r['inv_up']:.2f}", f"{r['inv_dn']:.2f}", f"{r['q_gpm']:.0f}", f"{r['cap_gpm']:.0f}", f"{r['v']:.1f}"] for r in U["sewer_pipes"]]
+        ye2 = table(S, x2, ye2 - 0.55, [1.5, 0.5, 0.45, 0.9, 0.6, 0.65, 0.65, 0.7, 0.65, 0.5], rows, size=5.6, row_h=0.2, title="SANITARY SEWER SCHEDULE (MANNING n = 0.013, PEAK FACTOR 4.0)")
+        if U.get("pump_station"):
+            q_ = U["pump_station"]
+            rows = [["PUMP STATION PS-1", ""], ["Wet well", f"{q_['wet_dia_ft']:.0f} ft dia. precast, rim {q_['rim']:.2f}, floor {q_['floor']:.2f}"], ["Influent invert", f"{q_['inv_in']:.2f}"],
+                    ["Pump on / off", f"{q_['on_el']:.2f} / {q_['off_el']:.2f}"], ["Pumps", f"duplex submersible, {q_['q_gpm']} gpm at {q_['tdh_ft']} ft TDH each"],
+                    ["TDH", f"{q_['static_ft']} ft static + {q_['friction_ft']} ft friction + 5 ft station losses"], ["Force main", f"{q_['fm_dia_in']:.0f}\" PVC SDR 21, {q_['fm_len']} LF, {q_['fm_v']} fps"]]
+            table(S, x2 + 8.6, yb, [1.5, 4.2], rows, size=5.6, row_h=0.2)
     S.txt(W * 0.5, 0.35, PRELIM, 6.0, color=GREY, z=60)
     return S
 
@@ -580,7 +619,12 @@ def c7(meta, X):
         x, y = m["xy"]
         if vb.contains(Point(x, y)):
             S.ax.plot([x], [y], marker="o", ms=7, mfc="white" if not m.get("existing") else "#f4e4d0", mec=BROWN, mew=1.4, zorder=33)
-            S.txt(x + 6, y - 14, f"{m['id']}\nRIM {m['rim']:.2f}\nINV {m['inv']:.2f}", 5.2, ha="left", color=BROWN, halo=True, z=34)
+            S.txt(x + 6, y - 14, f"{m['id']}\nRIM {m['rim']:.2f}\nINV {m['inv']:.2f}" + ("\nDUPLEX PUMP STATION" if m.get("kind") == "PS" else "") + (f"\nDROP CONN. {m['drop']:.1f} FT" if m.get("drop") else ""), 5.2, ha="left", color=BROWN, halo=True, z=34)
+    if U.get("pump_station") and U["pump_station"].get("fm_line") is not None:
+        ps_ = U["pump_station"]
+        S.line(ps_["fm_line"], color=BROWN, lw=1.6, ls=(0, (2, 2)), z=15)
+        c_ = ps_["fm_line"].interpolate(0.5, normalized=True)
+        S.txt(c_.x, c_.y + 8, f"{ps_['fm_dia_in']:.0f}\" PVC SDR 21 FORCE MAIN  {ps_['fm_len']} LF", 5.4, color=BROWN, halo=True, z=34)
     for x, y in U["xfmr"]:
         S.poly(box(x - 3, y - 3, x + 3, y + 3), fc=RED, ec=RED, z=33)
         S.txt(x, y + 9, "PAD XFMR", 5.2, color=RED, halo=True, z=34)
@@ -637,7 +681,16 @@ def c7(meta, X):
         table(S, X0, Y0, [2.3, 2.6], rows, size=5.6, row_h=0.2)
     if msew:
         rows = [["LATERAL", "LEN", "INV AT MAIN", "INV AT BLDG", "OK"]] + [[f"BLDG {r['bldg']}", f"{r['len']}'", f"{r['inv_main']:.2f}", f"{r['inv_bldg']:.2f}", "yes" if r["ok"] else "CHECK"] for r in U["sewer_lat_rows"]]
-        table(S, X0, Y0, [0.8, 0.5, 1.0, 1.0, 0.6], rows, size=5.6, row_h=0.2, title="SEWER LATERAL SCHEDULE")
+        Y0 = table(S, X0, Y0, [0.8, 0.5, 1.0, 1.0, 0.6], rows, size=5.6, row_h=0.2, title="SEWER LATERAL SCHEDULE (6\" PVC SDR 35)") - 0.3 * S.scale
+        if U.get("sewer_pipes"):
+            rows = [["RUN", "LEN", "DIA", "SLOPE", "INV UP", "INV DN", "PEAK gpm", "CAP gpm", "V fps"]] + [[f"{r['from']} > {r['to']}", f"{r['len']:.0f}'", f"{r['dia']}\"", f"{r['slope'] * 100:.2f}%", f"{r['inv_up']:.2f}", f"{r['inv_dn']:.2f}", f"{r['q_gpm']:.0f}", f"{r['cap_gpm']:.0f}", f"{r['v']:.1f}"] for r in U["sewer_pipes"]]
+            Y0 = table(S, X0, Y0, [1.5, 0.5, 0.45, 0.6, 0.65, 0.65, 0.7, 0.65, 0.5], rows, size=5.4, row_h=0.2, title="SANITARY SEWER DESIGN (MANNING n = 0.013, PEAK FACTOR 4.0)") - 0.3 * S.scale
+        if U.get("pump_station"):
+            q_ = U["pump_station"]
+            rows = [["PUMP STATION PS-1", ""], ["Wet well", f"{q_['wet_dia_ft']:.0f} ft dia. precast, rim {q_['rim']:.2f}, floor {q_['floor']:.2f}"], ["Influent invert", f"{q_['inv_in']:.2f}"],
+                    ["Pump on / off", f"{q_['on_el']:.2f} / {q_['off_el']:.2f}"], ["Pumps", f"duplex submersible, {q_['q_gpm']} gpm at {q_['tdh_ft']} ft TDH"],
+                    ["TDH = static + friction", f"{q_['static_ft']} + {q_['friction_ft']} ft (+5 ft station losses)"], ["Force main", f"{q_['fm_dia_in']:.0f}\" PVC SDR 21, {q_['fm_len']} LF, {q_['fm_v']} fps"]]
+            Y0 = table(S, X0, Y0, [1.9, 3.6], rows, size=5.4, row_h=0.2) - 0.3 * S.scale
     if msew or mwat:
         dem = [["DESIGN DEMAND (PLANNING)", ""]]
         if msew:
@@ -769,5 +822,5 @@ def c10(meta, X):
 
 
 ALL = [("T1", "TITLE SHEET", t1), ("C1", "EXISTING CONDITIONS PLAN", c1), ("C2", "SITE DEVELOPMENT PLAN", c2), ("C3", "EROSION CONTROL & DEMOLITION PLAN", c3),
-       ("C4", "GRADING & PAVING PLAN", c4), ("C5", "DRAINAGE PLAN & CALCULATIONS", c5), ("C6", "UTILITY PLAN", c7),
-       ("C7", "LANDSCAPE PLAN", c9), ("C8", "SITE LIGHTING PLAN", c10)]
+       ("C4", "GRADING & PAVING PLAN", c4), ("C5", "DRAINAGE PLAN & CALCULATIONS", c5), ("C5A", "PROFILES", c6), ("C6", "UTILITY PLAN", c7),
+       ("C7", "LANDSCAPE PLAN", c9), ("C8", "SITE LIGHTING PLAN", c10), ("C9", "CONSTRUCTION DETAILS", lambda meta, X: details.sheet(meta, X, "C9"))]

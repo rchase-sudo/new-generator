@@ -591,39 +591,70 @@ def storm_network(g, z_prop, D, L, rain, blocked_extra=None):
     def acc(p):
         return p["q_local"] + sum(acc(c) for c in child.get(p["from"], []))
     sm = {s["id"]: s for s in structs}
-    def set_inverts(nid, inv_dn):
-        for p in child.get(nid, []):
-            L_ft = p["line"].length
-            q = acc(p)
-            s_pipe = 0.005
-            d = pipe_dia(q, s_pipe)
-            # steeper where the cover is available, within limits
-            up = sm[p["from"]]
-            for s_try in (0.005, 0.0075, 0.01, 0.015, 0.02, 0.03):      # flattest slope that scours (>= 2.5 fps) keeps the system shallow
-                d_try = pipe_dia(q, s_try)
-                v = 1.486 / 0.012 * (d_try / 48.0) ** (2.0 / 3.0) * math.sqrt(s_try)
-                if v >= 2.5:
-                    s_pipe, d = s_try, d_try
-                    break
+    # ---- hydraulic design, upstream to downstream. Each run follows the finished grade at minimum cover where the ground falls,
+    # is never flatter than the self-cleansing slope, never smaller than the pipes feeding it, and matches crowns at every structure.
+    COVER, DROP, VMIN, VMAX, NMAN = 2.0, 0.1, 2.5, 10.0, 0.012
+    def s_for_v(d, v):
+        return (v * NMAN / 1.486 / (d / 48.0) ** (2.0 / 3.0)) ** 2
+    fes_target = structs[0]['inv_in']
+    done = set()
+    def size(p):
+        if id(p) in done:
+            return
+        done.add(id(p))
+        ins = child.get(p["from"], [])
+        for c in ins:
+            size(c)
+        up, dn = sm[p["from"]], sm[p["to"]]
+        L_ft = max(p["line"].length, 1.0)
+        q = acc(p)
+        dmin = max([c["dia"] for c in ins] or [12])
+        pick = None
+        for d in [x for x in PIPE_SIZES if x >= dmin]:
+            wall = d / 12.0
+            inv_up = up["rim"] - COVER - wall
+            for c in ins:                                   # crowns match; at least a 0.1 ft drop through the structure
+                inv_up = min(inv_up, c["inv_dn"] + c["dia"] / 12.0 - wall, c["inv_dn"] - DROP)
+            if dn["kind"] == "FES":                       # the outfall run falls to the pond / chamber invert (up to 15 fps with an energy dissipator)
+                s_gr, s_cap_v = (inv_up - fes_target) / L_ft, s_for_v(d, 15.0)
             else:
-                s_pipe, d = 0.03, pipe_dia(q, 0.03)
-            inv_up = inv_dn + s_pipe * L_ft + 0.1         # 0.1 ft drop through each structure
-            p.update({"len": L_ft, "dia": d, "slope": s_pipe, "q10": q, "inv_dn": round(inv_dn, 2), "inv_up": round(inv_up, 2),
-                      "cap": full_flow(d, s_pipe), "mat": "HDPE" if d <= 36 else "RCP"})
-            up["inv_out"] = round(inv_up, 2)
-            up["cover"] = round(up["rim"] - (inv_up + d / 12.0), 1)
-            up["dia_out"] = d
-            set_inverts(p["from"], inv_up)
-    set_inverts("FES-1", structs[0]["inv_in"])
+                s_gr, s_cap_v = (inv_up - (dn["rim"] - COVER - wall)) / L_ft, s_for_v(d, VMAX)
+            s_use = min(max(s_for_v(d, VMIN), s_gr, 0.005), s_cap_v)
+            s_use = math.ceil(s_use * 2000.0 - 1e-9) / 2000.0     # slopes called out to 0.05%
+            if dn["kind"] == "FES" and inv_up - s_use * L_ft > fes_target + 0.5:
+                inv_up = fes_target + s_use * L_ft         # the rest of the fall is taken as a drop in the last structure
+            pick = (d, inv_up, s_use)
+            if full_flow(d, s_use, NMAN) >= q:
+                break
+        d, inv_up, s_use = pick
+        inv_dn = inv_up - s_use * L_ft
+        cap = full_flow(d, s_use, NMAN)
+        vf = cap / (math.pi * (d / 24.0) ** 2)
+        p.update({"len": L_ft, "dia": d, "slope": s_use, "q10": q, "inv_dn": round(inv_dn, 2), "inv_up": round(inv_up, 2), "cap": cap, "v": round(vf, 1),
+                  "mat": "HDPE" if d <= 36 else "RCP", "cover_up": round(up["rim"] - inv_up - d / 12.0, 1),
+                  "cover_dn": round(dn["rim"] - inv_dn - d / 12.0, 1) if dn["kind"] != "FES" else None})
+        up["inv_out"] = round(inv_up, 2)
+        up["cover"] = round(up["rim"] - (inv_up + d / 12.0), 1)
+        up["dia_out"] = d
+        up["inv_ins"] = [(c["from"], c["inv_dn"], c["dia"]) for c in ins]
+        if (ins and min(c["inv_dn"] for c in ins) - inv_up > 2.0) or (not ins and up["rim"] - inv_up - d / 12.0 > COVER + 2.0):
+            up["drop"] = True
+        if dn["kind"] == "FES" and vf > VMAX:
+            dn["dissipator"] = True
+    for p in child.get("FES-1", []):
+        size(p)
+    last = child.get("FES-1", [])
     warns = []
+    if last:
+        fes_inv = min(p["inv_dn"] for p in last)
+        floor = structs[0]["inv_in"] if chambers else pond["bottom_el"]
+        structs[0]["inv_in"] = round(fes_inv, 2)
+        if fes_inv < floor - 0.05:
+            warns.append(f"The storm sewer arrives at the {'chamber bed' if chambers else 'pond'} at {fes_inv:.2f}, which is {floor - fes_inv:.1f} ft below its floor ({floor:.2f}); "
+                         "lower the " + ("bed" if chambers else "pond floor") + " or raise the pavement grades (engineer to resolve)")
     if chambers:
         _chamber_outlet(g, z_prop, D, L, pond, structs, pipes, blocked, dmh_no, warns)
     for s in structs:
-        if s["kind"] in ("CB", "DMH") and s.get("cover") is not None and s["cover"] < 2.0:
-            if s["cover"] < 0:
-                warns.append(f"{s['id']}: the chamber inlet is higher than this inlet, so gravity drainage does not work as drawn; move the chambers downhill, regrade, or add a pump (engineer to resolve)" if chambers else f"{s['id']}: the pond outfall is higher than this inlet, so gravity drainage does not work as drawn; lower the pond, regrade, or add a pump / forebay (engineer to resolve)")
-            else:
-                warns.append(f"{s['id']}: only {s['cover']} ft of cover over the outlet pipe; use RCP or raise grades")
         if s["kind"] in ("CB", "DMH") and s.get("inv_out") is not None and s["rim"] - s["inv_out"] > 12:
             warns.append(f"{s['id']}: structure deeper than 12 ft")
     return {"structs": structs, "pipes": pipes, "warnings": warns}

@@ -259,7 +259,14 @@ class Sheet:
         Y = y0 + (y1 - y0) * xy_frac[1]
         ftin = self.scale
         if self.panel:
-            X, Y, width_in, size, title_size = self.px, self.cur, self.PW - 0.9, 7.4, 13
+            X, Y, width_in, title_size = self.px, self.cur, self.PW - 0.9, 13
+            room = (Y - (y0 + 0.5 * ftin)) / ftin              # inches left in the panel: the notes shrink to fit rather than run off the sheet
+            for size in (7.4, 6.8, 6.2, 5.6, 5.0, 4.5):
+                ch_ = int(width_in / (size * 0.64 / 72))
+                need = 0.26 + sum(len(textwrap.wrap(it.upper(), ch_) or [""]) * size * 1.35 / 72 + 0.09 * size / 7.4 for it in items)
+                if need <= room:
+                    break
+            self._gap = 0.09 * size / 7.4
         self.txt(X, Y, title, title_size, ha="left", va="top", weight="bold", z=60, family=FONT)
         y = Y - 0.26 * ftin
         chars = int(width_in / (size * 0.64 / 72))
@@ -269,7 +276,7 @@ class Sheet:
             self.txt(X, y, lab, size, ha="left", va="top", z=60)
             for k, ln in enumerate(lines_):
                 self.txt(X + 0.22 * ftin, y - k * size * 1.35 / 72 * ftin, ln, size, ha="left", va="top", z=60)
-            y -= (len(lines_) * size * 1.35 / 72 + 0.09) * ftin
+            y -= (len(lines_) * size * 1.35 / 72 + (getattr(self, '_gap', 0.09) if self.panel else 0.09)) * ftin
         if self.panel:
             self.cur = y - 0.3 * ftin
         return y

@@ -108,7 +108,16 @@ def build(ctx, lay, job, out_dir, prog_cb=None, log=print):
             png = os.path.join(out_dir, f"sheet_{n}.png")
             S.save(pdf=pdf, png=png, dpi=60)
             pngs.append(png)
-    return {"pdf": pdf_path, "pngs": pngs, "X": X, "meta": meta}
+    files = {}
+    try:
+        from . import export
+        pr("Writing DXF and LandXML")
+        files["design.dxf"] = export.dxf(X, os.path.join(out_dir, "design.dxf"))
+        files["surfaces_pipes.xml"] = export.landxml(X, os.path.join(out_dir, "surfaces_pipes.xml"), name=" ".join(meta["project_lines"][:2]))
+    except Exception as e:  # noqa: BLE001  (the plan set itself never fails because of an export)
+        log(f"export failed: {type(e).__name__}: {e}")
+        X.setdefault("export_error", f"{type(e).__name__}: {e}")
+    return {"pdf": pdf_path, "pngs": pngs, "X": X, "meta": meta, "files": files}
 
 
 def summary(X):
