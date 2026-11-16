@@ -51,7 +51,7 @@ def _facts(X, lay, ctx):
     dw = float(L["drive"].area / sp_len) if L.get("drive") is not None else 24.0
     gpd = X["U"]["water_gpd"]
     return {"parcel_ac": L["parcel"].area / 43560, "bldg_sf": bsf, "stalls": stalls, "ada": len(L["ada"]), "imp_sf": float(D["impervious_sf"]),
-            "dist_ac": ew["disturbed_ac"], "pond_cf": D["pond"]["storage_cf"], "pond_ac": D["pond"]["top_area_sf"] / 43560,
+            "dist_ac": ew["disturbed_ac"], "pond_cf": sum(q_["storage_cf"] for q_ in D.get("ponds") or [D["pond"]]), "pond_ac": sum(q_["top_area_sf"] for q_ in D.get("ponds") or [D["pond"]]) / 43560,
             "ex_bldgs": sum(1 for e in ex if e.get("kind") != "pavement"), "ex_pave_sf": float(sum(e.get("sf") or 0 for e in ex if e.get("kind") == "pavement")),
             "wet": bool(L.get("wet") is not None and not L["wet"].intersection(L["parcel"]).is_empty),
             "flood": bool(L.get("flood") is not None and not L["flood"].intersection(L["parcel"]).is_empty),
@@ -104,6 +104,7 @@ def build(ctx, lay, job, out_dir, prog_cb=None, log=print):
     with PdfPages(pdf_path) as pdf:
         from . import sheets as _sh
         wins = _sh.windows(X)
+        X["_wins"] = wins
         X["sheet_list"] = []
         for n, title, fn in ALL:
             pr(f"Drawing {n} {title.title()}")
@@ -116,6 +117,7 @@ def build(ctx, lay, job, out_dir, prog_cb=None, log=print):
                 pngs.append(png)
                 X["sheet_list"].append(name)
         X.pop("_win", None)
+        X.pop("_wins", None)
     files = {}
     try:
         from . import export
@@ -130,7 +132,7 @@ def build(ctx, lay, job, out_dir, prog_cb=None, log=print):
 
 def summary(X):
     f, D, ew = X["facts"], X["D"], X["earthwork"]
-    return {"parcel_ac": round(f["parcel_ac"], 2), "pond_cf": round(f["pond_cf"]), "pond_top_sf": round(D["pond"]["top_area_sf"]), "orifice_in": D["pond"]["orifice_in"],
+    return {"parcel_ac": round(f["parcel_ac"], 2), "pond_cf": round(f["pond_cf"]), "pond_top_sf": round(sum(q_["top_area_sf"] for q_ in D.get("ponds") or [D["pond"]])), "ponds": len(D.get("ponds") or [1]), "orifice_in": D["pond"]["orifice_in"],
             "cut_cy": ew["cut_cy"], "fill_cy": ew["fill_cy"], "disturbed_ac": ew["disturbed_ac"], "npdes": bool(X["ER"]["npdes"]),
             "hsg": D["hsg"], "rain_source": X["rain"]["source"], "soils_source": X["soils"]["source"],
             "warnings": list(D["warnings"]) + list(X["net"]["warnings"]) + list(X["U"]["warnings"]) + list(X["FIRE"]["warnings"]) + list(X["G"]["warnings"]),

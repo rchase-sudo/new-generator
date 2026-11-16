@@ -209,9 +209,13 @@ def dxf(X, path):
         for b in pond.get("beds") or []:
             pl(b, "C-STRM-POND")
     else:
-        pl(pond["poly"], "C-STRM-POND", elev=pond["top_el"])
-        c = pond["poly"].representative_point()
-        tx((c.x, c.y), f"DETENTION POND\\PTOP {pond['top_el']:.2f}  BOT {pond['bottom_el']:.2f}\\P{pond['storage_cf']:,.0f} CF", "C-STRM-TEXT", h=2.5)
+        for q_ in D.get("ponds") or [pond]:
+            pl(q_["poly"], "C-STRM-POND", elev=q_["top_el"])
+            fl = q_["poly"].buffer(-q_["depth_ft"] * 3.0)
+            if not fl.is_empty:
+                pl(fl, "C-STRM-POND", elev=q_["bottom_el"])
+            c = q_["poly"].representative_point()
+            tx((c.x, c.y), f"DETENTION {q_.get('id', 'POND')}\\PTOP {q_['top_el']:.2f}  BOT {q_['bottom_el']:.2f}\\P{q_['storage_cf']:,.0f} CF, 3:1", "C-STRM-TEXT", h=2.5)
     for i, p in enumerate(net.get("pipes") or [], 1):
         a, b = W.pt(p["line"].coords[0]), W.pt(p["line"].coords[-1])
         ms.add_line((a[0], a[1], p["inv_up"]), (b[0], b[1], p["inv_dn"]), dxfattribs={"layer": "C-STRM-PIPE"})

@@ -36,7 +36,7 @@ def table(S, X0, Y0, col_w, rows, title=None, size=5.2, row_h=0.19, **kw):
 def _site_geom(X, extra=()):
     L = X["L"]
     ex = [e["geom"] for e in (L.get("existing") or []) if e["geom"].distance(L["dev"]) < 80]
-    gs = [L["dev"], L["pond"], X["D"]["pond"]["poly"], X["G"]["spine"].buffer(30), X["ER"]["lod"]] + ex + list(extra)
+    gs = [L["dev"], L["pond"]] + [q_["poly"] for q_ in (X["D"].get("ponds") or [X["D"]["pond"]]) if q_.get("poly") is not None] + [ X["G"]["spine"].buffer(30), X["ER"]["lod"]] + ex + list(extra)
     return unary_union([g for g in gs if g is not None and not g.is_empty])
 
 
@@ -91,7 +91,34 @@ def _site(meta, X, no, title, extra=(), margin=45, **kw):
             xs, ys, tx, ty, rot = [S.left_view[0], S.left_view[2]], [cut, cut], bx0 + 0.2 * (bx1 - bx0), cut, 0
         S.ax.plot(xs, ys, color=INK, lw=2.2, ls=(0, (14, 4, 3, 4)), zorder=57)
         S.txt(tx, ty, f"MATCH LINE - SEE SHEET {no}.{other}", 8, rot=rot, weight="bold", z=58)
+    _key_plan(S, X, w, no)
     return S
+
+
+def _key_plan(S, X, w, no):
+    """Small key plan in the lower left of a match-lined sheet: the whole parcel, every window, this one shaded."""
+    from matplotlib.patches import Polygon as MPoly, Rectangle
+    wins = X.get("_wins") or [w]
+    parcel = X["L"]["parcel"]
+    ux0, uy0, ux1, uy1 = unary_union([parcel] + [q["box"] for q in wins]).bounds
+    kw_in, kh_max = 4.2, 2.4
+    f = min(kw_in * S.scale / max(ux1 - ux0, 1.0), kh_max * S.scale / max(uy1 - uy0, 1.0))
+    kw, kh = (ux1 - ux0) * f, (uy1 - uy0) * f
+    lv = S.left_view
+    ox, oy = lv[0] + 0.45 * S.scale, lv[1] + 1.75 * S.scale
+    pad = 0.18 * S.scale
+    S.ax.add_patch(Rectangle((ox - pad, oy - pad), kw + 2 * pad, kh + 2 * pad + 0.32 * S.scale, fc="white", ec=INK, lw=0.8, zorder=59))
+    T = lambda x, y: (ox + (x - ux0) * f, oy + (y - uy0) * f)      # noqa: E731
+    for q in wins:
+        bx0, by0, bx1, by1 = q["box"].bounds
+        (ax0, ay0), (ax1, ay1) = T(bx0, by0), T(bx1, by1)
+        S.ax.add_patch(Rectangle((ax0, ay0), ax1 - ax0, ay1 - ay0, fc="#c9d6e8" if q["k"] == w["k"] else "none", ec=GREY, lw=0.6, ls=(0, (4, 2)), zorder=60))
+        S.txt((ax0 + ax1) / 2, (ay0 + ay1) / 2, f"{no}.{q['k']}", 5.6, weight="bold" if q["k"] == w["k"] else "normal", z=62, box=False)
+    for p_ in polys(parcel):
+        S.ax.add_patch(MPoly([T(x, y) for x, y in p_.exterior.coords], closed=True, fc="none", ec=INK, lw=1.0, zorder=61))
+    for b_ in X["L"]["bldgs"]:
+        S.ax.add_patch(MPoly([T(x, y) for x, y in b_.exterior.coords], closed=True, fc=GREY, ec="none", zorder=60))
+    S.txt(ox + kw / 2, oy + kh + pad + 0.1 * S.scale, "KEY PLAN", 7, weight="bold", z=62, box=False)
 
 
 def _legend(S, fx, fy, items, title="LEGEND", w=2.7):
@@ -360,9 +387,9 @@ def c4(meta, X):
         for b in pond["beds"]:
             c = b.centroid
             S.txt(c.x, c.y, f"UNDERGROUND DETENTION\nTOP OF STONE {pond['stone_top_el']:.1f}  BOT {pond['bottom_el']:.1f}", 5.6, weight="bold", halo=True, z=30)
-    else:
+    for pond in ([] if pond.get("kind") == "chambers" else X["D"]["ponds"]):
         c = pond["poly"].centroid
-        S.txt(c.x, c.y, f"DETENTION POND{' (CONCEPT FOOTPRINT)' if pond.get('footprint_fixed') else ''}\nTOP {pond['top_el']:.1f}  BOT {pond['bottom_el']:.1f}  DEPTH {pond['depth_ft']:.1f}'\nWEIR {pond['weir_crest']:.1f}\n{pond.get('side', 3.0):g}:1 SIDE SLOPES", 5.8, weight="bold", halo=True, z=30)
+        S.txt(c.x, c.y, f"DETENTION {pond.get('id', 'POND')}\nTOP {pond['top_el']:.1f}  BOT {pond['bottom_el']:.1f}  DEPTH {pond['depth_ft']:.1f}'\nWEIR {pond['weir_crest']:.1f}\n{pond.get('side', 3.0):g}:1 SIDE SLOPES", 5.8, weight="bold", halo=True, z=30)
     for s in X["net"]["structs"]:
         if s["kind"] in ("CB", "DMH"):
             S.ax.plot([s["xy"][0]], [s["xy"][1]], marker="s" if s["kind"] == "CB" else "o", ms=5, mfc="white", mec=INK, zorder=32)
@@ -415,9 +442,10 @@ def c5(meta, X):
             S.txt(c.x, c.y, f"UNDERGROUND CHAMBER BED {k_}\n{b.area:,.0f} SF  ({b.area / 36.1:.0f} CHAMBERS)" + (f"\nTOTAL {pond['storage_cf']:,.0f} CF\nTOP OF STONE {pond['stone_top_el']:.2f}  BOT {pond['bottom_el']:.2f}" if k_ == 1 else ""), 5.8, weight="bold", halo=True, z=30)
         c = pond["poly"].centroid
     else:
-        S.poly(pond["poly"], fc="#cfe4f5", ec=BLUE, lw=1.2, z=9)
-        c = pond["poly"].centroid
-        S.txt(c.x, c.y, f"DETENTION POND\n{pond['storage_cf']:,.0f} CF\nTOP {pond['top_el']:.2f}\nBOT {pond['bottom_el']:.2f}", 6, weight="bold", halo=True, z=30)
+        for q_ in D["ponds"]:
+            S.poly(q_["poly"], fc="#cfe4f5", ec=BLUE, lw=1.2, z=9)
+            c = q_["poly"].centroid
+            S.txt(c.x, c.y, f"DETENTION {q_.get('id', 'POND')}\n{q_['storage_cf']:,.0f} CF\nTOP {q_['top_el']:.2f}\nBOT {q_['bottom_el']:.2f}\n3:1 SIDE SLOPES", 6, weight="bold", halo=True, z=30)
     sc3 = [s for s in D["subcatchments"] if s["inlet"] is None]
     if sc3:
         S.txt(c.x, c.y - 50, f"{sc3[0]['id']} (to {'chambers' if chm else 'pond'}): {sc3[0]['area_sf']/43560:.2f} AC  CN {sc3[0]['cn']:.0f}", 5.8, color=col[sc3[0]["id"]], weight="bold", halo=True, z=30)
@@ -444,14 +472,31 @@ def c5(meta, X):
     S.north_arrow(); S.scale_bar()
     # pre/post table
     X0, Y0 = corner(S, 0.015, 0.97)
-    rows = [["STORM", "PRE (cfs)", "POST (cfs)", "OUT (cfs)", "STAGE (ft)"]]
-    for r in pond["table"]:
-        rows.append([f"{r['storm']}-yr", f"{r['pre_cfs']:.2f}", f"{r['post_cfs']:.2f}", f"{r['out_cfs']:.2f}", f"{r['stage']:.2f}"])
-    y = table(S, X0, Y0, [0.8, 0.8, 0.9, 0.9, 0.9], rows, title="PRE / POST PEAK RUNOFF & " + ("CHAMBER" if chm else "POND") + " ROUTING", size=6, row_h=0.2)
-    info = [["CHAMBER DATA" if chm else "POND DATA", ""], ["Grade / bottom" if chm else "Top / bottom", f"{pond['top_el']:.2f} / {pond['bottom_el']:.2f}"], ["Storage at top of stone" if chm else "Storage at top", f"{pond['storage_cf']:,.0f} CF"],
-            ["Orifice", f"{pond['orifice_in']:.1f}\" dia."], ["Weir crest / length", f"{pond['weir_crest']:.2f} / {pond['weir_len_ft']:.0f} ft"],
-            ["CN pre / post", f"{D['cn_pre']:.0f} / {D['cn_post']:.0f}"], ["Tc pre / post", f"{D['tc_pre']:.1f} / {D['tc_post']:.1f} min"], ["Soil group", D["hsg"]]]
-    y = table(S, X0, y - 0.3 * S.scale, [1.8, 2.1], info, size=6, row_h=0.2)
+    ponds = D.get("ponds") or [pond]
+    if len(ponds) == 1:
+        rows = [["STORM", "PRE (cfs)", "POST (cfs)", "OUT (cfs)", "STAGE (ft)"]]
+        for r in pond["table"]:
+            rows.append([f"{r['storm']}-yr", f"{r['pre_cfs']:.2f}", f"{r['post_cfs']:.2f}", f"{r['out_cfs']:.2f}", f"{r['stage']:.2f}"])
+        y = table(S, X0, Y0, [0.8, 0.8, 0.9, 0.9, 0.9], rows, title="PRE / POST PEAK RUNOFF & " + ("CHAMBER" if chm else "POND") + " ROUTING", size=6, row_h=0.2)
+        info = [["CHAMBER DATA" if chm else "POND DATA", ""], ["Grade / bottom" if chm else "Top / bottom", f"{pond['top_el']:.2f} / {pond['bottom_el']:.2f}"], ["Storage at top of stone" if chm else "Storage at top", f"{pond['storage_cf']:,.0f} CF"],
+                ["Orifice", f"{pond['orifice_in']:.1f}\" dia."], ["Weir crest / length", f"{pond['weir_crest']:.2f} / {pond['weir_len_ft']:.0f} ft"],
+                ["CN pre / post", f"{D['cn_pre']:.0f} / {D['cn_post']:.0f}"], ["Tc pre / post", f"{D['tc_pre']:.1f} / {D['tc_post']:.1f} min"], ["Soil group", D["hsg"]]]
+        if not chm:
+            info.insert(2, ["Depth / side slopes", f"{pond['depth_ft']:.1f} ft / 3:1"])
+        y = table(S, X0, y - 0.3 * S.scale, [1.8, 2.1], info, size=6, row_h=0.2)
+    else:
+        rows = [["POND", "STORM", "PRE", "POST", "OUT", "STAGE"]]
+        for q_ in ponds:
+            for r in q_["table"]:
+                rows.append([q_["id"], f"{r['storm']}-yr", f"{r['pre_cfs']:.2f}", f"{r['post_cfs']:.2f}", f"{r['out_cfs']:.2f}", f"{r['stage']:.2f}"])
+        y = table(S, X0, Y0, [0.9, 0.7, 0.7, 0.7, 0.7, 0.8], rows, title="PRE / POST PEAK RUNOFF & POND ROUTING (cfs, ft)", size=6, row_h=0.2)
+        info = [["POND DATA"] + [q_["id"] for q_ in ponds], ["Top / bottom"] + [f"{q_['top_el']:.2f} / {q_['bottom_el']:.2f}" for q_ in ponds],
+                ["Depth / side slopes"] + [f"{q_['depth_ft']:.1f} ft / 3:1" for q_ in ponds], ["Top area"] + [f"{q_['top_area_sf']:,.0f} SF" for q_ in ponds],
+                ["Storage at top"] + [f"{q_['storage_cf']:,.0f} CF" for q_ in ponds], ["Drains"] + [f"{q_['area_ac']:.2f} ac, CN {q_['cn_post']:.0f}" for q_ in ponds],
+                ["Orifice"] + [f"{q_['orifice_in']:.1f}\" dia." for q_ in ponds], ["Weir crest / length"] + [f"{q_['weir_crest']:.2f} / {q_['weir_len_ft']:.0f} ft" for q_ in ponds],
+                ["CN pre / soil group"] + [f"{D['cn_pre']:.0f} / {D['hsg']}"] * len(ponds)]
+        wcol = 3.2 / len(ponds)
+        y = table(S, X0, y - 0.3 * S.scale, [1.5] + [wcol] * len(ponds), info, size=6, row_h=0.2)
     prow = [["PIPE", "FROM → TO", "LEN", "DIA", "SLOPE", "Q10", "CAP", "V", "INV UP", "INV DN", "COVER"]]
     for i, p in enumerate(net["pipes"], 1):
         prow.append([f"P-{i}", f"{p['from']} → {p['to']}", f"{p['len']:.0f}'", f"{p['dia']}\"", f"{p['slope']*100:.2f}%", f"{p['q10']:.1f}", f"{p['cap']:.1f}", f"{p.get('v', 0):.1f}", f"{p['inv_up']:.2f}", f"{p['inv_dn']:.2f}", f"{p.get('cover_up', 0):.1f}"])
@@ -518,7 +563,7 @@ def c6(meta, X):
     up_of = {p["from"]: p for p in net["pipes"]}
     chains = []
     for sid in byid:
-        if sid == "FES-1" or sid not in up_of:
+        if byid[sid]["kind"] == "FES" or sid not in up_of:
             continue
         ch, cur = [], sid
         while cur in up_of:
@@ -761,7 +806,7 @@ def c7(meta, X):
     if msew or mwat:
         notes += ["Lines run inside our own property from the property-line connection on the selected road, in a single corridor, and tap the road mains only at the right-of-way. Existing main invert is assumed 8 ft below the road surface."]
     if msew:
-        notes += ["Every change of direction or junction in the sewer is a manhole; sewer drops 0.1 ft through each manhole and runs at 0.50%. Deep or shallow structures and lift-station needs are flagged below."]
+        notes += ["Every change of direction or junction in the sewer is a manhole; sewer drops 0.1 ft through each manhole and runs at the slopes in the schedule. Deep or shallow structures and lift-station needs are flagged below."]
     if mwat:
         notes += ["Water main 8\" minimum for fire flow; hydrant spacing per the local fire marshal. Provide thrust restraint, backflow prevention and meter per utility standards." + (" Maintain 10 ft horizontal / 18 in vertical separation between water and sewer." if msew else "")]
     if septic or well:

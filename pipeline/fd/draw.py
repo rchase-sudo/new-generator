@@ -184,9 +184,9 @@ def proposed_base(S, X, labels=True, fill=True, existing=True):
         for b in P_["beds"]:
             S.poly(b, fc=(0.55, 0.75, 0.92, 0.28), ec=BLUE, lw=1.0, ls=(0, (6, 2.5)), z=9)
         return
-    pond = P_["poly"]
-    S.poly(pond, ec=INK, lw=1.1, z=9)
-    S.poly(pond.buffer(-(P_["depth_ft"] * P_.get("side", 3.0))), ec=INK, lw=0.6, z=9)
+    for Q_ in X["D"].get("ponds") or [P_]:
+        S.poly(Q_["poly"], ec=INK, lw=1.1, z=9)
+        S.poly(Q_["poly"].buffer(-(Q_["depth_ft"] * Q_.get("side", 3.0))), ec=INK, lw=0.6, z=9)
     if X["L"].get("turnaround") is not None:
         c_ = X["L"]["turnaround"].centroid
         S.txt(c_.x, c_.y, "FIRE APPARATUS TURNAROUND\n(120' HAMMERHEAD, 20' WIDE)", 5.2, halo=True, z=40)
