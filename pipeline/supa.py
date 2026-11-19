@@ -75,3 +75,16 @@ def download(job_id, name):
         time.sleep(2 * (attempt + 1))
     r.raise_for_status()
     return r.content
+
+
+def cad_template(user_id):
+    """The firm's Civil 3D template settings (layers, layer mapping, styles) for a user, or None."""
+    if not user_id:
+        return None
+    try:
+        r = requests.get(f"{URL}/rest/v1/cad_templates", params={"user_id": f"eq.{user_id}", "select": "*"}, headers=_h(), timeout=30)
+        r.raise_for_status()
+        rows = r.json()
+        return rows[0] if rows else None
+    except Exception:  # noqa: BLE001  (an export never fails because the template could not be read)
+        return None

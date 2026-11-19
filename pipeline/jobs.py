@@ -108,6 +108,8 @@ def _run(job_id, step):
             preview.step_preview(job_id, force=step == "preview_force")
         elif step == "design":
             step_design(job_id)
+        elif step == "c3d_export":
+            step_c3d_export(job_id)
         else:
             raise ValueError(f"unknown step {step}")
     except Exception as e:  # noqa: BLE001
@@ -118,6 +120,9 @@ def _run(job_id, step):
             supa.update_job(job_id, summary={**(j_.get("summary") or {}), "testfit_status": "failed", "testfit_error": f"{type(e).__name__}: {e}"[:500]})
         elif step == "design":   # the full design phase is optional and never touches the approved plan
             supa.update_job(job_id, design_status="failed", design_error=f"{type(e).__name__}: {e}"[:1500])
+        elif step == "c3d_export":   # rebuilding the CAD package never touches the plan set
+            j_ = supa.get_job(job_id)
+            supa.update_job(job_id, design={**(j_.get("design") or {}), "c3d_status": "failed", "c3d_error": f"{type(e).__name__}: {e}"[:500]})
         elif step == "package":
             supa.update_job(job_id, package_status="failed", package_error=f"{type(e).__name__}: {e}"[:1500])
         else:
@@ -866,12 +871,46 @@ def step_design(job_id):
     ctx = _load_ctx(job_id)
     lay = pickle.loads(supa.download(job_id, "layout.pkl"))
     out = tempfile.mkdtemp()
+    job["_cad_template"] = supa.cad_template(job.get("created_by"))   # the firm's layers / styles for the Civil 3D package
     res = planset.build(ctx, lay, job, out, prog_cb=lambda m: supa.update_job(job_id, design_status="designing", progress=m))
     files = {"plan_set.pdf": supa.upload(job_id, res["pdf"])}
     for p in res["pngs"]:
         files[os.path.basename(p)] = supa.upload(job_id, p)
     for name, p in (res.get("files") or {}).items():      # CAD exports: layered DXF + LandXML surfaces and pipe networks
         files[name] = supa.upload(job_id, p)
+    try:     # the design itself, so the Civil 3D package can be rebuilt (new firm template) without designing again
+        dp = os.path.join(out, "design_x.pkl")
+        with open(dp, "wb") as f_:
+            pickle.dump({"X": res["X"], "meta": res["meta"]}, f_)
+        files["design_x.pkl"] = supa.upload(job_id, dp)
+    except Exception as e:  # noqa: BLE001
+        print("design pickle failed:", repr(e))
     outputs = supa.get_job(job_id).get("outputs") or {}
     outputs["design"] = files
-    supa.update_job(job_id, outputs=outputs, design=planset.summary(res["X"]), design_status="completed", design_error=None, progress="Plan set ready")
+    summ = planset.summary(res["X"])
+    summ["c3d_status"] = "ready" if "drafted_c3d.zip" in files else "failed"
+    summ["c3d_template"] = (job.get("_cad_template") or {}).get("file_name")
+    supa.update_job(job_id, outputs=outputs, design=summ, design_status="completed", design_error=None, progress="Plan set ready")
+
+
+def step_c3d_export(job_id):
+    """Rebuild only the Civil 3D package (drafted_c3d.zip, DXFs, LandXML) of a finished plan set, with the firm's current template."""
+    from .fd import c3d, export
+    job = supa.get_job(job_id)
+    d0 = job.get("design") or {}
+    supa.update_job(job_id, design={**d0, "c3d_status": "building", "c3d_error": None})
+    S = pickle.loads(supa.download(job_id, "design_x.pkl"))
+    X, meta = S["X"], S["meta"]
+    out = tempfile.mkdtemp()
+    tpl = supa.cad_template(job.get("created_by"))
+    files = {}
+    files["design.dxf"] = export.dxf(X, os.path.join(out, "design.dxf"))
+    files["surfaces_pipes.xml"] = export.landxml(X, os.path.join(out, "surfaces_pipes.xml"), name=" ".join(meta["project_lines"][:2]))
+    files["drafted_c3d.zip"] = c3d.package(X, meta, job, out, files["design.dxf"], files["surfaces_pipes.xml"], template=tpl)
+    outputs = supa.get_job(job_id).get("outputs") or {}
+    des = dict(outputs.get("design") or {})
+    for name, p in files.items():
+        des[name] = supa.upload(job_id, p)
+    outputs["design"] = des
+    j_ = supa.get_job(job_id)
+    supa.update_job(job_id, outputs=outputs, design={**(j_.get("design") or {}), "c3d_status": "ready", "c3d_error": None, "c3d_template": (tpl or {}).get("file_name")})

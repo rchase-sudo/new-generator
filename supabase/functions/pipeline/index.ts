@@ -9,6 +9,8 @@
 //   approve_layout  { job_id }                                                    -> { ok }  (starts the 3D model + render)
 //   render          { job_id }                                                    -> { ok }  (re-run the render)
 //   package         { job_id }                                                    -> { ok }  (due diligence package, after the render)
+//   cad_template_*  (account) the firm's Civil 3D template; plugin_url -> the Civil 3D plugin download
+//   c3d_export      { job_id } -> { ok }  (rebuild only the Civil 3D package of a finished plan set with the current template)
 //   design          { job_id, sewer?: boolean, water?: boolean, utilities?: "municipal"|"onsite" } -> { ok }  (optional full design phase, after the layout is approved)
 //   start_batch     { text, lite? }  -> { job_id }  (many listings in one field: the worker splits them and runs each one unattended to its package)
 //   start also takes options { lite?, auto? }: lite = cheap package research (same plan + render), auto = no approval checkpoints
@@ -89,7 +91,55 @@ Deno.serve(async (req) => {
     const action = body.action;
     const who = await caller(req);
     if (!who.admin && !who.uid) return json({ error: "Sign in required" }, 401);
-    if (action !== "start" && action !== "start_batch" && action !== "list" && !(await ownJob(who, body.job_id))) return json({ error: "Job not found" }, 404);
+    const ACCOUNT = ["start", "start_batch", "list", "cad_template_get", "cad_template_upload", "cad_template_save", "cad_template_delete", "plugin_url"];
+    if (!ACCOUNT.includes(action) && !(await ownJob(who, body.job_id))) return json({ error: "Job not found" }, 404);
+
+    // ---- the firm's Civil 3D template (account level): layers + layer mapping + styles used by the CAD exports --------------
+    //   cad_template_get                     -> { template, file_url }
+    //   cad_template_upload { file_name }    -> { path, signed_url, token }   (browser uploads the .dwt / .dwg / .dxf / standards .json there)
+    //   cad_template_save { file_name?, file_path?, file_kind?, layers?, mapping?, styles? } -> { ok }
+    //   cad_template_delete                  -> { ok }
+    //   plugin_url                           -> { url }  (the Civil 3D plugin bundle, built by CI)
+    if (action.startsWith("cad_template") || action === "plugin_url") {
+      const uid = who.uid ?? body.user_id;
+      if (action === "plugin_url") {
+        const { data } = await db.storage.from("pipeline").createSignedUrl("plugins/Drafted.bundle.zip", 3600, { download: "Drafted.bundle.zip" });
+        return data?.signedUrl ? json({ url: data.signedUrl }) : json({ error: "The plugin has not been built yet" }, 404);
+      }
+      if (!uid) return json({ error: "Sign in required" }, 401);
+      if (action === "cad_template_get") {
+        const { data } = await db.from("cad_templates").select("*").eq("user_id", uid).maybeSingle();
+        let file_url = null;
+        if (data?.file_path) file_url = (await db.storage.from("pipeline").createSignedUrl(data.file_path, 3600, { download: data.file_name ?? true })).data?.signedUrl ?? null;
+        return json({ template: data ?? null, file_url });
+      }
+      if (action === "cad_template_upload") {
+        const name = String(body.file_name ?? "template").replace(/[^A-Za-z0-9._ -]/g, "_").slice(0, 120);
+        if (!/\.(dwt|dwg|dxf|json)$/i.test(name)) return json({ error: "Upload a .dwt, .dwg, .dxf or Drafted standards .json" }, 400);
+        const path = `cad_templates/${uid}/${Date.now()}_${name}`;
+        const { data, error } = await db.storage.from("pipeline").createSignedUploadUrl(path);
+        if (error) throw error;
+        return json({ path, signed_url: data.signedUrl, token: data.token });
+      }
+      if (action === "cad_template_save") {
+        const row: Record<string, unknown> = { user_id: uid, updated_at: new Date().toISOString() };
+        for (const k of ["file_name", "file_path", "file_kind"]) if (k in body) row[k] = body[k] == null ? null : String(body[k]).slice(0, 300);
+        if (body.file_path && !String(body.file_path).startsWith(`cad_templates/${uid}/`)) return json({ error: "Bad file path" }, 400);
+        if (Array.isArray(body.layers)) row.layers = body.layers.slice(0, 5000).map((l: Record<string, unknown>) => ({ name: String(l.name ?? "").slice(0, 255), color: Number(l.color) || 7, linetype: String(l.linetype ?? "").slice(0, 64) })).filter((l: { name: string }) => l.name);
+        if (body.mapping && typeof body.mapping === "object") row.mapping = Object.fromEntries(Object.entries(body.mapping).filter(([k, v]) => typeof v === "string" && v).map(([k, v]) => [k.slice(0, 40), String(v).slice(0, 255)]));
+        if (body.styles && typeof body.styles === "object") row.styles = body.styles;
+        if (JSON.stringify(row).length > 2_000_000) return json({ error: "Template data too large" }, 413);
+        const { error } = await db.from("cad_templates").upsert(row, { onConflict: "user_id" });
+        if (error) throw error;
+        return json({ ok: true });
+      }
+      if (action === "cad_template_delete") {
+        const { data } = await db.from("cad_templates").select("file_path").eq("user_id", uid).maybeSingle();
+        if (data?.file_path) await db.storage.from("pipeline").remove([data.file_path]);
+        await db.from("cad_templates").delete().eq("user_id", uid);
+        return json({ ok: true });
+      }
+    }
 
     if (action === "start") {
       const text = String(body.listing_text ?? "").trim();
@@ -240,6 +290,17 @@ Deno.serve(async (req) => {
       if (touched) patch.zoning = z;
       await db.from("pipeline_jobs").update(patch).eq("id", body.job_id);
       await kickWorker(body.job_id, "design");
+      return json({ ok: true });
+    }
+
+    if (action === "c3d_export") {   // rebuild only the Civil 3D package of a finished plan set with the firm's current template
+      const { data: job, error } = await db.from("pipeline_jobs").select("design_status,design,outputs").eq("id", body.job_id).single();
+      if (error) throw error;
+      if (job.design_status !== "completed") return json({ error: "Build the plan set first" }, 409);
+      if (!job.outputs?.design?.["design_x.pkl"]) return json({ error: "This plan set was built before Civil 3D exports; build the plan set again" }, 409);
+      if (job.design?.c3d_status === "building") return json({ error: "The Civil 3D package is already being built" }, 409);
+      await db.from("pipeline_jobs").update({ design: { ...(job.design ?? {}), c3d_status: "building", c3d_error: null } }).eq("id", body.job_id);
+      await kickWorker(body.job_id, "c3d_export");
       return json({ ok: true });
     }
 
