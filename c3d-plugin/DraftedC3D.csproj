@@ -2,7 +2,7 @@
   <!-- Civil 3D 2027 plugin: DRAFTEDIMPORT builds native Civil 3D objects from a Drafted export package.
        Compiles anywhere (CI on Linux) against Autodesk's reference NuGet packages; runs inside Civil 3D 2027+. -->
   <PropertyGroup>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <TargetFramework>net10.0-windows</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <Nullable>disable</Nullable>
