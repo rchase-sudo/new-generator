@@ -1,0 +1,44 @@
+name: Build Civil 3D plugin
+on:
+  push:
+    branches: [main]
+    paths: ["c3d-plugin/**", ".github/workflows/c3d-plugin.yml"]
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - name: Reference package versions
+        run: |
+          for p in autocad.net civil3d.net; do echo "$p:"; curl -s https://api.nuget.org/v3-flatcontainer/$p/index.json | tr -d '\n ' | grep -o '"versions":\[.*\]' | tail -c 400; echo; done
+      - name: Build
+        working-directory: c3d-plugin
+        run: dotnet build -c Release -p:AcadNetVersion="26.*" -p:Civil3DNetVersion="13.*" -o out 2>&1 | tee build.log; test ${PIPESTATUS[0]} -eq 0
+      - name: What the reference packages contain
+        if: always()
+        run: |
+          ls ~/.nuget/packages/ || true
+          find ~/.nuget/packages/civil3d.net ~/.nuget/packages/autocad.net* -name "*.dll" 2>/dev/null | head -50
+      - name: Bundle
+        run: |
+          mkdir -p Drafted.bundle/Contents
+          cp c3d-plugin/bundle/PackageContents.xml Drafted.bundle/
+          cp c3d-plugin/out/DraftedC3D.dll Drafted.bundle/Contents/
+          cp c3d-plugin/README.md Drafted.bundle/Contents/README.txt
+          zip -r Drafted.bundle.zip Drafted.bundle
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Drafted.bundle
+          path: Drafted.bundle.zip
+      - name: Publish for download from Drafted
+        if: github.ref == 'refs/heads/main'
+        env:
+          KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          curl -sf -X POST "https://mmaqwemqbxwngqxtnsug.supabase.co/storage/v1/object/pipeline/plugins/Drafted.bundle.zip" \
+            -H "Authorization: Bearer $KEY" -H "apikey: $KEY" -H "x-upsert: true" -H "Content-Type: application/zip" --data-binary @Drafted.bundle.zip
+          echo published

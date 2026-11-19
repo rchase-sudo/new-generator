@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 _test_out/
 .env
+c3d-plugin/bin/
+c3d-plugin/obj/
+c3d-plugin/out/

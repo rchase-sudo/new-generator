@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ApplicationPackage SchemaVersion="1.0" AutodeskProduct="AutoCAD" ProductType="Application" Name="Drafted for Civil 3D" AppVersion="1.0.0"
+  Description="Imports Drafted designs into Civil 3D as native objects (surfaces, pipe networks, ponds, feature lines, alignments) in your template's styles and layers."
+  Author="Apollo Development" ProductCode="{6B7E2D4A-1F3C-4E8B-9A6D-2C5F8E1B7D30}" UpgradeCode="{0D9A3C51-7E24-4B6F-8C1A-5E3D9F2B6A47}" HelpFile="./Contents/README.txt">
+  <CompanyDetails Name="Apollo Development" Url="https://apollodevelopment.io" />
+  <RuntimeRequirements OS="Win64" Platform="Civil3D" SeriesMin="R25.0" />
+  <Components>
+    <RuntimeRequirements OS="Win64" Platform="Civil3D" SeriesMin="R25.0" />
+    <ComponentEntry AppName="DraftedC3D" ModuleName="./Contents/DraftedC3D.dll" AppDescription="Drafted import" LoadOnCommandInvocation="True" LoadOnAutoCADStartup="False">
+      <Commands GroupName="DRAFTED">
+        <Command Local="DRAFTEDIMPORT" Global="DRAFTEDIMPORT" />
+        <Command Local="DRAFTEDSTANDARDS" Global="DRAFTEDSTANDARDS" />
+      </Commands>
+    </ComponentEntry>
+  </Components>
+</ApplicationPackage>
