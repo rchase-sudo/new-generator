@@ -360,7 +360,7 @@ namespace Drafted.C3D
         static Type FindType(string name)
         {
             foreach (var asmName in new[] { "AeccDrainageDesignMgd", "AeccDbMgd" })
-                try { Assembly.Load(asmName); } catch { }
+                try { System.Reflection.Assembly.Load(asmName); } catch { }
             return AppDomain.CurrentDomain.GetAssemblies().Select(a => { try { return a.GetType(name); } catch { return null; } }).FirstOrDefault(t => t != null);
         }
 
