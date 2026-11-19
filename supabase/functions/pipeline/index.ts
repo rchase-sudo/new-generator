@@ -5,6 +5,7 @@
 //   approve_zoning  { job_id, setbacks?, parking_setbacks?, program?, zoning?, drive_road? } -> { ok }  (runs / re-runs the layout)
 //                   zoning.building_actions = { "E1": "keep" | "demo" } sets what happens to each existing building;
 //                   zoning.max_slope_pct = steepest ground (%) buildings / parking may use (0 = ignore slope)
+//                   manual: true -> no automatic layout; the job waits for a test fit drawn in Drafted (testfit_* actions below)
 //   approve_layout  { job_id }                                                    -> { ok }  (starts the 3D model + render)
 //   render          { job_id }                                                    -> { ok }  (re-run the render)
 //   package         { job_id }                                                    -> { ok }  (due diligence package, after the render)
@@ -143,6 +144,7 @@ Deno.serve(async (req) => {
       // parking_setbacks = final property-line-to-pavement distances {front, side, rear} chosen at the checkpoint
       // drive_road = key of the road the driveway connects to (summary.front_roads[].key); null / "" = automatic
       if ("drive_road" in body) zoning.drive_road = body.drive_road || null;
+      zoning.layout_mode = body.manual ? "manual" : "auto";    // manual = stop after the existing conditions for the test-fit editor
       if (body.parking_setbacks) zoning.pavement_setbacks_ft = { ...body.parking_setbacks, source: { front: "user", side: "user", rear: "user" } };
       patch.zoning = zoning;
       if (body.setbacks) patch.setbacks = body.setbacks;
@@ -150,6 +152,39 @@ Deno.serve(async (req) => {
       const { error: e2 } = await db.from("pipeline_jobs").update(patch).eq("id", body.job_id);
       if (e2) throw e2;
       await kickWorker(body.job_id, "layout");
+      return json({ ok: true });
+    }
+
+    // ---- manual test fit (Drafted's site editor) ----------------------------------------------------------------
+    //   testfit_base   { job_id }          -> { ok }  (prepares the editor's site data for a job laid out before the editor existed)
+    //   testfit_save   { job_id, design }  -> { ok }  (keeps the draft; nothing runs)
+    //   testfit_submit { job_id, design }  -> { ok }  (draws the concept plan from the test fit, then the job continues as usual)
+    if (action === "testfit_base" || action === "testfit_save" || action === "testfit_submit") {
+      const { data: job, error } = await db.from("pipeline_jobs").select("status,summary,zoning").eq("id", body.job_id).single();
+      if (error) throw error;
+      const okStatus = ["awaiting_layout", "layout_approved", "error"].includes(job.status) && !!job.zoning;
+      if (!okStatus) return json({ error: `Job is ${job.status}; the test fit opens once the existing conditions and zoning are confirmed` }, 409);
+      const summary = { ...(job.summary ?? {}) };
+      if (action === "testfit_base") {
+        summary.testfit_status = "building";
+        await db.from("pipeline_jobs").update({ summary }).eq("id", body.job_id);
+        await kickWorker(body.job_id, "testfit_base");
+        return json({ ok: true });
+      }
+      if (!body.design || !Array.isArray(body.design.buildings)) return json({ error: "No test fit design" }, 400);
+      if (JSON.stringify(body.design).length > 4_000_000) return json({ error: "Test fit too large" }, 413);
+      summary.testfit_design = { ...body.design, saved_at: new Date().toISOString() };
+      if (action === "testfit_save") {
+        const { error: e2 } = await db.from("pipeline_jobs").update({ summary }).eq("id", body.job_id);
+        if (e2) throw e2;
+        return json({ ok: true });
+      }
+      if (!body.design.buildings.length) return json({ error: "Place at least one building" }, 400);
+      const zoning = { ...(job.zoning ?? {}), layout_mode: "manual" };
+      const { error: e3 } = await db.from("pipeline_jobs")
+        .update({ summary, zoning, status: "building_layout", step: "layout", progress: "Drawing your test fit", error: null }).eq("id", body.job_id);
+      if (e3) throw e3;
+      await kickWorker(body.job_id, "manual_layout");
       return json({ ok: true });
     }
 

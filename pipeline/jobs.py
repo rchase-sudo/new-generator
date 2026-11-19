@@ -93,6 +93,10 @@ def _run(job_id, step):
             step_topo(job_id)
         elif step == "layout":
             step_layout(job_id)
+        elif step == "manual_layout":
+            step_manual_layout(job_id)
+        elif step == "testfit_base":
+            step_testfit_base(job_id)
         elif step == "render":
             step_render(job_id)
         elif step == "render_composite":
@@ -109,6 +113,9 @@ def _run(job_id, step):
     except Exception as e:  # noqa: BLE001
         if step in ("render", "render_composite"):   # a failed render never invalidates an approved plan
             supa.update_job(job_id, render_status="failed", render_error=f"{type(e).__name__}: {e}"[:1500])
+        elif step == "testfit_base":   # preparing the editor never changes the job's own state
+            j_ = supa.get_job(job_id)
+            supa.update_job(job_id, summary={**(j_.get("summary") or {}), "testfit_status": "failed", "testfit_error": f"{type(e).__name__}: {e}"[:500]})
         elif step == "design":   # the full design phase is optional and never touches the approved plan
             supa.update_job(job_id, design_status="failed", design_error=f"{type(e).__name__}: {e}"[:1500])
         elif step == "package":
@@ -385,10 +392,9 @@ def step_zoning(job_id):
     supa.update_job(job_id, status="awaiting_zoning", step="zoning", program=prog, progress="Confirm zoning, setbacks and program")
 
 
-def step_layout(job_id):
-    job = supa.get_job(job_id)
-    supa.update_job(job_id, status="building_layout", step="layout", progress="Laying out the site", error=None)
-    ctx = _load_ctx(job_id)
+def _layout_inputs(job_id, job, ctx):
+    """Everything both the automatic layout and a manual test fit start from: the refreshed existing-conditions drawing,
+    existing buildings / pavement to keep or remove, the slope limit and the pavement setbacks."""
     rules, prog, setbacks = job.get("zoning") or {}, job.get("program") or {}, job.get("setbacks") or {"front": 25, "side": 10, "rear": 10}
     out = tempfile.mkdtemp()
     # refresh the existing-conditions drawing with the confirmed setbacks
@@ -413,6 +419,78 @@ def step_layout(job_id):
     summary["front_roads"] = front_roads(ctx["parcel_sp"], ctx["rds"], ctx["k"], ctx["epsg"])
     psb = rules.get("pavement_setbacks_ft") or zoning_mod.pavement_setbacks(rules, setbacks)
     psb = {k: float(psb[k]) for k in ("front", "side", "rear") if isinstance(psb.get(k), (int, float))}
+    return dict(rules=rules, prog=prog, setbacks=setbacks, out=out, keep=keep, demo=demo, pave_keep=pave_keep, pave_rm=pave_rm, shared=shared,
+                dem=dem, steep=steep, summary=summary, psb=psb)
+
+
+def _testfit_base(job_id, job, ctx, I, drive_road=None, sp=None, metrics=None, angle=None):
+    """Upload the test-fit editor's base (site in the layout frame + the current layout's buildings as a starting point)."""
+    import json
+    from . import testfit
+    b = testfit.base(ctx, I["setbacks"], I["psb"], I["steep"], I["keep"], I["demo"], I["pave_keep"], I["pave_rm"], I["prog"], I["rules"],
+                     drive_road=drive_road, seed_layout={"sp": sp, "metrics": metrics, "frame_angle_deg": angle} if sp else None)
+    path = os.path.join(I["out"], "testfit_base.json")
+    with open(path, "w") as f:
+        json.dump(b, f, separators=(",", ":"))
+    return {"base.json": supa.upload(job_id, path)}
+
+
+def step_testfit_base(job_id):
+    """Test-fit base for a job laid out before the editor existed (or after its inputs changed): from the stored layout."""
+    job = supa.get_job(job_id)
+    ctx = _load_ctx(job_id)
+    I = _layout_inputs(job_id, job, ctx)
+    m = job.get("layout") or {}
+    sp, met, ang = None, None, None
+    try:
+        lay = pickle.loads(supa.download(job_id, "layout.pkl"))
+        sp, met, ang = lay["sp"], lay.get("metrics") or m, lay.get("frame_angle_deg")
+    except Exception as e:  # noqa: BLE001  (no layout yet: the editor starts empty)
+        print("test fit seed skipped:", e)
+    tf = _testfit_base(job_id, job, ctx, I, drive_road=m.get("drive_road") or I["rules"].get("drive_road"), sp=sp, metrics=met, angle=ang)
+    job = supa.get_job(job_id)
+    supa.update_job(job_id, outputs={**(job.get("outputs") or {}), "testfit": tf}, summary={**(job.get("summary") or {}), "testfit_status": "ready"})
+
+
+def step_manual_layout(job_id):
+    """The site as laid out in the test-fit editor -> concept sheet, DXF and layout.pkl, exactly like an automatic layout."""
+    job = supa.get_job(job_id)
+    supa.update_job(job_id, status="building_layout", step="layout", progress="Drawing your test fit", error=None)
+    ctx = _load_ctx(job_id)
+    I = _layout_inputs(job_id, job, ctx)
+    design = (job.get("summary") or {}).get("testfit_design")
+    if not design:
+        raise RuntimeError("No test fit has been saved for this job")
+    from . import testfit
+    res = testfit.build(ctx, design, I["setbacks"], I["psb"], I["steep"], I["keep"], I["pave_keep"], I["prog"], I["rules"], shared_stalls=I["shared"])
+    if I["dem"]:
+        from . import topo as topo_mod
+        ew = topo_mod.earthwork(I["dem"], res["sp"]["dev"])
+        if ew:
+            res["metrics"]["earthwork"] = ew
+    I["summary"]["drive_choice"] = {"auto": None, "used": res["metrics"].get("drive_road"), "fallback": None, "manual": True,
+                                    "roads": [(r.get("key"), r.get("class"), r.get("frontage_ft")) for r in (I["summary"].get("front_roads") or [])]}
+    _publish_layout(job_id, job, ctx, I, res)
+
+
+def step_layout(job_id):
+    job = supa.get_job(job_id)
+    supa.update_job(job_id, status="building_layout", step="layout", progress="Laying out the site", error=None)
+    ctx = _load_ctx(job_id)
+    I = _layout_inputs(job_id, job, ctx)
+    rules, prog, setbacks, out = I["rules"], I["prog"], I["setbacks"], I["out"]
+    keep, demo, pave_keep, pave_rm, shared = I["keep"], I["demo"], I["pave_keep"], I["pave_rm"], I["shared"]
+    dem, steep, summary, psb = I["dem"], I["steep"], I["summary"], I["psb"]
+    from . import topo as topo_mod
+    if rules.get("layout_mode") == "manual":
+        # manual test fit: the site is laid out by hand in Drafted; stop here with the editor's base ready
+        tf = _testfit_base(job_id, job, ctx, I, drive_road=rules.get("drive_road"))
+        files = {n: supa.upload(job_id, os.path.join(out, n)) for n in ("existing_conditions.dxf", "existing_conditions.pdf", "existing_conditions.png")}
+        outputs = {**(job.get("outputs") or {}), "ec": {**((job.get("outputs") or {}).get("ec") or {}), **files}, "testfit": tf}
+        outputs.pop("layout", None)
+        supa.update_job(job_id, status="awaiting_layout", step="layout", progress="Lay out the site in the test-fit editor",
+                        summary={**(job.get("summary") or {}), **summary}, layout={"manual_pending": True}, outputs=outputs)
+        return
     # Automatic jobs: the driveway goes to the best road the parcel fronts (arterial over local street), not just the longest frontage
     auto_dr = None
     dr_note = None
@@ -487,28 +565,13 @@ def step_layout(job_id):
                 supa.update_job(job_id, program=prog)
         except Exception as e_:  # noqa: BLE001
             res["metrics"].setdefault("warnings", []).append(f"Residual land value sizing did not run: {str(e_)[:120]}")
-    supa.update_job(job_id, progress="Drawing the concept plan")
-    L = job.get("listing") or {}
-    title = [x for x in [L.get("street_address") and f"{L.get('lot') + ', ' if L.get('lot') else ''}{L.get('street_address')}",
-                         ", ".join(x for x in [L.get("city"), L.get("state")] if x),
-                         L.get("county") and (L["county"] if "county" in L["county"].lower() else f"{L['county']} County")] if x]
-    project = [prog.get("use") or "Development"] + title
-    edges = classify_edges(ctx["parcel_sp"], [r["centerline"] for r in (ctx["rds"] if isinstance(ctx["rds"], list) else []) if r["class"] != "service"], ctx["k"])
-    env = envelope(ctx["parcel_sp"], edges, setbacks, ctx["k"])
-    wet = ctx["wet"] if isinstance(ctx["wet"], list) else []
-    fl = ctx["fl"] if isinstance(ctx["fl"], list) else []
-    rds = ctx["rds"] if isinstance(ctx["rds"], list) else []
     if dem:
         ew = topo_mod.earthwork(dem, res["sp"]["dev"])
         if ew:
             res["metrics"]["earthwork"] = ew
             if ew["cut_cy"] + ew["fill_cy"] > 0 and ew["area_ac"] > 0 and (ew["cut_cy"] + ew["fill_cy"]) / ew["area_ac"] > 2500:
                 res["metrics"]["warnings"].append(f"Grading: about {ew['cut_cy']:,.0f} CY cut / {ew['fill_cy']:,.0f} CY fill to level the development area")
-    ex = [{"id": b["id"], "action": "keep", "geom": b["geom"], "sf": b["area_sf"], "label": b.get("kind")} for b in keep] + \
-         [{"id": b["id"], "action": "demo", "geom": b["geom"], "sf": b["area_sf"], "label": b.get("kind")} for b in demo]
-    ex += [{"id": p["id"], "action": "keep", "geom": p["geom"], "sf": p["area_sf"], "label": ("Parking" if p["kind"] == "parking" else "Drive") +
-            (f" (about {p['est_stalls']} stalls)" if p.get("est_stalls") else ""), "kind": "pavement"} for p in pave_keep] + \
-          [{"id": p["id"], "action": "demo", "geom": p["geom"], "sf": p["area_sf"], "label": "Parking" if p["kind"] == "parking" else "Drive", "kind": "pavement"} for p in pave_rm]
+    L = job.get("listing") or {}
     if dr_note:
         res["metrics"].setdefault("warnings", []).append(dr_note)
     # The project must connect to the SAME road as the listing's address, whichever frontage the layout was built on
@@ -539,6 +602,30 @@ def step_layout(job_id):
         res["metrics"].setdefault("warnings", []).append(f"Link to the address road failed: {type(e_l).__name__}: {e_l}"[:200])
     summary["drive_choice"] = {"auto": auto_dr_first, "used": res["metrics"].get("drive_road"), "fallback": dr_note,
                                "roads": [(r.get("key"), r.get("class"), r.get("frontage_ft")) for r in (summary.get("front_roads") or [])]}
+    _publish_layout(job_id, job, ctx, I, res)
+
+
+def _publish_layout(job_id, job, ctx, I, res):
+    """Concept sheet, DXFs, layout.pkl and the job row for a finished layout (automatic or test fit)."""
+    rules, prog, setbacks, out = I["rules"], I["prog"], I["setbacks"], I["out"]
+    keep, demo, pave_keep, pave_rm = I["keep"], I["demo"], I["pave_keep"], I["pave_rm"]
+    dem, steep, summary = I["dem"], I["steep"], I["summary"]
+    supa.update_job(job_id, progress="Drawing the concept plan")
+    L = job.get("listing") or {}
+    title = [x for x in [L.get("street_address") and f"{L.get('lot') + ', ' if L.get('lot') else ''}{L.get('street_address')}",
+                         ", ".join(x for x in [L.get("city"), L.get("state")] if x),
+                         L.get("county") and (L["county"] if "county" in L["county"].lower() else f"{L['county']} County")] if x]
+    project = [prog.get("use") or "Development"] + title
+    edges = classify_edges(ctx["parcel_sp"], [r["centerline"] for r in (ctx["rds"] if isinstance(ctx["rds"], list) else []) if r["class"] != "service"], ctx["k"])
+    env = envelope(ctx["parcel_sp"], edges, setbacks, ctx["k"])
+    wet = ctx["wet"] if isinstance(ctx["wet"], list) else []
+    fl = ctx["fl"] if isinstance(ctx["fl"], list) else []
+    rds = ctx["rds"] if isinstance(ctx["rds"], list) else []
+    ex = [{"id": b["id"], "action": "keep", "geom": b["geom"], "sf": b["area_sf"], "label": b.get("kind")} for b in keep] + \
+         [{"id": b["id"], "action": "demo", "geom": b["geom"], "sf": b["area_sf"], "label": b.get("kind")} for b in demo]
+    ex += [{"id": p["id"], "action": "keep", "geom": p["geom"], "sf": p["area_sf"], "label": ("Parking" if p["kind"] == "parking" else "Drive") +
+            (f" (about {p['est_stalls']} stalls)" if p.get("est_stalls") else ""), "kind": "pavement"} for p in pave_keep] + \
+          [{"id": p["id"], "action": "demo", "geom": p["geom"], "sf": p["area_sf"], "label": "Parking" if p["kind"] == "parking" else "Drive", "kind": "pavement"} for p in pave_rm]
     res["metrics"]["existing"] = [{"id": e["id"], "action": e["action"], "sf": round(e["sf"], -1), "label": e["label"], **({"kind": "pavement"} if e.get("kind") == "pavement" else {})} for e in ex if e.get("action") != "demo"]
     write_concept_sheet(os.path.join(out, "concept_plan.pdf"), os.path.join(out, "concept_plan.png"), ctx["parcel_sp"], env, wet, fl, rds,
                         ctx["aerial"], ctx["k"], res["sp"], res["labels"], title, res["metrics"], prog, rules, project=project, existing=ex,
@@ -550,6 +637,10 @@ def step_layout(job_id):
     files = {n: supa.upload(job_id, os.path.join(out, n)) for n in ("existing_conditions.dxf", "existing_conditions.pdf", "existing_conditions.png")}
     lay = {n: supa.upload(job_id, os.path.join(out, n)) for n in ("concept_plan.pdf", "concept_plan.png", "concept_layout.dxf")}
     outputs = {**(job.get("outputs") or {}), "ec": {**((job.get("outputs") or {}).get("ec") or {}), **files}, "layout": lay}
+    try:        # the test-fit editor opens on this layout's site and buildings
+        outputs["testfit"] = _testfit_base(job_id, job, ctx, I, drive_road=res["metrics"].get("drive_road"), sp=res["sp"], metrics=res["metrics"], angle=res.get("frame_angle_deg"))
+    except Exception as e_tf:  # noqa: BLE001
+        print("test fit base failed:", e_tf)
     supa.update_job(job_id, status="awaiting_layout", step="layout", progress="Review the concept layout",
                     summary={**(job.get("summary") or {}), **summary}, layout=res["metrics"], outputs=outputs)
 
