@@ -70,6 +70,16 @@ namespace Drafted.C3D
                         try { var dbo = tr.GetObject(id, OpenMode.ForRead); var n = U.TryGet(dbo, "Name") as string; if (!string.IsNullOrEmpty(n) && !d.ContainsKey(n)) d[n] = id; }
                         catch { }
                     }
+                if (d.Count == 0 && k.Path == "Styles.PartsListSet")
+                    try
+                    {
+                        foreach (ObjectId id in civ.Styles.PartsListSet)
+                        {
+                            var n = (tr.GetObject(id, OpenMode.ForRead) as PartsList)?.Name;
+                            if (!string.IsNullOrEmpty(n) && !d.ContainsKey(n)) d[n] = id;
+                        }
+                    }
+                    catch { }
                 Sets[k.Path] = d;
             }
             var lt = (LayerTable)tr.GetObject(db.LayerTableId, OpenMode.ForRead);
@@ -79,6 +89,15 @@ namespace Drafted.C3D
                 if (!r.Name.Contains("|")) Layers.Add(r.Name);
             }
             Layers.Sort(StringComparer.OrdinalIgnoreCase);
+        }
+
+        /// <summary>Any parts list in the drawing (when none was chosen in the dialog).</summary>
+        public ObjectId FirstPartsList()
+        {
+            var set = Sets["Styles.PartsListSet"];
+            if (set.Count > 0) return set.Values.First();
+            try { foreach (ObjectId id in CivilApplication.ActiveDocument.Styles.PartsListSet) return id; } catch { }
+            return ObjectId.Null;
         }
 
         public List<string> Names(string key) => Sets[Kinds.First(k => k.Key == key).Path].Keys.OrderBy(n => n).ToList();
@@ -213,69 +232,101 @@ namespace Drafted.C3D
         // ------------------------------------------------------------------ gravity pipe networks on the firm's parts lists
         void Networks(Catalog cat)
         {
-            foreach (var n in U.A(M, "networks"))
+            var nets = U.A(M, "networks").ToList();
+            if (nets.Count == 0) { report.Add("Pipe networks: none in this package"); return; }
+            foreach (var n in nets)
             {
                 var kind = U.S(n, "kind");
-                var plId = cat.Id(kind == "sanitary" ? "parts_sanitary" : "parts_storm", O);
-                if (plId.IsNull) { warn.Add($"{U.S(n, "name")} network: no parts list chosen"); continue; }
+                string netName = U.S(n, "name");
+                var key = kind == "sanitary" ? "parts_sanitary" : "parts_storm";
+                var plId = cat.Id(key, O);
+                if (plId.IsNull) plId = cat.FirstPartsList();
+                if (plId.IsNull) { warn.Add($"{netName} network skipped: this drawing has no parts lists (Settings > Pipe Network > Parts Lists)"); continue; }
+                int ns = 0, np = 0, bad = 0;
+                string plName = "";
+                ObjectId netId = ObjectId.Null;
+                try
+                {
+                    using (var tr = db.TransactionManager.StartTransaction())
+                    {
+                        netId = Network.Create(civ, ref netName);
+                        var net = (Network)tr.GetObject(netId, OpenMode.ForWrite);
+                        net.PartsListId = plId;
+                        tr.Commit();
+                    }
+                }
+                catch (System.Exception e) { warn.Add($"{netName}: could not create the network ({e.GetType().Name}: {e.Message})"); continue; }
                 using (var tr = db.TransactionManager.StartTransaction())
                 {
-                    string netName = U.S(n, "name");
-                    var netId = Network.Create(civ, ref netName);
                     var net = (Network)tr.GetObject(netId, OpenMode.ForWrite);
-                    net.PartsListId = plId;
                     if (!fgId.IsNull) U.TrySet(net, "ReferenceSurfaceId", fgId);
-                    var pr = cat.Id("pipe_rules", O); if (!pr.IsNull) U.TrySet(net, "PipeRuleSetId", pr);
                     var plist = (PartsList)tr.GetObject(plId, OpenMode.ForRead);
+                    plName = plist.Name;
                     var pipeFams = Families(tr, plist, DomainType.Pipe);
                     var strFams = Families(tr, plist, DomainType.Structure);
-                    if (pipeFams.Count == 0 || strFams.Count == 0) { warn.Add($"{netName}: the parts list has no pipe or structure families"); tr.Commit(); continue; }
+                    if (pipeFams.Count == 0 || strFams.Count == 0)
+                    {
+                        warn.Add($"{netName}: parts list \"{plName}\" has {pipeFams.Count} pipe and {strFams.Count} structure families with sizes; add sizes to it");
+                        tr.Commit(); continue;
+                    }
                     string pLayer = Layer(U.S(n, "pipe_layer", "C-STRM-PIPE")), sLayer = Layer(U.S(n, "struct_layer", "C-STRM-STRC"));
                     var pStyle = cat.Id("pipe_style", O); var sStyle = cat.Id("struct_style", O);
                     var sids = new Dictionary<string, ObjectId>();
                     foreach (var s in U.A(n, "structures"))
                     {
-                        var k = U.S(s, "kind");
-                        var fam = PickFamily(strFams, k == "CB" ? new[] { "Catch", "Inlet", "Grate", "Curb", "Rect" }
-                                                     : k == "FES" ? new[] { "Flared", "End", "Headwall", "Null", "Outfall" }
-                                                     : new[] { "Manhole", "Concentric", "Eccentric", "Cylind", "Circular" });
-                        var size = PickSize(tr, fam.Sizes, U.D(s, "dia_in", 48), false);
-                        var xy = U.XY(s.GetProperty("xy"));
-                        var rim = U.D(s, "rim");
-                        ObjectId sid = ObjectId.Null;
-                        net.AddStructure(fam.Id, size, new Point3d(xy[0], xy[1], rim), 0.0, ref sid, false);
-                        var st = (Structure)tr.GetObject(sid, OpenMode.ForWrite);
-                        U.TrySet(st, "Name", U.S(s, "name"));
-                        U.TrySet(st, "Description", U.S(s, "desc"));
-                        st.Layer = sLayer;
-                        if (!sStyle.IsNull) st.StyleId = sStyle;
-                        U.TrySet(st, "RimElevation", rim);
-                        sids[U.S(s, "name")] = sid;
+                        var sname = U.S(s, "name");
+                        try
+                        {
+                            var k = U.S(s, "kind");
+                            var fam = PickFamily(strFams, k == "CB" ? new[] { "Catch", "Inlet", "Grate", "Curb", "Rect" }
+                                                         : k == "FES" ? new[] { "Flared", "End", "Headwall", "Null", "Outfall" }
+                                                         : new[] { "Manhole", "Concentric", "Eccentric", "Cylind", "Circular" });
+                            var size = PickSize(tr, fam.Sizes, U.D(s, "dia_in", 48), false);
+                            var xy = U.XY(s.GetProperty("xy"));
+                            var rim = U.D(s, "rim");
+                            ObjectId sid = ObjectId.Null;
+                            net.AddStructure(fam.Id, size, new Point3d(xy[0], xy[1], rim), 0.0, ref sid, false);
+                            if (sid.IsNull) { bad++; warn.Add($"{netName} {sname}: Civil 3D did not create the structure"); continue; }
+                            var st = (Structure)tr.GetObject(sid, OpenMode.ForWrite);
+                            U.TrySet(st, "Name", sname);
+                            U.TrySet(st, "Description", U.S(s, "desc"));
+                            try { st.Layer = sLayer; } catch { }
+                            if (!sStyle.IsNull) try { st.StyleId = sStyle; } catch { }
+                            U.TrySet(st, "RimElevation", rim);
+                            sids[sname] = sid; ns++;
+                        }
+                        catch (System.Exception e) { bad++; warn.Add($"{netName} {sname}: {e.GetType().Name}: {e.Message}"); }
                     }
-                    int np = 0;
                     foreach (var p in U.A(n, "pipes"))
                     {
-                        var fam = PickFamily(pipeFams, MaterialWords(U.S(p, "material")));
-                        double dia;
-                        var size = PickSize(tr, fam.Sizes, U.D(p, "dia_in", 12), true, out dia);
-                        var a = U.XY(p.GetProperty("start")); var b = U.XY(p.GetProperty("end"));
-                        double r = (dia > 0 ? dia : U.D(p, "dia_in", 12) / 12.0) / 2.0;      // pipe geometry is its centreline
-                        var seg = new LineSegment3d(new Point3d(a[0], a[1], U.D(p, "inv_up") + r), new Point3d(b[0], b[1], U.D(p, "inv_dn") + r));
-                        ObjectId pid = ObjectId.Null;
-                        net.AddLinePipe(fam.Id, size, seg, ref pid, false);
-                        var pipe = (Pipe)tr.GetObject(pid, OpenMode.ForWrite);
-                        U.TrySet(pipe, "Name", U.S(p, "name"));
-                        U.TrySet(pipe, "Description", $"{U.D(p, "dia_in"):0}\" {U.S(p, "material")} @ {U.D(p, "slope") * 100:0.00}%");
-                        pipe.Layer = pLayer;
-                        if (!pStyle.IsNull) pipe.StyleId = pStyle;
-                        if (sids.TryGetValue(U.S(p, "from"), out var s0)) pipe.ConnectToStructure(ConnectorPositionType.Start, s0, true);
-                        if (sids.TryGetValue(U.S(p, "to"), out var s1)) pipe.ConnectToStructure(ConnectorPositionType.End, s1, true);
-                        pipeByName[U.S(p, "name")] = pid;
-                        np++;
+                        var pname = U.S(p, "name");
+                        try
+                        {
+                            var fam = PickFamily(pipeFams, MaterialWords(U.S(p, "material")));
+                            double dia;
+                            var size = PickSize(tr, fam.Sizes, U.D(p, "dia_in", 12), true, out dia);
+                            var a = U.XY(p.GetProperty("start")); var b = U.XY(p.GetProperty("end"));
+                            double r = (dia > 0 ? dia : U.D(p, "dia_in", 12) / 12.0) / 2.0;      // pipe geometry is its centreline
+                            var seg = new LineSegment3d(new Point3d(a[0], a[1], U.D(p, "inv_up") + r), new Point3d(b[0], b[1], U.D(p, "inv_dn") + r));
+                            ObjectId pid = ObjectId.Null;
+                            net.AddLinePipe(fam.Id, size, seg, ref pid, false);
+                            if (pid.IsNull) { bad++; warn.Add($"{netName} {pname}: Civil 3D did not create the pipe"); continue; }
+                            var pipe = (Pipe)tr.GetObject(pid, OpenMode.ForWrite);
+                            U.TrySet(pipe, "Name", pname);
+                            U.TrySet(pipe, "Description", $"{U.D(p, "dia_in"):0}\" {U.S(p, "material")} @ {U.D(p, "slope") * 100:0.00}%");
+                            try { pipe.Layer = pLayer; } catch { }
+                            if (!pStyle.IsNull) try { pipe.StyleId = pStyle; } catch { }
+                            try { if (sids.TryGetValue(U.S(p, "from"), out var s0)) pipe.ConnectToStructure(ConnectorPositionType.Start, s0, true); }
+                            catch (System.Exception e) { warn.Add($"{netName} {pname}: not connected to {U.S(p, "from")} ({e.Message})"); }
+                            try { if (sids.TryGetValue(U.S(p, "to"), out var s1)) pipe.ConnectToStructure(ConnectorPositionType.End, s1, true); }
+                            catch (System.Exception e) { warn.Add($"{netName} {pname}: not connected to {U.S(p, "to")} ({e.Message})"); }
+                            pipeByName[pname] = pid; np++;
+                        }
+                        catch (System.Exception e) { bad++; warn.Add($"{netName} {pname}: {e.GetType().Name}: {e.Message}"); }
                     }
                     tr.Commit();
-                    report.Add($"Pipe network {netName}: {sids.Count} structures, {np} pipes on parts list \"{plist.Name}\"");
                 }
+                report.Add($"Pipe network {netName}: {ns} structures, {np} pipes on parts list \"{plName}\"{(bad > 0 ? $" ({bad} failed, see below)" : "")}");
             }
         }
 
