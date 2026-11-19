@@ -3,8 +3,10 @@
 base()   -> everything the editor needs, in the same local frame the automatic layout uses (feet; x along the main frontage,
             y into the site): parcel, building and pavement envelopes, constraints, roads, existing buildings and pavement,
             the program and the automatic layout's buildings as a starting point.
-build()  -> the editor's design turned into the same result generate_layout returns ({metrics, sp, local, labels,
-            frame_angle_deg}), so the concept sheet, DXF, 3D model, render, package and full design all work unchanged.
+build()  -> the editor's design, treated as a sketch that locks intent (building footprints + positions, each parking field's
+            position, size, orientation and modules), refined into the same result generate_layout returns ({metrics, sp, local, labels,
+            frame_angle_deg}): driveways, curb returns, cross aisles,
+            islands, walks, landscaping and pond are drawn the way the automatic layout draws them, so the concept sheet, DXF, 3D model, render, package and full design all work unchanged.
 
 Design (local feet), as the editor sends it:
   buildings: [{id, name, use, label, cx, cy, w, d, rot (deg), stories, drive_thru}]
@@ -23,7 +25,7 @@ from shapely.ops import polylabel, unary_union
 
 from .ec_drawing import _polys, classify_edges, envelope, road_key
 from .existing import KEEP_CLEAR_FT
-from .layout import DEFAULT_PARK_SB, Frame, ada_required
+from .layout import Frame, ada_required
 from .layout2 import WALK, _close, _fillet, _largest, _pond, _short
 
 R_CURB = 10.0       # curb return where a drive meets the road
@@ -225,6 +227,270 @@ def _drive_poly(dv, road_pave, P):
     return make_valid(d).buffer(0)
 
 
+# ---------------------------------------------------------------- refinement: the sketch locks intent, the concept is drawn properly
+SW, SD, AIS, AIS1, ISL = 9.0, 18.0, 24.0, 20.0, 10
+R_C = 36.0          # centerline radius where a drive bends
+R_J = 6.0           # fillet where drives and aisles meet
+R_EDGE = 9.0        # rounding on the outside corners of drives and aisles
+MIN_CONV = 6        # a run this long gives up its end stall for an island when there is no room outside it
+
+
+def _field_xf(prm):
+    """Field-local (u along the rows, v across them) -> local feet, as the editor's F(u, v); returns (fwd, inv) matrices."""
+    a = math.radians(float(prm.get("rot") or 0))
+    c, s = math.cos(a), math.sin(a)
+    cx, cy = float(prm["cx"]), float(prm["cy"])
+    m = np.array([[-s, c], [c, s]]) if prm.get("flip") else np.array([[c, -s], [s, c]])
+    mi = np.linalg.inv(m)
+    t = mi @ np.array([cx, cy])
+    fwd = [m[0, 0], m[0, 1], m[1, 0], m[1, 1], cx, cy]
+    inv = [mi[0, 0], mi[0, 1], mi[1, 0], mi[1, 1], -t[0], -t[1]]
+    return fwd, inv
+
+
+def _field(prm, pz, block):
+    """One parking field rebuilt from its locked parameters (position, size, orientation, flip, one-way, islands):
+    the same row/aisle modules as the editor, stalls kept inside the pavement envelope and clear of buildings + walks,
+    planted islands at the end of every row and every N stalls, aisles joined by 24 ft cross aisles at the field ends.
+    Returns stalls, aisles, cross aisles, islands and traffic arrows in local feet."""
+    fwd, inv = _field_xf(prm)
+    W, D = (float(prm["d"]), float(prm["w"])) if prm.get("flip") else (float(prm["w"]), float(prm["d"]))
+    A = AIS1 if prm.get("oneway") else AIS
+    isl = prm.get("islands")
+    every = 10 ** 9 if isl == 0 else int(isl or ISL)
+    pzl = affinity.affine_transform(pz, inv).buffer(0.5)
+    bl = affinity.affine_transform(block, inv) if block is not None and not block.is_empty else Polygon()
+    rows, v = [], -D / 2
+    while v + 2 * SD + A <= D / 2 + 0.01:
+        rows += [("s", v, v + SD), ("a", v + SD, v + SD + A), ("s", v + SD + A, v + 2 * SD + A)]
+        v += 2 * SD + A
+    if v + SD + A <= D / 2 + 0.01:
+        rows += [("s", v, v + SD), ("a", v + SD, v + SD + A)]
+    n_sl = int((W + 0.01) // SW)
+    u0 = -W / 2
+
+    def ok(g):
+        return pzl.contains(g) and not g.intersects(bl)
+
+    def layout(res_lo, res_hi):
+        """res_lo / res_hi: u ranges kept clear for a cross aisle carved inside the field (None = none)."""
+        def clear(g):
+            b = g.bounds
+            return not ((res_lo and b[0] < res_lo[1] - 0.01 and b[2] > res_lo[0] + 0.01) or (res_hi and b[0] < res_hi[1] - 0.01 and b[2] > res_hi[0] + 0.01))
+        stalls, islands, span = [], [], {}
+        for ri, (k, v0, v1) in enumerate(rows):
+            if k != "s":
+                continue
+            st = []
+            for i in range(n_sl):
+                g = box(u0 + i * SW, v0, u0 + (i + 1) * SW, v1)
+                good = ok(g) and clear(g)
+                st.append(("I" if (i > 0 and i % (every + 1) == every) else "S") if good else "X")
+            runs, cur = [], []
+            for i, t in enumerate(st + ["X"]):
+                if t == "X":
+                    if cur:
+                        runs.append(cur)
+                    cur = []
+                else:
+                    cur.append(i)
+            lo_, hi_ = math.inf, -math.inf
+            for run in runs:
+                while run and st[run[0]] == "I":
+                    run = run[1:]
+                while run and st[run[-1]] == "I":
+                    run = run[:-1]
+                ns = sum(1 for i in run if st[i] == "S")
+                if not ns:
+                    continue
+                ends = []
+                for side in (0, -1):
+                    i = run[side]
+                    j = i - 1 if side == 0 else i + 1
+                    g = box(u0 + j * SW, v0, u0 + (j + 1) * SW, v1)
+                    if ok(g) and clear(g):
+                        ends.append(g)             # room past the end of the row: island outside it
+                    elif ns >= MIN_CONV:
+                        st[i] = "I"                # no room: the end stall becomes the island
+                        ends.append(box(u0 + i * SW, v0, u0 + (i + 1) * SW, v1))
+                        ns -= 1
+                for i in run:
+                    g = box(u0 + i * SW, v0, u0 + (i + 1) * SW, v1)
+                    (stalls if st[i] == "S" else islands).append(g)
+                islands += [e for e in ends if not any(e.equals(q) for q in islands)]
+                xs = [g.bounds for g in ends] + [box(u0 + run[0] * SW, v0, u0 + (run[-1] + 1) * SW, v1).bounds]
+                lo_, hi_ = min(lo_, min(b[0] for b in xs)), max(hi_, max(b[2] for b in xs))
+            span[ri] = (lo_, hi_)
+        aisles = []
+        for ri, (k, v0, v1) in enumerate(rows):
+            if k != "a":
+                continue
+            ss = [span[j] for j in (ri - 1, ri + 1) if j in span and span[j][1] > span[j][0]]
+            if ss:
+                aisles.append([min(s[0] for s in ss), max(s[1] for s in ss), v0, v1])
+        return stalls, islands, aisles
+
+    stalls, islands, aisles = layout(None, None)
+    cross = []
+    if len(aisles) >= 2 or (aisles and prm.get("oneway")):
+        res = [None, None]
+        for side in (0, 1):
+            e = min(a[0] for a in aisles) if side == 0 else max(a[1] for a in aisles)
+            vlo, vhi = min(a[2] for a in aisles), max(a[3] for a in aisles)
+            out = box(e - AIS, vlo, e, vhi) if side == 0 else box(e, vlo, e + AIS, vhi)
+            if ok(out):
+                cross.append((side, out))
+            else:
+                res[side] = (e, e + AIS) if side == 0 else (e - AIS, e)
+        if res[0] or res[1]:
+            stalls, islands, aisles = layout(*res)
+            for side in (0, 1):
+                if res[side] and aisles:
+                    e = min(a[0] for a in aisles) if side == 0 else max(a[1] for a in aisles)
+                    vlo, vhi = min(a[2] for a in aisles), max(a[3] for a in aisles)
+                    g = box(e - AIS, vlo, e, vhi) if side == 0 else box(e, vlo, e + AIS, vhi)
+                    if pzl.buffer(2).contains(g) and not g.intersects(bl):
+                        cross.append((side, g))
+        for side, g in cross:              # every aisle runs on to the cross aisle
+            for a in aisles:
+                if side == 0:
+                    a[0] = min(a[0], g.bounds[2])
+                else:
+                    a[1] = max(a[1], g.bounds[0])
+    arrows = []
+    sg0 = -1 if prm.get("rev") else 1
+    for ai, (a0, a1, v0, v1) in enumerate(aisles):
+        vm, L = (v0 + v1) / 2, a1 - a0
+        n = max(1, round(L / 70))
+        sg = (-1 if ai % 2 else 1) * sg0
+        for i in range(n):
+            um = a0 + L * (i + 0.5) / n
+            if prm.get("oneway"):
+                arrows.append(((um, vm), (sg, 0)))
+            else:
+                arrows += [((um - 9, vm - A / 4), (1, 0)), ((um + 9, vm + A / 4), (-1, 0))]
+    for side, g in cross:
+        b = g.bounds
+        um, L = (b[0] + b[2]) / 2, b[3] - b[1]
+        n = max(1, round(L / 90))
+        for i in range(n):
+            vm = b[1] + L * (i + 0.5) / n
+            arrows += [((um + AIS / 4, vm - 9), (0, 1)), ((um - AIS / 4, vm + 9), (0, -1))]
+
+    def X(g):
+        return affinity.affine_transform(g, fwd)
+    M = np.array([[fwd[0], fwd[1]], [fwd[2], fwd[3]]])
+    arr = [(tuple(M @ np.array(p) + np.array(fwd[4:])), tuple(M @ np.array(d))) for p, d in arrows]
+    return {"stalls": [X(g) for g in stalls], "islands": [X(g) for g in islands], "aisles": [X(box(a0, v0, a1, v1)) for a0, a1, v0, v1 in aisles],
+            "cross": [X(g) for _, g in cross], "arrows": arr, "oneway": bool(prm.get("oneway"))}
+
+
+def _smooth(pts, rc=R_C):
+    """Polyline with each bend replaced by a curve of (up to) radius rc on the centerline."""
+    if len(pts) < 3:
+        return list(pts)
+    out = [pts[0]]
+    for i in range(1, len(pts) - 1):
+        a, b, c = (np.array(p, float) for p in (pts[i - 1], pts[i], pts[i + 1]))
+        l1, l2 = np.linalg.norm(b - a), np.linalg.norm(c - b)
+        if l1 < 1e-6 or l2 < 1e-6:
+            continue
+        u1, u2 = (b - a) / l1, (c - b) / l2
+        th = math.acos(max(-1.0, min(1.0, float(u1 @ u2))))
+        if th < math.radians(3):
+            out.append(tuple(b))
+            continue
+        t = min(rc * math.tan(th / 2), l1 * 0.5 if i > 1 else l1 * 0.9, l2 * 0.5 if i < len(pts) - 2 else l2 * 0.9)
+        p0, p2 = b - u1 * t, b + u2 * t
+        for s in np.linspace(0, 1, 14):
+            q = (1 - s) ** 2 * p0 + 2 * (1 - s) * s * b + s ** 2 * p2
+            out.append(tuple(q))
+    out.append(pts[-1])
+    return out
+
+
+def _curb_returns(at, d, w, road_pave, r=R_CURB):
+    """The automatic driveway's 10 ft curb returns where a drive meets the road, for a drive leaving the road along d."""
+    m = math.hypot(*d) or 1.0
+    ux, uy = d[0] / m, d[1] / m
+    nx, ny = -uy, ux
+    h = w / 2 + r
+    fl = box(-h, -8, h, r).difference(Point(-h, r).buffer(r, 48)).difference(Point(h, r).buffer(r, 48))
+    fl = affinity.affine_transform(fl, [nx, ux, ny, uy, at[0], at[1]])
+    return make_valid(fl.difference(road_pave)).buffer(0) if road_pave is not None else fl
+
+
+def _drive_refined(dv, road_pave, P, circ_hint, B=None):
+    """A drawn drive as the automatic layout would build it: carried to the road, bends rounded, 10 ft curb returns
+    at the road, its inside end carried on to the parking it serves."""
+    pts = [tuple(map(float, q)) for q in dv.get("pts") or []]
+    pts = [p for i, p in enumerate(pts) if i == 0 or math.dist(p, pts[i - 1]) > 1.0]
+    if len(pts) < 2:
+        return None
+    w = max(20.0, float(dv.get("width") or AIS))
+    if road_pave is not None and Point(pts[-1]).distance(road_pave) < Point(pts[0]).distance(road_pave):
+        pts = pts[::-1]                                     # road end first
+    # road end: carried straight on to the road pavement (up to 150 ft), entering it 2 ft
+    if road_pave is not None:
+        a, b = pts[0], pts[1]
+        dx, dy = a[0] - b[0], a[1] - b[1]
+        L = math.hypot(dx, dy) or 1.0
+        if not Point(a).within(road_pave):
+            hit = LineString([a, (a[0] + dx / L * 150, a[1] + dy / L * 150)]).intersection(road_pave)
+            if not hit.is_empty:
+                q = min((Point(c) for g in getattr(hit, "geoms", [hit]) for c in g.coords), key=lambda c: c.distance(Point(a)))
+                pts[0] = (q.x + dx / L * 2.0, q.y + dy / L * 2.0)
+        else:      # starts inside the road: pull back to its edge
+            ln = LineString([a, b])
+            ex = ln.difference(road_pave)
+            if not ex.is_empty:
+                cs = [c for g in getattr(ex, "geoms", [ex]) for c in g.coords]
+                q = min(cs, key=lambda c: math.dist(c, a))
+                pts[0] = (q[0] + dx / L * 2.0, q[1] + dy / L * 2.0)
+    # site end: carried on (up to 60 ft) until it meets the parking it serves
+    if circ_hint is not None and not circ_hint.is_empty and Point(pts[-1]).distance(circ_hint) > 0.5:
+        a, b = pts[-1], pts[-2]
+        dx, dy = a[0] - b[0], a[1] - b[1]
+        L = math.hypot(dx, dy) or 1.0
+        ext = LineString([a, (a[0] + dx / L * 60, a[1] + dy / L * 60)])
+        hit = ext.intersection(circ_hint)
+        if not hit.is_empty and (B is None or not ext.intersects(B)):
+            q = min((Point(c) for g in getattr(hit, "geoms", [hit]) for c in g.coords), key=lambda c: c.distance(Point(a)))
+            pts[-1] = (q.x + dx / L * (w / 2), q.y + dy / L * (w / 2))
+        else:      # the parking is off to one side: turn into it at the nearest point
+            from shapely.ops import nearest_points
+            q = nearest_points(circ_hint, Point(a))[0]
+            link = LineString([a, (q.x, q.y)])
+            if link.length < 150 and (B is None or not link.intersects(B)):
+                ex, ey = q.x - a[0], q.y - a[1]
+                m = math.hypot(ex, ey) or 1.0
+                pts.append((q.x + ex / m * (w / 2), q.y + ey / m * (w / 2)))
+    cl = LineString(_smooth(pts))
+    body = cl.buffer(w / 2, cap_style=2, join_style=1)
+    ret = Polygon()
+    if road_pave is not None and body.intersects(road_pave):
+        seg = LineString(pts[:2])
+        e = seg.intersection(road_pave.boundary)
+        cs = [c for g in getattr(e, "geoms", [e]) for c in getattr(g, "coords", [])]
+        if cs:
+            at = max(cs, key=lambda c: math.dist(c, pts[0]))   # where the drive leaves the road
+            ret = _curb_returns(at, (pts[1][0] - pts[0][0], pts[1][1] - pts[0][1]), w, road_pave)
+        body = body.difference(road_pave)
+    arrows = []
+    L = cl.length
+    n = max(1, round(L / 90)) if L >= 45 else 0
+    for k in range(n):
+        t = L * (k + 0.5) / n
+        p, p2 = cl.interpolate(max(0, t - 1)), cl.interpolate(min(L, t + 1))
+        ux, uy = p2.x - p.x, p2.y - p.y
+        m = math.hypot(ux, uy) or 1.0
+        ux, uy = ux / m, uy / m
+        nx, ny = -uy, ux
+        c = cl.interpolate(t)
+        arrows += [((c.x - nx * w / 4 - ux * 9, c.y - ny * w / 4 - uy * 9), (ux, uy)), ((c.x + nx * w / 4 + ux * 9, c.y + ny * w / 4 + uy * 9), (-ux, -uy))]
+    return {"body": make_valid(body).buffer(0), "returns": ret, "arrows": arrows, "cl": cl, "w": w}
+
+
 def build(ctx, design, setbacks, psb, steep, keep, pave_keep, prog, rules, shared_stalls=0):
     fr, edges, rds, named, keys = _frame(ctx, setbacks, frame=design.get("frame"))
     P, C, bz, pz, RPf = _site(ctx, fr, edges, setbacks, psb, steep, [b["geom"] for b in keep], [p["geom"] for p in pave_keep])
@@ -252,36 +518,72 @@ def build(ctx, design, setbacks, psb, steep, keep, pave_keep, prog, rules, share
         raise RuntimeError("The test fit has no buildings")
     bldgs = [r["rect"] for r in rows]
     B = unary_union(bldgs)
-    # parking: stalls and aisles exactly as laid out in the editor; anything under a building is dropped
-    stalls, aisles, arrows = [], [], []
-    for f in (design.get("parking") or []) + (design.get("drives") or []):
-        for a in f.get("arrows") or []:
-            try:
-                arrows.append(arrow_poly(tuple(map(float, a["at"])), tuple(map(float, a["dir"]))))
-            except Exception:  # noqa: BLE001
-                pass
+    # The test fit is a sketch that locks intent: building footprints and positions, and each parking field's position,
+    # size, orientation and modules. Everything else is drawn the way the automatic layout draws it.
+    # parking: each field rebuilt from its parameters, stalls clear of buildings + their walks
+    block = unary_union([B.buffer(WALK, join_style=1)] + ([C] if not C.is_empty else []))
+    fields, n_sketch = [], 0
     for f in design.get("parking") or []:
-        for s in f.get("stalls") or []:
-            p = _poly(s)
-            if p is not None and p.area > 20 and p.intersection(B).area < 0.1 * p.area:
-                stalls.append(p)
-        for a in f.get("aisles") or []:
-            p = _poly(a)
-            if p is not None:
-                aisles.append(p.difference(B))
-    # drives + extra pavement
-    drives = [d for d in (_drive_poly(dv, road_pave, P) for dv in design.get("drives") or []) if d is not None and not d.is_empty]
-    drive = unary_union(drives) if drives else Polygon()
+        n_sketch += len(f.get("stalls") or [])
+        prm = f.get("params")
+        if prm and all(prm.get(k_) is not None for k_ in ("cx", "cy", "w", "d")):
+            fields.append(_field(prm, pz, block))
+        else:      # an old design without field parameters: its stalls and aisles as drawn
+            st_ = [p for p in (_poly(s_) for s_ in f.get("stalls") or []) if p is not None and p.area > 20 and not p.intersects(block)]
+            ai_ = [p.difference(B) for p in (_poly(a_) for a_ in f.get("aisles") or []) if p is not None]
+            fields.append({"stalls": st_, "islands": [], "aisles": ai_, "cross": [], "oneway": False,
+                           "arrows": [(tuple(map(float, a_["at"])), tuple(map(float, a_["dir"]))) for a_ in f.get("arrows") or []]})
+    stalls = [g for f in fields for g in f["stalls"]]
+    islands = [g for f in fields for g in f["islands"]]
+    aisles = [g for f in fields for g in f["aisles"] + f["cross"]]
+    arrows = [a for f in fields for a in f["arrows"]]
+    lot = unary_union(aisles + stalls) if aisles or stalls else Polygon()
+    # drives: rebuilt like the automatic driveway (rounded bends, curb returns at the road, joined to the parking)
+    drs = [d for d in (_drive_refined(dv, road_pave, P, unary_union(aisles) if aisles else lot, B) for dv in design.get("drives") or []) if d is not None]
+    if not drs and not lot.is_empty and road_pave is not None:
+        # none drawn: straight in from the nearest point of the road, like the automatic layout
+        from shapely.ops import nearest_points
+        tgt = unary_union(aisles) if aisles else lot
+        a_, b_ = nearest_points(tgt, road_pave)
+        dv = {"pts": [(b_.x, b_.y), (a_.x, a_.y)], "width": AIS}
+        d0 = _drive_refined(dv, road_pave, P, tgt, B)
+        if d0 is not None and not d0["body"].intersects(B):
+            drs.append(d0)
+            warn.append("No driveway was drawn: one was added from the nearest road")
+    drive_body = unary_union([d["body"] for d in drs]) if drs else Polygon()
+    returns = unary_union([d["returns"] for d in drs if not d["returns"].is_empty]) if drs else Polygon()
+    arrows += [a for d in drs for a in d["arrows"]]
+    if not drive_body.is_empty:       # the drive wins over any stall or island it crosses
+        dcut = drive_body.buffer(1.0)
+        stalls = [g for g in stalls if g.intersection(dcut).area < 0.05 * g.area]
+        islands = [g for g in islands if g.intersection(dcut).area < 0.05 * g.area]
+        if drive_body.intersects(B):
+            warn.append("A driveway runs into a building")
     extra = [p for p in (_poly(x.get("pts") or []) for x in design.get("pavement") or []) if p is not None]
-    circ = unary_union(aisles + extra + ([drive] if not drive.is_empty else []))
+    # pavement: circulation with rounded outside corners and filleted junctions, stalls crisp, islands left open
+    circ = unary_union(aisles + extra + ([drive_body] if not drive_body.is_empty else []))
+    circ = make_valid(circ).buffer(0)
+    circ = unary_union([_fillet(g, R_EDGE) for g in _polys(circ)]) if not circ.is_empty else circ
+    circ = make_valid(_close(circ, R_J)).buffer(0)
     pave = make_valid(unary_union([circ, *stalls])).buffer(0)
-    pave = make_valid(_close(pave, 2.2)).buffer(0).difference(B)
-    pave = pave.intersection(P.union(drive.buffer(2.0)) if not drive.is_empty else P).buffer(0)
+    pave = make_valid(_close(pave, 3.0)).buffer(0)           # rounded island noses
+    isl_u = unary_union(islands).buffer(0) if islands else Polygon()
+    if not isl_u.is_empty:
+        pave = pave.difference(_fillet(isl_u, 3.0)).buffer(0)
+    pave = unary_union([pave, returns]).buffer(0) if not returns.is_empty else pave
+    pave = pave.difference(B).buffer(0)
+    drive = unary_union([drive_body, returns]).buffer(0) if drs else Polygon()
+    keep_in = pz.union(drive.buffer(R_J + 2)) if not drive.is_empty else pz
+    pave = pave.intersection(keep_in.union(unary_union(extra)) if extra else keep_in).buffer(0)
+    if road_pave is not None:
+        pave = pave.difference(road_pave).buffer(0)
     if RPf is not None:
         pave = pave.difference(RPf).buffer(0)
-    out_pz = pave.difference(pz.buffer(1.0)).difference(drive.buffer(1.0) if not drive.is_empty else Polygon())
+    out_pz = unary_union([g for f in fields for g in f["stalls"] + f["aisles"]]).difference(pz.buffer(1.0)) if stalls else Polygon()
     if out_pz.area > 200:
-        warn.append(f"About {out_pz.area:,.0f} SF of pavement is inside the pavement setbacks or on a constraint")
+        warn.append(f"About {out_pz.area:,.0f} SF of the sketched parking was inside the pavement setbacks and was left out")
+    if n_sketch and len(stalls) < 0.9 * n_sketch:
+        warn.append(f"Refining the parking left {len(stalls)} stalls of the {n_sketch} sketched (islands, setbacks and walks)")
     if not drive.is_empty:
         off = drive.difference(P.buffer(1.0))
         if road_pave is not None:
@@ -289,24 +591,27 @@ def build(ctx, design, setbacks, psb, steep, keep, pave_keep, prog, rules, share
         if off.area > 300:
             warn.append("The driveway runs outside the property (over a neighbor or into the right-of-way away from the road)")
     if drive.is_empty:
-        warn.append("No driveway drawn: the site is not connected to a road")
+        warn.append("No driveway: the site is not connected to a road")
     elif road_pave is not None and not drive.buffer(3.0).intersects(road_pave):
         warn.append("The driveway does not reach the road")
-    # walks: 6 ft around each building where it is not paved
-    walks = unary_union([r["rect"].buffer(WALK, join_style=2).difference(r["rect"]) for r in rows]).difference(pave).intersection(P).buffer(0)
+    # walks: all round each building, rounded corners, as the automatic layout draws them
+    walks = unary_union([r["rect"].buffer(WALK, join_style=1).difference(r["rect"]) for r in rows]).difference(pave).intersection(P).buffer(0)
     dev = unary_union([pave, walks, *bldgs])
     grass = _fillet(dev.buffer(14, join_style=1), 6).intersection(P).difference(C).difference(dev)
     holes = unary_union([Polygon(h) for p in _polys(pave) for h in p.interiors]) if not pave.is_empty else Polygon()
-    grass = unary_union([grass, holes.difference(dev)])
+    grass = unary_union([grass, holes.difference(dev), isl_u.difference(dev)])
     imperv_sf = pave.area + walks.area + sum(b.area for b in bldgs) + (RPf.area if RPf is not None else 0.0)
     ponds = [p for p in (_poly(x.get("pts") or []) for x in design.get("ponds") or []) if p is not None]
-    if ponds:
-        pond = unary_union(ponds).intersection(P).buffer(0)
+    pond = None
+    if ponds:      # where it was sketched, shaped like the automatic pond: off the paving, organic edge
+        g = unary_union(ponds).intersection(P.buffer(-10)).difference(dev.buffer(12)).difference(C.buffer(10) if not C.is_empty else Polygon())
+        g = g.buffer(8, join_style=1).buffer(-14, join_style=1).buffer(6, join_style=1)
+        pond = _largest(g)
+        if pond is None or pond.area < 0.5 * unary_union(ponds).area:
+            pond = _largest(unary_union(ponds).intersection(P).buffer(6, join_style=1).buffer(-6, join_style=1)) or unary_union(ponds).intersection(P)
     elif design.get("auto_pond", True) and not prog.get("no_pond"):
         land = [g for g in _polys(P.difference(C)) if g.intersects(dev)]
         pond = _pond(unary_union(land) if land else P, dev.union(grass), C, max(3000.0, imperv_sf * 0.08))
-    else:
-        pond = None
     if pond is not None and not pond.is_empty:
         grass = grass.difference(pond)
         if pond.intersects(dev):
@@ -323,19 +628,31 @@ def build(ctx, design, setbacks, psb, steep, keep, pave_keep, prog, rules, share
     n_ada = ada_required(n_st) if n_st else 0
     fronts = walks if not walks.is_empty else B
     ada = sorted(stalls, key=lambda s_: s_.centroid.distance(fronts))[:n_ada]
-    # trees: one in each landscaped island / hole in the paving, and around the edge of the development
+    # trees: one in each planted island (and any other hole in the paving), then around the edge of the development
     trees = []
-    for g in _polys(holes.difference(dev.buffer(1.0))):
-        if g.area >= 90:
-            q = polylabel(g, 0.5)
+    for g in _polys(unary_union([holes, isl_u]).difference(dev.buffer(1.0)).buffer(0)):
+        if g.area >= 60:
             mrr = g.minimum_rotated_rectangle
             cs = list(mrr.exterior.coords)
             short_ = min(math.dist(cs[0], cs[1]), math.dist(cs[1], cs[2]))
-            if short_ >= 4.5:
-                trees.append((q, min(7.5, max(5.0, short_ * 0.9))))
+            long_ = max(math.dist(cs[0], cs[1]), math.dist(cs[1], cs[2]))
+            if short_ < 4.5:
+                continue
+            if long_ > 60 and short_ < 14:      # long medians: one every ~40 ft
+                axis = LineString(cs[0:2] if math.dist(cs[0], cs[1]) >= math.dist(cs[1], cs[2]) else cs[1:3])
+                c0 = mrr.centroid
+                m0 = axis.interpolate(0.5, normalized=True)
+                for i in range(max(1, int(long_ // 40))):
+                    q = axis.interpolate((i + 0.5) / max(1, int(long_ // 40)), normalized=True)
+                    q = Point(q.x + c0.x - m0.x, q.y + c0.y - m0.y)
+                    if g.buffer(0.5).contains(q):
+                        trees.append((q, 6.5))
+            else:
+                trees.append((polylabel(g, 0.5), min(7.5, max(5.0, short_ * 0.9))))
     edge_line = unary_union([g.exterior for g in _polys(dev.buffer(8, join_style=1))])
     pad_ok = pad.buffer(-4) if pad is not None and not pad.is_empty else None
     keep_out = drive.buffer(30) if not drive.is_empty else Polygon()
+    arrows = [arrow_poly(p, d) for p, d in arrows]
     nt = int(edge_line.length // 45) if not edge_line.is_empty else 0
     for i in range(nt):
         q = edge_line.interpolate(i / max(nt, 1), normalized=True)
@@ -377,7 +694,7 @@ def build(ctx, design, setbacks, psb, steep, keep, pave_keep, prog, rules, share
                        "stories": r["b"]["stories"], "drive_thru": r["b"]["drive_thru"]} for r in rows],
         "drive_road": design.get("drive_road") or (design.get("frame") or {}).get("drive_road"),
         "building_sf": round(bsf, -1), "gfa_sf": round(gfa_sf, -1), "program_scale": 1.0,
-        "stalls": n_st, "stalls_required": req, "ada_stalls": n_ada, "template": "manual/testfit",
+        "stalls": n_st, "stalls_sketch": n_sketch, "stalls_required": req, "ada_stalls": n_ada, "template": "manual/testfit",
         "one_way_aisles": any((f.get("params") or {}).get("oneway") for f in design.get("parking") or []),
         "impervious_sf": round(imperv_sf, -1), "impervious_pct": round(100 * imperv_sf / parcel_sf, 1),
         "lot_coverage_pct": round(100 * bsf / parcel_sf, 1), "far": round(gfa_sf / parcel_sf, 3),
@@ -404,7 +721,7 @@ def build(ctx, design, setbacks, psb, steep, keep, pave_keep, prog, rules, share
     pave, walks, grass, pad, drive, dev = (areal(x) for x in (pave, walks, grass, pad, drive, dev))
     pond = areal(pond) if pond is not None else None
     local = {"P": P, "bz": bz, "pz": pz, "C": C, "pave": pave, "walk": walks, "grass": grass, "pad": pad, "roof_blocks": roof_blocks, "bldgs": bldgs,
-             "reuse": RPf, "stalls": stalls, "ada": ada, "stripes": stripes, "pond": pond, "drive": drive, "dev": dev, "arrows": [a for a in arrows if a.intersects(pave)],
+             "reuse": RPf, "stalls": stalls, "ada": ada, "stripes": stripes, "pond": pond, "drive": drive, "dev": dev, "arrows": [a for a in arrows if a.within(pave.buffer(1.0))],
              "trees": [q.buffer(r, 24) for q, r in trees]}
     sp = {k_: ([fr.inv(g) if g is not None else None for g in v] if isinstance(v, list) else (fr.inv(v) if v is not None else None)) for k_, v in local.items()}
     labels = []
