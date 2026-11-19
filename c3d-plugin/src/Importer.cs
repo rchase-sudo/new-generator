@@ -13,6 +13,7 @@ using Autodesk.AutoCAD.Geometry;
 using Autodesk.Civil;
 using Autodesk.Civil.ApplicationServices;
 using Autodesk.Civil.DatabaseServices;
+using Autodesk.Civil.DatabaseServices.Styles;
 using AcEntity = Autodesk.AutoCAD.DatabaseServices.Entity;
 
 namespace Drafted.C3D

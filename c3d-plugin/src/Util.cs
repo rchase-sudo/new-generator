@@ -83,6 +83,8 @@ namespace Drafted.C3D
 
         static string[] Toks(string s) => Regex.Split(s.ToUpperInvariant(), "[^A-Z0-9]+").Where(t => t.Length > 0).ToArray();
 
+        static readonly HashSet<string> Generic = new HashSet<string> { "PIPE", "TEXT", "LABL", "ANNO", "STRC", "STRUCT", "EDGE", "LAT", "LATL", "SERV", "SVC", "CONC", "ELEV", "POINT", "MH", "SD", "SS", "SF", "CL", "PL", "FM", "UE", "FH" };
+
         static readonly string[] ExHint = { "EX", "EXIST", "EXST", "V-", "EXT" };
 
         /// <summary>The firm layer most likely to hold a Drafted standard layer's content (same rules as Drafted's server side).</summary>
@@ -96,7 +98,7 @@ namespace Drafted.C3D
             {
                 var ts = new HashSet<string>(Toks(n));
                 double hit = words.Sum(w => ts.Contains(w) ? 2.0 : 0.0) + words.Sum(w => w.Length > 2 && ts.Any(x => x != w && x.Contains(w)) ? 0.5 : 0.0);
-                if (hit <= 0) continue;
+                if (!words.Where(w => !Generic.Contains(w)).Any(w => ts.Contains(w) || (w.Length > 2 && ts.Any(x => x.Contains(w))))) continue;
                 double s = hit + 0.5 * ts.Count(sw.Contains);
                 bool ex = ExHint.Any(h => n.ToUpperInvariant().StartsWith(h)) || n.ToUpperInvariant().Contains("EXIST");
                 if (existing) s += ex ? 1.5 : -1.0; else if (ex) s -= 2.5;
