@@ -161,11 +161,38 @@ def _poly(pts):
         return None
 
 
-def _bldg_poly(b):
+def _bldg_parts(b):
+    """Main block + wings (rectangles in the block's own axes, centred at u, v), in the block's local frame."""
     w, d = float(b["w"]), float(b["d"])
-    r = box(-w / 2, -d / 2, w / 2, d / 2)
-    r = affinity.rotate(r, float(b.get("rot") or 0), origin=(0, 0))
-    return affinity.translate(r, float(b["cx"]), float(b["cy"]))
+    out = [box(-w / 2, -d / 2, w / 2, d / 2)]
+    for wg in b.get("wings") or []:
+        u, v, ww, wd = (float(wg[k]) for k in ("u", "v", "w", "d"))
+        if ww > 0 and wd > 0:
+            out.append(box(u - ww / 2, v - wd / 2, u + ww / 2, v + wd / 2))
+    return out
+
+
+def _bldg_poly(b):
+    g = unary_union(_bldg_parts(b)).buffer(0.5, join_style=2).buffer(-0.5, join_style=2)   # wings flush with the block (to rounding) merge cleanly
+    g = max(_polys(g), key=lambda q: q.area) if g.geom_type != "Polygon" else g
+    g = Polygon(g.exterior)                       # a building footprint has no holes
+    g = affinity.rotate(g, float(b.get("rot") or 0), origin=(0, 0))
+    return affinity.translate(g, float(b["cx"]), float(b["cy"]))
+
+
+def _bldg_box(b):
+    xs = [c for p in _bldg_parts(b) for c in (p.bounds[0], p.bounds[2])]
+    ys = [c for p in _bldg_parts(b) for c in (p.bounds[1], p.bounds[3])]
+    return max(xs) - min(xs), max(ys) - min(ys)
+
+
+def arrow_poly(at, d, L=14.0):
+    """Pavement-marking traffic arrow (stem + head) centred on `at`, pointing along `d` (feet)."""
+    m = math.hypot(d[0], d[1]) or 1.0
+    ux, uy = d[0] / m, d[1] / m
+    nx, ny = -uy, ux
+    pts = [(-L / 2, -0.8), (L / 2 - 4.5, -0.8), (L / 2 - 4.5, -2.6), (L / 2, 0), (L / 2 - 4.5, 2.6), (L / 2 - 4.5, 0.8), (-L / 2, 0.8)]
+    return Polygon([(at[0] + ux * x + nx * y, at[1] + uy * x + ny * y) for x, y in pts])
 
 
 def _drive_poly(dv, road_pave, P):
@@ -215,7 +242,8 @@ def build(ctx, design, setbacks, psb, steep, keep, pave_keep, prog, rules, share
             continue
         rows.append({"b": {"name": b.get("name") or f"Building {chr(65 + i)}", "use": b.get("use"), "label": b.get("label") or b.get("use"),
                            "stories": int(b.get("stories") or 1), "drive_thru": bool(b.get("drive_thru"))},
-                     "rect": g, "w": float(b["w"]), "d": float(b["d"]), "rot": float(b.get("rot") or 0), "fp": g.area})
+                     "rect": g, "w": _bldg_box(b)[0], "d": _bldg_box(b)[1], "bw": float(b["w"]), "bd": float(b["d"]),
+                     "rot": float(b.get("rot") or 0), "fp": g.area, "cx": float(b["cx"]), "cy": float(b["cy"]), "irregular": bool(b.get("wings"))})
         if not bz.buffer(0.5).contains(g):
             warn.append(f"{rows[-1]['b']['name']} is outside the building setbacks")
         if not C.is_empty and g.intersects(C):
@@ -225,7 +253,13 @@ def build(ctx, design, setbacks, psb, steep, keep, pave_keep, prog, rules, share
     bldgs = [r["rect"] for r in rows]
     B = unary_union(bldgs)
     # parking: stalls and aisles exactly as laid out in the editor; anything under a building is dropped
-    stalls, aisles = [], []
+    stalls, aisles, arrows = [], [], []
+    for f in (design.get("parking") or []) + (design.get("drives") or []):
+        for a in f.get("arrows") or []:
+            try:
+                arrows.append(arrow_poly(tuple(map(float, a["at"])), tuple(map(float, a["dir"]))))
+            except Exception:  # noqa: BLE001
+                pass
     for f in design.get("parking") or []:
         for s in f.get("stalls") or []:
             p = _poly(s)
@@ -311,7 +345,7 @@ def build(ctx, design, setbacks, psb, steep, keep, pave_keep, prog, rules, share
     # roof accent blocks, as the automatic layout draws them, in each building's own orientation
     roof_blocks = []
     for r in rows:
-        w_, d_ = r["w"], r["d"]
+        w_, d_ = r["bw"], r["bd"]
         if r["fp"] < 2000:
             roof_blocks.append(None)
             continue
@@ -321,8 +355,7 @@ def build(ctx, design, setbacks, psb, steep, keep, pave_keep, prog, rules, share
         else:
             c_ = min(28.0, 0.38 * min(w_, d_))
             blk = box(-w_ / 2, -d_ / 2, -w_ / 2 + c_, -d_ / 2 + c_)
-        c0 = r["rect"].centroid
-        roof_blocks.append(affinity.translate(affinity.rotate(blk, r["rot"], origin=(0, 0)), c0.x, c0.y))
+        roof_blocks.append(affinity.translate(affinity.rotate(blk, r["rot"], origin=(0, 0)), r["cx"], r["cy"]))
     # numbers
     parcel_sf = P.area
     bsf = sum(r["fp"] for r in rows)
@@ -345,6 +378,7 @@ def build(ctx, design, setbacks, psb, steep, keep, pave_keep, prog, rules, share
         "drive_road": design.get("drive_road") or (design.get("frame") or {}).get("drive_road"),
         "building_sf": round(bsf, -1), "gfa_sf": round(gfa_sf, -1), "program_scale": 1.0,
         "stalls": n_st, "stalls_required": req, "ada_stalls": n_ada, "template": "manual/testfit",
+        "one_way_aisles": any((f.get("params") or {}).get("oneway") for f in design.get("parking") or []),
         "impervious_sf": round(imperv_sf, -1), "impervious_pct": round(100 * imperv_sf / parcel_sf, 1),
         "lot_coverage_pct": round(100 * bsf / parcel_sf, 1), "far": round(gfa_sf / parcel_sf, 3),
         "pond_sf": round(pond.area, -1) if pond is not None else 0,
@@ -370,12 +404,12 @@ def build(ctx, design, setbacks, psb, steep, keep, pave_keep, prog, rules, share
     pave, walks, grass, pad, drive, dev = (areal(x) for x in (pave, walks, grass, pad, drive, dev))
     pond = areal(pond) if pond is not None else None
     local = {"P": P, "bz": bz, "pz": pz, "C": C, "pave": pave, "walk": walks, "grass": grass, "pad": pad, "roof_blocks": roof_blocks, "bldgs": bldgs,
-             "reuse": RPf, "stalls": stalls, "ada": ada, "stripes": stripes, "pond": pond, "drive": drive, "dev": dev,
+             "reuse": RPf, "stalls": stalls, "ada": ada, "stripes": stripes, "pond": pond, "drive": drive, "dev": dev, "arrows": [a for a in arrows if a.intersects(pave)],
              "trees": [q.buffer(r, 24) for q, r in trees]}
     sp = {k_: ([fr.inv(g) if g is not None else None for g in v] if isinstance(v, list) else (fr.inv(v) if v is not None else None)) for k_, v in local.items()}
     labels = []
     for r in rows:
-        c = fr.inv(r["rect"].centroid)
+        c = fr.inv(polylabel(r["rect"], 1.0) if r["irregular"] else r["rect"].centroid)
         labels.append({"at": (c.x, c.y), "rot": math.degrees(fr.a) + r["rot"], "w_ft": r["w"], "d_ft": r["d"],
                        "lines": [f"PROPOSED {_short(r['b'])}", f"{r['w']:.0f}' X {r['d']:.0f}'", f"{r['fp']:,.0f} SF"]})
     if pond is not None and not pond.is_empty:

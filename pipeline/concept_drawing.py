@@ -120,6 +120,11 @@ def write_dxf(ec_dxf, out_path, sp, labels, k_ft, existing=None, steep=None):
         msp.add_line(ln.coords[0], ln.coords[1], dxfattribs={"layer": "P-PARKING-STRIPE"})
     for a in sp["ada"]:
         ring(a, "P-ADA")
+    if sp.get("arrows"):
+        if "P-PARKING-ARROW" not in doc.layers:
+            doc.layers.add("P-PARKING-ARROW", color=7)
+        for a in sp["arrows"]:
+            ring(a, "P-PARKING-ARROW")
     if "P-TREE" not in doc.layers:
         doc.layers.add("P-TREE", color=3)
     for t in sp.get("trees") or []:
@@ -291,6 +296,8 @@ def write_sheet(pdf_path, png_path, parcel, env, wet, fl, rds, aerial, k_ft, sp,
     for ln in sp["stripes"]:
         xs, ys = ln.xy
         ax.plot(xs, ys, color="#f2f4f5", lw=lw_ft(0.4), zorder=8, solid_capstyle="butt")
+    for a in sp.get("arrows") or []:            # traffic flow arrows (test fit): white pavement markings
+        _patch(ax, a, 8, facecolor="#f2f4f5", edgecolor="none")
     sv = (SUN[0] * BLDG_H * 0.75 / k_ft, SUN[1] * BLDG_H * 0.75 / k_ft)
     for b in sp["bldgs"]:
         moved = affinity.translate(b, *sv)
