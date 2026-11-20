@@ -123,22 +123,22 @@ def landxml(X, path, name="Site"):
         for p in net["pipes"]:
             o.append(f'<Pipe name="{pid[id(p)]}" refStart="{p["from"]}" refEnd="{p["to"]}" length="{p["len"]:.2f}" slope="{p["slope"]:.4f}"><CircPipe diameter="{p["dia"]}" material="{p["mat"]}"/></Pipe>')
         o.append("</Pipes></PipeNetwork>")
-    U = X["U"]
-    if U.get("sewer_pipes"):
+    SN = sanitary_network(X)
+    if SN["pipes"]:
         o.append('<PipeNetwork name="Sanitary" pipeNetType="sanitary"><Structs>')
-        for m in U["smh"]:
+        for m in SN["structs"]:
             e, n = W.pt(m["xy"])
-            o.append(f'<Struct name="{m["id"]}" desc="{ {"PS": "Pump station wet well", "EX": "Existing sewer manhole"}.get(m.get("kind"), "Sewer manhole") }" elevRim="{m["rim"]:.2f}" elevSump="{m["rim"] - m["depth"]:.2f}"><Center>{n:.3f} {e:.3f}</Center>'
-                     f'<CircStruct diameter="{72 if m.get("kind") == "PS" else 48}" material="Precast concrete"/>')
-            for i, p in enumerate(U["sewer_pipes"], 1):
+            o.append(f'<Struct name="{m["id"]}" desc="{m["desc"]}" elevRim="{m["rim"]:.2f}" elevSump="{m["sump"]:.2f}"><Center>{n:.3f} {e:.3f}</Center>'
+                     f'<CircStruct diameter="{m["dia_in"]}" material="{"PVC" if m["kind"] in ("CO", "TAP") else "Precast concrete"}"/>')
+            for p in SN["pipes"]:
                 if p["from"] == m["id"]:
-                    o.append(f'<Invert elev="{p["inv_up"]:.2f}" flowDir="out" refPipe="SS-P{i}"/>')
+                    o.append(f'<Invert elev="{p["inv_up"]:.2f}" flowDir="out" refPipe="{p["name"]}"/>')
                 if p["to"] == m["id"]:
-                    o.append(f'<Invert elev="{p["inv_dn"]:.2f}" flowDir="in" refPipe="SS-P{i}"/>')
+                    o.append(f'<Invert elev="{p["inv_dn"]:.2f}" flowDir="in" refPipe="{p["name"]}"/>')
             o.append("</Struct>")
         o.append("</Structs><Pipes>")
-        for i, p in enumerate(U["sewer_pipes"], 1):
-            o.append(f'<Pipe name="SS-P{i}" refStart="{p["from"]}" refEnd="{p["to"]}" length="{p["len"]:.2f}" slope="{p["slope"]:.4f}"><CircPipe diameter="{p["dia"]}" material="PVC"/></Pipe>')
+        for p in SN["pipes"]:
+            o.append(f'<Pipe name="{p["name"]}" refStart="{p["from"]}" refEnd="{p["to"]}" length="{p["len"]:.2f}" slope="{p["slope"]:.4f}"><CircPipe diameter="{p["dia"]}" material="PVC"/></Pipe>')
         o.append("</Pipes></PipeNetwork>")
     o.append("</PipeNetworks></LandXML>")
     with open(path, "w") as f:
@@ -272,3 +272,58 @@ def dxf(X, path):
             ms.add_3dface([tuple(P3[a_]), tuple(P3[b_]), tuple(P3[c_]), tuple(P3[c_])], dxfattribs={"layer": "C-TINN-PROP"})
     doc.saveas(path)
     return path
+
+
+def sanitary_network(X):
+    """The whole gravity sanitary system as one network: the mains (manholes, pump station wet well, the existing manhole)
+    plus every building's 6" service lateral, from a cleanout at the building to its tap on the main (or straight into the
+    existing manhole when there is no main). Local coordinates. {"structs": [...], "pipes": [...]}"""
+    U, G, L, g, zp = X["U"], X["G"], X["L"], X["grid"], X["z_prop"]
+    S, P = [], []
+    for m in U.get("smh") or []:
+        S.append({"id": m["id"], "kind": m.get("kind") or "SMH", "xy": tuple(m["xy"]), "rim": float(m["rim"]), "sump": float(m["rim"] - m["depth"]),
+                  "dia_in": 72 if m.get("kind") == "PS" else 48, "existing": bool(m.get("existing")),
+                  "desc": {"PS": "Pump station wet well", "EX": "Existing sewer manhole"}.get(m.get("kind"), "Sewer manhole")})
+    for i, p in enumerate(U.get("sewer_pipes") or [], 1):
+        P.append({"name": f"SS-P{i}", "from": p["from"], "to": p["to"], "dia": p["dia"], "mat": p.get("mat") or "PVC SDR 35", "inv_up": float(p["inv_up"]),
+                  "inv_dn": float(p["inv_dn"]), "len": float(p["len"]), "slope": float(p["slope"])})
+    rows = {r["bldg"] - 1: r for r in U.get("sewer_lat_rows") or []}
+    from shapely.geometry import Point as _Pt
+    for k, ln in enumerate(U.get("sewer_lat") or []):
+        if ln is None or ln.length < 1 or k not in rows:
+            continue
+        r = rows[k]
+        cs = list(ln.coords)
+        b = L["bldgs"][k] if k < len(L["bldgs"]) else None
+        if b is not None and _Pt(cs[0]).distance(b) < _Pt(cs[-1]).distance(b):
+            cs = cs[::-1]                                       # building end last
+        up_inv, dn_inv = float(r["inv_bldg"]), float(r["inv_main"])
+        # downstream: an existing / proposed manhole it reaches, else a tap (wye) on the main
+        dn = min(S, key=lambda q: math.dist(q["xy"], cs[0]), default=None)
+        if dn is None or math.dist(dn["xy"], cs[0]) > 6.0:
+            z0 = float(g.at(zp, [cs[0][0]], [cs[0][1]])[0])
+            dn = {"id": f"TAP-{k + 1}", "kind": "TAP", "xy": tuple(cs[0]), "rim": z0, "sump": dn_inv, "dia_in": 6, "desc": f"Wye: building {k + 1} lateral"}
+            S.append(dn)
+        z1 = float(g.at(zp, [cs[-1][0]], [cs[-1][1]])[0])
+        co = {"id": f"CO-{k + 1}", "kind": "CO", "xy": tuple(cs[-1]), "rim": max(z1, up_inv + 3.0), "sump": up_inv, "dia_in": 6, "desc": f"Cleanout: building {k + 1} sewer"}
+        S.append(co)
+        # one pipe per straight run; bends get a cleanout / bend structure
+        Ltot = sum(math.dist(a, c) for a, c in zip(cs[:-1], cs[1:])) or 1.0
+        nodes = [dn["id"]]
+        acc = [0.0]
+        for j in range(1, len(cs) - 1):
+            acc.append(acc[-1] + math.dist(cs[j - 1], cs[j]))
+            zb = float(g.at(zp, [cs[j][0]], [cs[j][1]])[0])
+            iv = dn_inv + (up_inv - dn_inv) * acc[-1] / Ltot
+            S.append({"id": f"CO-{k + 1}{chr(65 + j - 1)}", "kind": "CO", "xy": tuple(cs[j]), "rim": max(zb, iv + 3.0), "sump": iv, "dia_in": 6,
+                      "desc": f"Bend cleanout: building {k + 1} sewer"})
+            nodes.append(S[-1]["id"])
+        acc.append(Ltot)
+        nodes.append(co["id"])
+        for j in range(len(nodes) - 1):
+            a_, c_ = acc[j], acc[j + 1]
+            i_dn = dn_inv + (up_inv - dn_inv) * a_ / Ltot
+            i_up = dn_inv + (up_inv - dn_inv) * c_ / Ltot
+            P.append({"name": f"SS-L{k + 1}{'-' + str(j + 1) if len(nodes) > 2 else ''}", "from": nodes[j + 1], "to": nodes[j], "dia": 6, "mat": "PVC SDR 35",
+                      "inv_up": round(i_up, 2), "inv_dn": round(i_dn, 2), "len": round(c_ - a_, 2), "slope": round((i_up - i_dn) / max(c_ - a_, 0.1), 5)})
+    return {"structs": S, "pipes": P}

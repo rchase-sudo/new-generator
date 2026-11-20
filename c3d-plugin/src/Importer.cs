@@ -280,6 +280,8 @@ namespace Drafted.C3D
                             var k = U.S(s, "kind");
                             var fam = PickFamily(strFams, k == "CB" ? new[] { "Catch", "Inlet", "Grate", "Curb", "Rect" }
                                                          : k == "FES" ? new[] { "Flared", "End", "Headwall", "Null", "Outfall" }
+                                                         : k == "CO" ? new[] { "Cleanout", "Clean Out", "Null", "Cylind", "Circular" }
+                                                         : k == "TAP" ? new[] { "Null", "Wye", "Tee", "Junction", "Connection" }
                                                          : new[] { "Manhole", "Concentric", "Eccentric", "Cylind", "Circular" });
                             var size = PickSize(tr, fam.Sizes, U.D(s, "dia_in", 48), false);
                             var xy = U.XY(s.GetProperty("xy"));

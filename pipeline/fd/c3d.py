@@ -65,7 +65,7 @@ ROLES = {
 }
 # what becomes a native Civil 3D object (left out of linework.dxf so nothing is drawn twice)
 C3D_OWNED = {"V-TOPO-MINR", "V-TOPO-MAJR", "V-TOPO-TEXT", "C-TOPO-MINR", "C-TOPO-MAJR", "C-TOPO-TEXT", "C-TOPO-SPOT", "C-TINN-PROP",
-             "C-STRM-PIPE", "C-STRM-STRC", "C-STRM-TEXT", "C-STRM-POND", "C-SSWR-PIPE", "C-SSWR-STRC", "C-SSWR-TEXT", "C-ROAD-CNTR", "C-ROAD-STAN"}
+             "C-STRM-PIPE", "C-STRM-STRC", "C-STRM-TEXT", "C-STRM-POND", "C-SSWR-PIPE", "C-SSWR-STRC", "C-SSWR-TEXT", "C-SSWR-LATL", "C-ROAD-CNTR", "C-ROAD-STAN"}
 GENERIC = {"PIPE", "TEXT", "LABL", "ANNO", "STRC", "STRUCT", "EDGE", "LAT", "LATL", "SERV", "SVC", "CONC", "ELEV", "POINT", "MH", "SD", "SS", "SF", "CL", "PL", "FM", "UE", "FH"}
 EXISTING_HINT = ("EX", "EXIST", "EXST", "V-", "EXT")
 
@@ -195,14 +195,14 @@ def manifest(X, meta, job, mapping=None, firm=None):
                       "start": en(byid[p["from"]]["xy"] if p["from"] in byid else a), "end": en(byid[p["to"]]["xy"] if p["to"] in byid else b),
                       "len": _r(p["len"], 2), "slope": _r(p["slope"], 5), "shape": "circular"})
         nets.append({"name": "Storm", "kind": "storm", "pipe_layer": "C-STRM-PIPE", "struct_layer": "C-STRM-STRC", "structures": S, "pipes": P})
-    if U.get("sewer_pipes"):
-        S = [{"name": m["id"], "kind": m.get("kind") or "SMH", "xy": en(m["xy"]), "rim": _r(m["rim"], 2), "sump": _r(m["rim"] - m["depth"], 2),
-              "dia_in": 72 if m.get("kind") == "PS" else 48, "existing": bool(m.get("existing")),
-              "desc": {"PS": "Pump station wet well", "EX": "Existing sewer manhole"}.get(m.get("kind"), "Sewer manhole")} for m in U["smh"]]
-        byid = {m["id"]: m for m in U["smh"]}
-        P = [{"name": f"SS-P{i}", "from": p["from"], "to": p["to"], "dia_in": p["dia"], "material": p.get("mat") or "PVC", "inv_up": _r(p["inv_up"], 2), "inv_dn": _r(p["inv_dn"], 2),
+    SN = export.sanitary_network(X)
+    if SN["pipes"]:
+        byid = {m["id"]: m for m in SN["structs"]}
+        S = [{"name": m["id"], "kind": m["kind"], "xy": en(m["xy"]), "rim": _r(m["rim"], 2), "sump": _r(m["sump"], 2), "dia_in": m["dia_in"],
+              "existing": bool(m.get("existing")), "desc": m["desc"]} for m in SN["structs"]]
+        P = [{"name": p["name"], "from": p["from"], "to": p["to"], "dia_in": p["dia"], "material": p["mat"], "inv_up": _r(p["inv_up"], 2), "inv_dn": _r(p["inv_dn"], 2),
               "start": en(byid[p["from"]]["xy"]), "end": en(byid[p["to"]]["xy"]), "len": _r(p["len"], 2), "slope": _r(p["slope"], 5), "shape": "circular"}
-             for i, p in enumerate(U["sewer_pipes"], 1)]
+             for p in SN["pipes"]]
         nets.append({"name": "Sanitary", "kind": "sanitary", "pipe_layer": "C-SSWR-PIPE", "struct_layer": "C-SSWR-STRC", "structures": S, "pipes": P})
     # ---- pressure lines: polylines (water, force main)
     press = []

@@ -39,18 +39,33 @@ def dem_from_contours(payload, P, pad=150.0):
     """Existing ground from the EC plan's contours (and spot grades): a TIN of the contour vertices rasterised at 5 ft,
     nearest value past the last contour. Same shape as the 3DEP grid Drafted normally uses."""
     pts, zs = [], []
+    lines_ = []
     for c in payload.get("contours") or []:
         z = c.get("z")
         if z is None or not c.get("pts") or len(c["pts"]) < 2:
             continue
         ln = LineString([tuple(map(float, q)) for q in c["pts"]])
+        if ln.length >= 25.0:                       # symbols, hatching and stray marks are not contours
+            lines_.append((float(z), ln))
+    if lines_:      # elevations that disagree wildly with the rest are misread labels
+        zz = np.array([z for z, _ in lines_])
+        med = float(np.median(zz))
+        mad = float(np.median(np.abs(zz - med))) or 1.0
+        lines_ = [(z, ln) for z, ln in lines_ if abs(z - med) <= max(25.0, 6 * mad)]
+    near = [(z, ln) for z, ln in lines_ if ln.distance(P) < 150.0]
+    if len(near) < 5 or len({z for z, _ in near}) < 3:
+        raise ValueError(f"Couldn't read the existing contours on this sheet: only {len(near)} usable labelled contour line(s) near the property "
+                         f"(Drafted needs the EC plan's contours with their elevation labels). Nothing was designed. Check that the contours on this PDF "
+                         f"are vector linework with readable labels, or send a sheet that has them.")
+    for z, ln in lines_:
         n = max(2, int(ln.length / 4.0))
         for i in range(n + 1):
             q = ln.interpolate(i / n, normalized=True)
             pts.append((q.x, q.y))
             zs.append(float(z))
+    zlo, zhi = min(z for z, _ in lines_) - 15.0, max(z for z, _ in lines_) + 15.0
     for s in payload.get("spots") or []:
-        if s.get("z") is not None:
+        if s.get("z") is not None and zlo <= float(s["z"]) <= zhi:
             pts.append((float(s["x"]), float(s["y"])))
             zs.append(float(s["z"]))
     if len(pts) < 20 or len(set(zs)) < 2:
@@ -142,6 +157,8 @@ def context(payload, sheet_jpg=None):
     img = Image.open(io.BytesIO(sheet_jpg)).convert("RGB")
     ll = geocode(payload.get("location"))
     warnings = []
+    if cover < 0.5:
+        raise ValueError(f"The contours read from the EC plan cover only {cover * 100:.0f}% of the property, too little to model the existing ground. Nothing was designed.")
     if cover < 0.9:
         warnings.append(f"The EC plan's contours cover about {cover * 100:.0f}% of the property; the rest of the existing ground is extended from the nearest contour")
     if ll is None:
