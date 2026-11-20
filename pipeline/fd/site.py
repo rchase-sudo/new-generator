@@ -734,11 +734,9 @@ CAMP_MAIN_DIA, CAMP_LAT_DIA, CAMP_COVER, CAMP_DROP = 6, 4, 4.0, 0.1
 def _camp_graph(lines_, pts, tol=2.0):
     """The drive centrelines as a graph (vertices every ~10 ft, junctions merged) with each service point's nearest spot on
     them added as a node. Returns (nx graph, xy by node, node of each point)."""
-    import networkx as nx
-    from shapely.ops import linemerge
     net = unary_union([l for l in lines_ if l is not None and l.length > 1])
     segs = [l for l in lines(net)] if not net.is_empty else []
-    G_ = nx.Graph()
+    G_ = {}                     # node -> {neighbour: length}
     xy, key = {}, {}
 
     def node(p):
@@ -770,7 +768,9 @@ def _camp_graph(lines_, pts, tol=2.0):
             p_ = ln.interpolate(s_)
             n_ = node((p_.x, p_.y))
             if prev is not None and prev != n_:
-                G_.add_edge(prev, n_, w=math.dist(xy[prev], xy[n_]))
+                w_ = math.dist(xy[prev], xy[n_])
+                G_.setdefault(prev, {})[n_] = w_
+                G_.setdefault(n_, {})[prev] = w_
             prev = n_
     at = []
     for q, s_ in zip(pts, snaps):
@@ -785,17 +785,27 @@ def _camp_graph(lines_, pts, tol=2.0):
 def _camp_tree(G_, xy, root, targets):
     """Shortest paths from the root to every target along the drives, as a tree: parent of each node, and the nodes kept as
     structures (root, ends, branches, bends and at least every 300 ft)."""
-    import networkx as nx
+    import heapq
+    dist, prev = {root: 0.0}, {}
+    hq = [(0.0, root)]
+    while hq:
+        d_, n_ = heapq.heappop(hq)
+        if d_ > dist.get(n_, 1e18):
+            continue
+        for m_, w_ in G_.get(n_, {}).items():
+            if d_ + w_ < dist.get(m_, 1e18):
+                dist[m_], prev[m_] = d_ + w_, n_
+                heapq.heappush(hq, (d_ + w_, m_))
     par = {}
-    dist, paths = nx.single_source_dijkstra(G_, root, weight="w")
     used = set([root])
     for t in targets:
-        if t is None or t not in paths:
+        if t is None or t not in dist:
             continue
-        pth = paths[t]
-        for a, b in zip(pth, pth[1:]):
-            par.setdefault(b, a)
-            used.add(b)
+        n_ = t
+        while n_ != root:
+            par[n_] = prev[n_]
+            used.add(n_)
+            n_ = prev[n_]
     kids = {}
     for b, a in par.items():
         kids.setdefault(a, []).append(b)
