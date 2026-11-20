@@ -61,6 +61,8 @@ ROLES = {
     "C-NGAS-UGND": ("Gas", ["NGAS", "GAS"], "proposed"),
     "C-EROS-LOD": ("Limit of disturbance", ["LOD", "LIMIT", "DIST", "EROS", "ESC"], "proposed"),
     "C-EROS-SILT": ("Silt fence", ["SILT", "SF", "EROS", "ESC", "FENC"], "proposed"),
+    "C-ENVR-WSBK": ("Wetland setback", ["WSBK", "WETL", "WET", "SETBACK", "BUFF"], "proposed"),
+    "C-ENVR-NOBD": ("No-build areas", ["NOBD", "NOBUILD", "RESTR", "EASE"], "proposed"),
     "C-EROS-MATT": ("2:1 slopes - erosion control matting", ["MATT", "MAT", "BLANKET", "ECB", "EROS"], "proposed"),
     "C-SITE-RIPR": ("1:1 slopes - riprap", ["RIPR", "RIP", "RIPRAP", "STONE"], "proposed"),
     "C-SITE-WALL": ("Retaining walls", ["WALL", "RETN", "RTWL"], "proposed"),

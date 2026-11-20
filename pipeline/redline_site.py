@@ -154,6 +154,8 @@ def context(payload, sheet_jpg=None):
     tagged = payload.get("tagged") or {}
     wet = [{"geom": _poly(r), "type": "Wetland (from the EC plan)", "code": "EC"} for r in tagged.get("wet") or [] if len(r) >= 3]
     fl = [{"geom": _poly(r), "sfha": "T", "zone": "EC"} for r in tagged.get("flood") or [] if len(r) >= 3]
+    nob = [_poly(r) for r in tagged.get("nobuild") or [] if len(r) >= 3]     # tagged no-build / no-disturb / easement areas
+    sb_ = payload.get("setbacks") or {}
     bld = []
     for i, r in enumerate(tagged.get("keep_bldgs") or [], 1):
         if len(r) >= 3:
@@ -181,5 +183,5 @@ def context(payload, sheet_jpg=None):
         warnings.append("The site location could not be found: rainfall and soils use regional defaults")
     ctx = {"parcel_sp": P, "k": 1.0, "epsg": None, "latlon": ll, "rds": frontage_road(payload, P), "wet": wet, "fl": fl, "bld": bld, "pave": [],
            "topo": dem, "aerial": {"extent": tuple(ext), "source": "EC plan (sheet)", "jpg": sheet_jpg, "image": img}, "warnings": warnings,
-           "source": "redline"}
+           "source": "redline", "nobuild": nob, "wet_setback": float(sb_.get("wet") or 0), "wet_nodisturb": float(sb_.get("wet_nd") or 0)}
     return ctx

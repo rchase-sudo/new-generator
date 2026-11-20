@@ -20,6 +20,7 @@ LAYERS = {                      # name: (ACI colour, linetype)
     "C-SSWR-PIPE": (30, "CONTINUOUS"), "C-SSWR-FMAN": (30, "DASHED2"), "C-SSWR-STRC": (30, "CONTINUOUS"), "C-SSWR-TEXT": (30, "CONTINUOUS"), "C-SSWR-LATL": (30, "DASHED2"),
     "C-WATR-PIPE": (5, "CONTINUOUS"), "C-WATR-LATL": (5, "DASHED2"), "C-WATR-STRC": (5, "CONTINUOUS"), "C-POWR-UGND": (1, "DASHED2"), "C-NGAS-UGND": (40, "DASHED2"),
     "C-EROS-LOD": (1, "DASHDOT2"), "C-EROS-SILT": (30, "CONTINUOUS"),
+    "C-ENVR-WSBK": (1, "DASHED"), "C-ENVR-NOBD": (1, "DASHDOT"),
     "C-EROS-MATT": (94, "CONTINUOUS"), "C-SITE-RIPR": (8, "CONTINUOUS"), "C-SITE-WALL": (7, "CONTINUOUS"),
     "C-TINN-PROP": (4, "CONTINUOUS"),
 }
@@ -179,6 +180,10 @@ def dxf(X, path):
         ms.add_circle(W.pt(p), r, dxfattribs={"layer": layer})
 
     pl(L["parcel"], "V-PROP-LINE")
+    if L.get("wet_setback") is not None and not L["wet_setback"].is_empty:
+        pl(L["wet_setback"], "C-ENVR-WSBK")
+    if L.get("nobuild") is not None and not L["nobuild"].is_empty:
+        pl(L["nobuild"], "C-ENVR-NOBD")
     if L.get("setback") is not None and not L["setback"].is_empty:
         pl(L["setback"], "V-PROP-SBCK")
     for _, _, pv in L.get("roads") or []:

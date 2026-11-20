@@ -73,10 +73,29 @@ def build(ctx, lay, job, rules, prog, log=print):
 
     # ---- grading (wetlands and streams are never regraded)
     wm = g.mask(L["wet"].buffer(2.0)) if L.get("wet") is not None and not L["wet"].is_empty else None
-    # grading may not cross the property line or touch a wetland: slopes steepen (2:1 matting, 1:1 riprap) or become walls there
+    # grading may not cross the property line, touch a wetland (or its no-disturb setback) or a no-build area: slopes steepen
+    # (2:1 matting, 1:1 riprap) or become walls there
     limit = ~g.mask(P.buffer(-0.5))
     if wm is not None:
         limit = limit | wm
+    nob_sp = [q for q in (ctx.get("nobuild") or []) if q is not None and not q.is_empty]
+    L["nobuild"] = F(unary_union(nob_sp)) if nob_sp else None
+    wnd, wsb = float(ctx.get("wet_nodisturb") or 0), float(ctx.get("wet_setback") or 0)
+    if L.get("wet") is not None and not L["wet"].is_empty:
+        if wnd > 0:
+            limit = limit | g.mask(L["wet"].buffer(wnd))
+        if wsb > 0:
+            L["wet_setback"] = L["wet"].buffer(wsb)
+    if L.get("nobuild") is not None:
+        limit = limit | g.mask(L["nobuild"])
+    # what the layout itself puts inside a wetland setback or no-build area (Sitecraft flags these too)
+    out["keepout_warnings"] = []
+    built = unary_union([x for x in [L.get("pave"), L.get("walk")] + list(L.get("bldgs") or []) if x is not None and not x.is_empty])
+    for zone, what in ((L.get("wet_setback"), f"the {wsb:.0f} ft wetland setback"), (L.get("nobuild"), "a no-build area")):
+        if zone is not None and not built.is_empty:
+            a_ = built.intersection(zone).area
+            if a_ > 50:
+                out["keepout_warnings"].append(f"About {a_:,.0f} SF of proposed building or pavement is inside {what}; move it out or get relief before this layout is relied on.")
     out["wet_warnings"] = []
     G = grading.run(L, ex_z, g, road_all)
     out["fire_notes"] = []
@@ -183,6 +202,7 @@ def build(ctx, lay, job, rules, prog, log=print):
             G["warnings"].append(f"About {sum(q.area for q in sl_['riprap']):,.0f} SF of 1:1 slope: riprap slope protection proposed")
         for k_, w_ in enumerate(sl_["walls"], 1):
             G["warnings"].append(f"Retaining wall {k_}: about {w_['len']:.0f} LF, up to {w_['h_max']:.1f} ft high (the grade change does not fit even at 1:1)")
+        G["warnings"] += out.get("keepout_warnings") or []
     except Exception as e:  # noqa: BLE001
         out["slopes"] = {"matting": [], "riprap": [], "walls": []}
         log(f"slope treatment areas skipped: {type(e).__name__}: {e}")
