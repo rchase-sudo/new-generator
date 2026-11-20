@@ -125,7 +125,20 @@ namespace Drafted.C3D
                 var hit = set.Keys.FirstOrDefault(x => x.IndexOf(w, StringComparison.OrdinalIgnoreCase) >= 0);
                 if (hit != null) return set[hit];
             }
-            return set.Count > 0 ? set.Values.First() : ObjectId.Null;
+            if (set.Count > 0) return set.Values.First();
+            return key.StartsWith("parts_") ? ObjectId.Null : AnyStyle(kind.Path);
+        }
+
+        /// <summary>A style straight from the drawing's collection (first one), or a new "Drafted" style when the drawing has none,
+        /// so commands that require a style (alignments, profiles, label sets) don't fail with a null style.</summary>
+        static ObjectId AnyStyle(string path)
+        {
+            object o = CivilApplication.ActiveDocument;
+            foreach (var part in path.Split('.')) o = o == null ? null : U.TryGet(o, part);
+            if (o == null) return ObjectId.Null;
+            try { if (o is IEnumerable en) foreach (var x in en) if (x is ObjectId id && !id.IsNull) return id; } catch { }
+            var (ok, r) = U.TryCall(o, "Add", "Drafted");
+            return ok && r is ObjectId nid ? nid : ObjectId.Null;
         }
 
         /// <summary>Every parts list in the drawing.</summary>
@@ -319,6 +332,7 @@ namespace Drafted.C3D
                     string pLayer = Layer(U.S(n, "pipe_layer", "C-STRM-PIPE")), sLayer = Layer(U.S(n, "struct_layer", "C-STRM-STRC"));
                     var pStyle = cat.Id("pipe_style", O); var sStyle = cat.Id("struct_style", O);
                     var sids = new Dictionary<string, ObjectId>();
+                    var famSwaps = new Dictionary<string, string>();
                     foreach (var s in U.A(n, "structures"))
                     {
                         var sname = U.S(s, "name");
@@ -351,15 +365,53 @@ namespace Drafted.C3D
                         var pname = U.S(p, "name");
                         try
                         {
-                            var fam = PickFamily(pipeFams, MaterialWords(U.S(p, "material")));
-                            double dia;
-                            var size = PickSize(tr, fam.Sizes, U.D(p, "dia_in", 12), true, out dia);
                             var a = U.XY(p.GetProperty("start")); var b = U.XY(p.GetProperty("end"));
-                            double r = (dia > 0 ? dia : U.D(p, "dia_in", 12) / 12.0) / 2.0;      // pipe geometry is its centreline
-                            var seg = new LineSegment3d(new Point3d(a[0], a[1], U.D(p, "inv_up") + r), new Point3d(b[0], b[1], U.D(p, "inv_dn") + r));
-                            ObjectId pid = ObjectId.Null;
-                            net.AddLinePipe(fam.Id, size, seg, ref pid, false);
-                            if (pid.IsNull) { bad++; warn.Add($"{netName} {pname}: Civil 3D did not create the pipe"); continue; }
+                            // the family that matches the material first, then every other pipe family in the list: a family whose
+                            // catalogue part isn't available on this machine throws (eNullObjectId); the next one usually works
+                            var first = PickFamily(pipeFams, MaterialWords(U.S(p, "material")));
+                            ObjectId pid = ObjectId.Null; string used = null, why = null;
+                            // attempts, in order: the matching family at the nearest size, its other sizes, the same with the network's
+                            // rules applied, then the list's other families — each failure noted (family, size, step) for the report
+                            var tries = new List<(Fam fam, ObjectId size, bool rules)>();
+                            foreach (var fam in new[] { first }.Concat(pipeFams.Where(f => f != first)))
+                            {
+                                var nearest = PickSize(tr, fam.Sizes, U.D(p, "dia_in", 12), true);
+                                tries.Add((fam, nearest, false));
+                                if (fam == first) { foreach (var z in fam.Sizes.Where(q => q != nearest).Take(3)) tries.Add((fam, z, false)); tries.Add((fam, nearest, true)); }
+                            }
+                            foreach (var (fam, size, rules) in tries)
+                            {
+                                string step = "size";
+                                try
+                                {
+                                    double dia = 0;
+                                    try { var all = fam.Sizes.Select(z => SizeValue((PartSize)tr.GetObject(z, OpenMode.ForRead), true)).Where(v => v > 0).ToList(); var v0 = SizeValue((PartSize)tr.GetObject(size, OpenMode.ForRead), true); bool ft = all.Count > 0 && all.Max() <= 12 && all.Min() < 1.0; if (v0 > 0) dia = ft ? v0 : v0 / 12.0; } catch { }
+                                    double r = (dia > 0 ? dia : U.D(p, "dia_in", 12) / 12.0) / 2.0;      // pipe geometry is its centreline
+                                    var seg = new LineSegment3d(new Point3d(a[0], a[1], U.D(p, "inv_up") + r), new Point3d(b[0], b[1], U.D(p, "inv_dn") + r));
+                                    if (seg.Length < 0.01) { why ??= "zero-length pipe"; break; }
+                                    step = "AddLinePipe"; pid = ObjectId.Null;
+                                    net.AddLinePipe(fam.Id, size, seg, ref pid, rules);
+                                    if (!pid.IsNull) { used = fam.Name; break; }
+                                }
+                                catch (System.Exception e)
+                                {
+                                    string sz = "?"; try { sz = ((PartSize)tr.GetObject(size, OpenMode.ForRead)).Name; } catch { }
+                                    why ??= $"{fam.Name} / {sz}, {step}{(rules ? " (rules on)" : "")}: {e.Message}; from ({a[0]:0.0}, {a[1]:0.0}, {U.D(p, "inv_up"):0.00}) to ({b[0]:0.0}, {b[1]:0.0}, {U.D(p, "inv_dn"):0.00})";
+                                }
+                            }
+                            if (pid.IsNull)
+                            {
+                                bad++; warn.Add($"{netName} {pname}: no pipe family in the parts list could build it ({why ?? "Civil 3D returned nothing"}); drawn as a 3D polyline");
+                                try
+                                {
+                                    var r0 = U.D(p, "dia_in", 12) / 24.0;
+                                    var pl3 = new Polyline3d(Poly3dType.SimplePoly, new Point3dCollection { new Point3d(a[0], a[1], U.D(p, "inv_up") + r0), new Point3d(b[0], b[1], U.D(p, "inv_dn") + r0) }, false) { Layer = pLayer };
+                                    ModelSpace(tr).AppendEntity(pl3); tr.AddNewlyCreatedDBObject(pl3, true);
+                                }
+                                catch { }
+                                continue;
+                            }
+                            if (used != first.Name) famSwaps[used] = first.Name + (why != null ? $" ({why.Split(':').Last().Trim()})" : "");
                             var pipe = (Pipe)tr.GetObject(pid, OpenMode.ForWrite);
                             U.TrySet(pipe, "Name", pname);
                             U.TrySet(pipe, "Description", $"{U.D(p, "dia_in"):0}\" {U.S(p, "material")} @ {U.D(p, "slope") * 100:0.00}%");
@@ -373,6 +425,7 @@ namespace Drafted.C3D
                         }
                         catch (System.Exception e) { bad++; warn.Add($"{netName} {pname}: {e.GetType().Name}: {e.Message}"); }
                     }
+                    foreach (var kv in famSwaps) warn.Add($"{netName}: pipes built with \"{kv.Key}\" because \"{kv.Value}\" could not be used");
                     tr.Commit();
                 }
                 report.Add($"Pipe network {netName}: {ns} structures, {np} pipes on parts list \"{plName}\"{usedNote}{(bad > 0 ? $" ({bad} failed, see below)" : "")}");
@@ -457,12 +510,16 @@ namespace Drafted.C3D
         static ObjectId PickSize(Transaction tr, List<ObjectId> sizes, double inches, bool pipe, out double diaFt)
         {
             ObjectId best = sizes[0]; double bd = double.MaxValue; diaFt = 0;
-            foreach (var id in sizes)
+            var vals = sizes.Select(id => { try { return SizeValue((PartSize)tr.GetObject(id, OpenMode.ForRead), pipe); } catch { return 0.0; } }).ToList();
+            // part data is in inches or in feet depending on the catalogue: decide for the whole family, not size by size
+            // (a 4" PVC pipe's actual ID is ~3.6 in — read size by size that looked like 3.6 ft)
+            var pos = vals.Where(v => v > 0).ToList();
+            bool feet = pos.Count > 0 && pos.Max() <= 12 && pos.Min() < 1.0;
+            for (int i = 0; i < sizes.Count; i++)
             {
-                var ps = (PartSize)tr.GetObject(id, OpenMode.ForRead);
-                double v = SizeValue(ps, pipe);
+                var id = sizes[i]; double v = vals[i];
                 if (v <= 0) continue;
-                double vin = v > 6 ? v : v * 12.0;           // part data is in inches or in feet depending on the catalogue
+                double vin = pipe ? (feet ? v * 12.0 : v) : (v > 6 ? v : v * 12.0);   // structures: per size, as before
                 double d = Math.Abs(vin - inches) + (vin < inches ? 0.01 : 0);
                 if (d < bd) { bd = d; best = id; diaFt = vin / 12.0; }
             }
