@@ -44,9 +44,36 @@ namespace Drafted.C3D
             tbl.Controls.Add(new Label { Text = "Import", AutoSize = true, Anchor = AnchorStyles.Left }); tbl.Controls.Add(what);
             tbl.Controls.Add(new Label { Text = "Site for feature lines", AutoSize = true, Anchor = AnchorStyles.Left });
             site.Text = remembered.TryGetValue("_site", out var sv) ? sv : "Drafted"; site.Width = 250; tbl.Controls.Add(site);
+            // ---- parts list: up front, one choice for both networks (Storm / Sanitary can still differ below)
+            var plNames = cat.Names("parts_storm");
+            string plText(string n) => cat.PartsInfo.TryGetValue(n, out var c) ? $"{n}   ({c.Pipes} pipe sizes, {c.Structs} structure sizes)" : n;
+            // default: remembered, else a list named for storm / sewer, else the list with the most parts (never an empty "Standard" by default)
+            string bestList(string remember, string[] words)
+            {
+                if (!string.IsNullOrEmpty(remember) && plNames.Contains(remember, StringComparer.OrdinalIgnoreCase)) return plNames.First(x => string.Equals(x, remember, StringComparison.OrdinalIgnoreCase));
+                foreach (var w in words) { var h = plNames.FirstOrDefault(x => x.IndexOf(w, StringComparison.OrdinalIgnoreCase) >= 0 && cat.PartsInfo.TryGetValue(x, out var c) && c.Pipes > 0); if (h != null) return h; }
+                return plNames.OrderByDescending(x => cat.PartsInfo.TryGetValue(x, out var c) ? (c.Pipes > 0 ? 100000 : 0) + c.Pipes + c.Structs : 0).FirstOrDefault();
+            }
+            var plAll = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 400 };
+            plAll.Items.Add("(set per network below)");
+            foreach (var n in plNames) plAll.Items.Add(plText(n));
+            tbl.Controls.Add(new Label { Text = "Parts list (pipe networks)", AutoSize = true, Anchor = AnchorStyles.Left, Font = new Font(Font, FontStyle.Bold) });
+            tbl.Controls.Add(plAll);
             foreach (var k in Catalog.Kinds)
             {
                 var names = cat.Names(k.Key);
+                if (k.Key == "parts_storm" || k.Key == "parts_sanitary")
+                {
+                    var pc = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 400 };
+                    foreach (var n in names) pc.Items.Add(plText(n));
+                    var chosen = bestList(remembered.TryGetValue(k.Key, out var rp) ? rp : (mStyles.ValueKind == JsonValueKind.Object ? U.S(mStyles, k.Key) : null), k.Prefer);
+                    if (chosen != null) pc.SelectedItem = plText(chosen);
+                    pc.Tag = names;
+                    combos[k.Key] = pc;
+                    tbl.Controls.Add(new Label { Text = "   " + k.Label + (names.Count == 0 ? " (none in drawing)" : ""), AutoSize = true, Anchor = AnchorStyles.Left });
+                    tbl.Controls.Add(pc);
+                    continue;
+                }
                 var cb = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 400 };
                 cb.Items.Add("(drawing default)");
                 foreach (var n in names) cb.Items.Add(n);
@@ -58,6 +85,13 @@ namespace Drafted.C3D
                 tbl.Controls.Add(new Label { Text = k.Label + (names.Count == 0 ? " (none in drawing)" : ""), AutoSize = true, Anchor = AnchorStyles.Left });
                 tbl.Controls.Add(cb);
             }
+            // one pick sets both networks; if both already agree, show that list up top
+            var cs = combos["parts_storm"]; var cn = combos["parts_sanitary"];
+            plAll.SelectedIndex = cs.SelectedItem != null && Equals(cs.SelectedItem, cn.SelectedItem) ? plAll.Items.IndexOf(cs.SelectedItem) : 0;
+            if (plAll.SelectedIndex < 0) plAll.SelectedIndex = 0;
+            plAll.SelectedIndexChanged += (s, e) => { if (plAll.SelectedIndex > 0) { cs.SelectedItem = plAll.SelectedItem; cn.SelectedItem = plAll.SelectedItem; } };
+            EventHandler apart = (s, e) => { if (plAll.SelectedIndex > 0 && !(Equals(cs.SelectedItem, plAll.SelectedItem) && Equals(cn.SelectedItem, plAll.SelectedItem))) plAll.SelectedIndex = 0; };
+            cs.SelectedIndexChanged += apart; cn.SelectedIndexChanged += apart;
             t1.Controls.Add(tbl);
             // --- layers
             var t2 = new TabPage("Layers");
@@ -97,6 +131,7 @@ namespace Drafted.C3D
             foreach (var kv in combos)
             {
                 var v = kv.Value.SelectedItem as string;
+                if (kv.Value.Tag is List<string> plist && kv.Value.SelectedIndex >= 0) v = plist[kv.Value.SelectedIndex];     // parts lists: the name, not the "(n sizes)" text
                 if (v != null && v != "(drawing default)") { opt.Styles[kv.Key] = v; keep[kv.Key] = v; }
             }
             foreach (DataGridViewRow r in grid.Rows)

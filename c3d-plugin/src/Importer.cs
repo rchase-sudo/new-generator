@@ -32,6 +32,8 @@ namespace Drafted.C3D
     {
         public readonly Dictionary<string, Dictionary<string, ObjectId>> Sets = new Dictionary<string, Dictionary<string, ObjectId>>();
         public readonly List<string> Layers = new List<string>();
+        /// <summary>Parts list name -> (pipe sizes, structure sizes) — what each list can actually build.</summary>
+        public readonly Dictionary<string, (int Pipes, int Structs)> PartsInfo = new Dictionary<string, (int, int)>(StringComparer.OrdinalIgnoreCase);
 
         // dialog key -> path below CivilDocument (read by reflection so a collection missing from a release simply shows empty)
         public static readonly (string Key, string Label, string Path, string[] Prefer)[] Kinds =
@@ -82,6 +84,13 @@ namespace Drafted.C3D
                     catch { }
                 Sets[k.Path] = d;
             }
+            foreach (var kv in Sets["Styles.PartsListSet"])
+                try
+                {
+                    var pl = (PartsList)tr.GetObject(kv.Value, OpenMode.ForRead);
+                    PartsInfo[kv.Key] = (Importer.Families(tr, pl, DomainType.Pipe).Sum(f => f.Sizes.Count), Importer.Families(tr, pl, DomainType.Structure).Sum(f => f.Sizes.Count));
+                }
+                catch { }
             var lt = (LayerTable)tr.GetObject(db.LayerTableId, OpenMode.ForRead);
             foreach (ObjectId id in lt)
             {
@@ -104,9 +113,27 @@ namespace Drafted.C3D
 
         public ObjectId Id(string key, Options o)
         {
-            if (!o.Styles.TryGetValue(key, out var n) || string.IsNullOrEmpty(n)) return ObjectId.Null;
-            var set = Sets[Kinds.First(k => k.Key == key).Path];
-            return set.TryGetValue(n, out var id) ? id : ObjectId.Null;
+            var kind = Kinds.First(k => k.Key == key);
+            var set = Sets[kind.Path];
+            if (o.Styles.TryGetValue(key, out var n) && !string.IsNullOrEmpty(n) && set.TryGetValue(n, out var id)) return id;
+            // nothing chosen (or no longer in this drawing): the style the dialog would preselect, else any of that kind,
+            // so commands that need a style (alignments, profiles) never get a null one. Parts lists: the one with the most parts.
+            if (key.StartsWith("parts_") && set.Count > 0)
+                return set.OrderByDescending(x => PartsInfo.TryGetValue(x.Key, out var c) ? (c.Pipes > 0 ? 100000 : 0) + c.Pipes + c.Structs : 0).First().Value;
+            foreach (var w in kind.Prefer)
+            {
+                var hit = set.Keys.FirstOrDefault(x => x.IndexOf(w, StringComparison.OrdinalIgnoreCase) >= 0);
+                if (hit != null) return set[hit];
+            }
+            return set.Count > 0 ? set.Values.First() : ObjectId.Null;
+        }
+
+        /// <summary>Every parts list in the drawing.</summary>
+        public List<ObjectId> AllPartsLists()
+        {
+            var o = Sets["Styles.PartsListSet"].Values.ToList();
+            try { foreach (ObjectId id in CivilApplication.ActiveDocument.Styles.PartsListSet) if (!o.Contains(id)) o.Add(id); } catch { }
+            return o;
         }
     }
 
@@ -241,7 +268,27 @@ namespace Drafted.C3D
                 var key = kind == "sanitary" ? "parts_sanitary" : "parts_storm";
                 var plId = cat.Id(key, O);
                 if (plId.IsNull) plId = cat.FirstPartsList();
-                if (plId.IsNull) { warn.Add($"{netName} network skipped: this drawing has no parts lists (Settings > Pipe Network > Parts Lists)"); continue; }
+                // the chosen list must have pipe and structure sizes; otherwise use another list in this drawing that does
+                string chosenName = "", usedNote = "";
+                using (var tr = db.TransactionManager.StartOpenCloseTransaction())
+                {
+                    bool usable(ObjectId id) { try { var pl = (PartsList)tr.GetObject(id, OpenMode.ForRead); return Families(tr, pl, DomainType.Pipe).Count > 0 && Families(tr, pl, DomainType.Structure).Count > 0; } catch { return false; } }
+                    string nm(ObjectId id) { try { return ((PartsList)tr.GetObject(id, OpenMode.ForRead)).Name; } catch { return "?"; } }
+                    if (!plId.IsNull) chosenName = nm(plId);
+                    if (plId.IsNull || !usable(plId))
+                    {
+                        var alt = cat.AllPartsLists().FirstOrDefault(usable);
+                        if (!alt.IsNull) { usedNote = plId.IsNull ? "" : $" (\"{chosenName}\" has no pipe sizes)"; plId = alt; }
+                        else plId = ObjectId.Null;
+                    }
+                }
+                if (plId.IsNull)
+                {
+                    int nd = DrawNetwork(n);
+                    warn.Add($"{netName}: no parts list in this drawing has pipe sizes{(chosenName != "" ? $" (\"{chosenName}\" is empty)" : "")}, so it was drawn as {nd} 3D polylines / structure circles on its layers instead of a pipe network. " +
+                             "Start the drawing from your firm template (.dwt) or add pipe and structure sizes to a parts list, then import again.");
+                    continue;
+                }
                 int ns = 0, np = 0, bad = 0;
                 string plName = "";
                 ObjectId netId = ObjectId.Null;
@@ -328,13 +375,51 @@ namespace Drafted.C3D
                     }
                     tr.Commit();
                 }
-                report.Add($"Pipe network {netName}: {ns} structures, {np} pipes on parts list \"{plName}\"{(bad > 0 ? $" ({bad} failed, see below)" : "")}");
+                report.Add($"Pipe network {netName}: {ns} structures, {np} pipes on parts list \"{plName}\"{usedNote}{(bad > 0 ? $" ({bad} failed, see below)" : "")}");
             }
         }
 
-        class Fam { public ObjectId Id; public string Name; public List<ObjectId> Sizes = new List<ObjectId>(); }
+        internal class Fam { public ObjectId Id; public string Name; public List<ObjectId> Sizes = new List<ObjectId>(); }
 
-        static List<Fam> Families(Transaction tr, PartsList pl, DomainType dom)
+        /// <summary>Fallback when the drawing has no usable parts list: pipes as 3D polylines at their centreline elevations,
+        /// structures as circles at the rim with their name, on the network's layers. Returns the number of objects drawn.</summary>
+        int DrawNetwork(JsonElement n)
+        {
+            int k = 0;
+            string pLayer = Layer(U.S(n, "pipe_layer", "C-STRM-PIPE")), sLayer = Layer(U.S(n, "struct_layer", "C-STRM-STRC"));
+            using (var tr = db.TransactionManager.StartTransaction())
+            {
+                var ms = ModelSpace(tr);
+                foreach (var p in U.A(n, "pipes"))
+                {
+                    try
+                    {
+                        var a = U.XY(p.GetProperty("start")); var b = U.XY(p.GetProperty("end"));
+                        var r = U.D(p, "dia_in", 12) / 24.0;
+                        var pc = new Point3dCollection { new Point3d(a[0], a[1], U.D(p, "inv_up") + r), new Point3d(b[0], b[1], U.D(p, "inv_dn") + r) };
+                        var pl = new Polyline3d(Poly3dType.SimplePoly, pc, false) { Layer = pLayer };
+                        ms.AppendEntity(pl); tr.AddNewlyCreatedDBObject(pl, true); k++;
+                    }
+                    catch { }
+                }
+                foreach (var st in U.A(n, "structures"))
+                {
+                    try
+                    {
+                        var xy = U.XY(st.GetProperty("xy")); var rim = U.D(st, "rim");
+                        var c = new Circle(new Point3d(xy[0], xy[1], rim), Vector3d.ZAxis, Math.Max(0.5, U.D(st, "dia_in", 48) / 24.0)) { Layer = sLayer };
+                        ms.AppendEntity(c); tr.AddNewlyCreatedDBObject(c, true);
+                        var t = new DBText { Position = new Point3d(xy[0] + 3, xy[1] + 3, rim), Height = 2.0, TextString = U.S(st, "name"), Layer = sLayer };
+                        ms.AppendEntity(t); tr.AddNewlyCreatedDBObject(t, true); k++;
+                    }
+                    catch { }
+                }
+                tr.Commit();
+            }
+            return k;
+        }
+
+        internal static List<Fam> Families(Transaction tr, PartsList pl, DomainType dom)
         {
             var o = new List<Fam>();
             foreach (ObjectId id in pl.GetPartFamilyIdsByDomain(dom))
