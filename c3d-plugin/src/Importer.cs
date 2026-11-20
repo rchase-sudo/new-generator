@@ -479,7 +479,7 @@ namespace Drafted.C3D
             return Site.Create(civ, O.Site);
         }
 
-        void FeatureFrom3d(Transaction tr, Polyline3d p3, string name, ObjectId site, string layer, Catalog cat)
+        ObjectId FeatureFrom3d(Transaction tr, Polyline3d p3, string name, ObjectId site, string layer, Catalog cat)
         {
             var ms = ModelSpace(tr);
             var pid = ms.AppendEntity(p3);
@@ -489,11 +489,13 @@ namespace Drafted.C3D
             fl.Layer = layer;
             var st = cat.Id("feature_style", O); if (!st.IsNull) fl.StyleId = st;
             p3.Erase();
+            return fid;
         }
 
         void Features(Catalog cat)
         {
-            int n = 0;
+            int n = 0, nc = 0;
+            var brk = new ObjectIdCollection();
             var layer = Layer("C-GRAD-FEAT");
             using (var tr = db.TransactionManager.StartTransaction())
             {
@@ -506,12 +508,31 @@ namespace Drafted.C3D
                     foreach (var q in pts) pc.Add(new Point3d(q[0], q[1], q[2]));
                     bool closed = U.B(f, "closed");
                     if (closed && pc.Count > 2 && pc[0].DistanceTo(pc[pc.Count - 1]) < 0.01) pc.RemoveAt(pc.Count - 1);
-                    try { FeatureFrom3d(tr, new Polyline3d(Poly3dType.SimplePoly, pc, closed), U.S(f, "name"), site, layer, cat); n++; }
+                    try
+                    {
+                        var fid = FeatureFrom3d(tr, new Polyline3d(Poly3dType.SimplePoly, pc, closed), U.S(f, "name"), site, layer, cat); n++;
+                        var kind = U.S(f, "kind");
+                        if (kind == "curb_bc" || kind == "curb_tc" || kind == "ada" || kind == "building") brk.Add(fid);
+                        if (kind == "curb_bc" || kind == "curb_tc") nc++;
+                    }
                     catch (System.Exception e) { warn.Add($"Feature line {U.S(f, "name")}: {e.Message}"); }
                 }
                 tr.Commit();
             }
-            report.Add($"Feature lines: {n} in site \"{O.Site}\"");
+            // curbs (TC / BC), ADA planes and building pads are breaklines of the FG surface, so the TIN carries the 6" curb
+            if (!fgId.IsNull && brk.Count > 0)
+                try
+                {
+                    using (var tr = db.TransactionManager.StartTransaction())
+                    {
+                        var t = (TinSurface)tr.GetObject(fgId, OpenMode.ForWrite);
+                        t.BreaklinesDefinition.AddStandardBreaklines(brk, 0.1, 0.0, 0.0, 0.0);
+                        t.Rebuild();
+                        tr.Commit();
+                    }
+                }
+                catch (System.Exception e) { warn.Add($"FG surface: the curb breaklines could not be added ({e.Message})"); }
+            report.Add($"Feature lines: {n} in site \"{O.Site}\" ({nc} granite curb TC / BC lines{(brk.Count > 0 && !fgId.IsNull ? ", added to FG as breaklines" : "")})");
         }
 
         // ------------------------------------------------------------------ drive alignment + EG and design profiles
