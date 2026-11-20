@@ -251,9 +251,9 @@ def dxf(X, path):
     for key, lyr in (("elec", "C-POWR-UGND"), ("gas", "C-NGAS-UGND")):
         if U.get(key) is not None:
             pl(U[key], lyr)
-    if G.get("lod_mask") is not None and G["lod_mask"].any():
+    if G.get("lod_mask") is not None and G["lod_mask"].any() and not X.get("no_esc"):      # (no erosion control on Redline jobs)
         pl(g.cell_poly(G["lod_mask"]).simplify(2.0), "C-EROS-LOD")
-    ER = X.get("ER") or {}
+    ER = (X.get("ER") or {}) if not X.get("no_esc") else {}
     for key in ("silt", "silt_fence"):
         if ER.get(key) is not None and hasattr(ER[key], "geom_type"):
             pl(ER[key], "C-EROS-SILT")

@@ -58,7 +58,7 @@ def build(ctx, lay, job, rules, prog, log=print):
     L["setback"] = F(envelope(P_sp, edges, sb, k))
     L["setbacks_ft"] = sb
     L["stripes"] = [F(s_) for s_ in (sp.get("stripes") or [])]
-    for key in ("sewer_tie", "water_tie"):        # tie-in points picked by the user (Redline): the mains connect there
+    for key in ("sewer_tie", "water_tie", "gas_tie", "electric_tie"):        # tie-in points picked by the user (Redline): the services connect there
         if rules.get(key):
             L[key] = F(Point(*rules[key]))
     dem = ctx.get("topo")
@@ -181,13 +181,26 @@ def build(ctx, lay, job, rules, prog, log=print):
     mode0 = rules.get("design_utilities") or "municipal"
     has_sewer = bool(rules["design_sewer"]) if "design_sewer" in rules else mode0 == "municipal"
     has_water = bool(rules["design_water"]) if "design_water" in rules else mode0 == "municipal"
-    U = site.utilities(g, z_prop, ex_z, G, L, road_all, prog, fr, road_key=road_key, mode=mode0, has_sewer=has_sewer, has_water=has_water)
+    no_util = mode0 == "none"                     # Redline: leave the utilities out of the design altogether
+    has_gas = rules.get("design_gas", True) is not False and not no_util
+    has_elec = rules.get("design_electric", True) is not False and not no_util
+    U = site.utilities(g, z_prop, ex_z, G, L, road_all, prog, fr, road_key=road_key, mode="municipal" if no_util else mode0,
+                       has_sewer=True if no_util else has_sewer, has_water=True if no_util else has_water, has_gas=has_gas, has_elec=has_elec)
+    keep = () if no_util else tuple(k_ for k_, on in (("sewer", True), ("water", True), ("elec", has_elec), ("gas", has_gas)) if on)
+    if len(keep) < 4:
+        site._strip(U, keep)
+        if no_util:
+            U["mode"], U["has_sewer"], U["has_water"] = "none", False, False
+            for k_ in ("well_ring", "well", "well_line", "cistern", "cistern_xy", "field", "reserve", "trenches", "tank", "tank_xy", "building_sewer", "dbox", "tank_to_field"):
+                U.pop(k_, None)
+            U["notes"] = ["Utilities are not part of this design."]
+            U["warnings"] = []
     FIRE = site.fire(g, G, L, U)
     LS = site.landscape(L, lat_ll[0])
     LT = site.lighting(g, G, L)
     ER = site.erosion(g, G, L, U, D, net, G["spine"])
     log(f"site {time.time() - t0:.1f}s")
-    out.update({"U": U, "FIRE": FIRE, "LS": LS, "LT": LT, "ER": ER})
+    out.update({"U": U, "FIRE": FIRE, "LS": LS, "LT": LT, "ER": ER, "no_esc": ctx.get("source") == "redline"})
     out.update({"G": G, "D": D, "net": net, "z_prop": z_prop, "earthwork": ew, "soils": soils, "rain": rain, "stype": stype, "road": road_all})
     return out
 

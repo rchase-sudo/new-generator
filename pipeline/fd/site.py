@@ -132,7 +132,27 @@ def _road_mains(rl, cp, side_pt):
     return seg, wmain
 
 
-def utilities(g, z_prop, ex_z, G, L, road_all, prog, fr, road_key=None, mode="municipal", has_sewer=None, has_water=None):
+def _from_tie(tie, route):
+    """A dry utility from the point the user picked (Redline) to the service corridor, then along it."""
+    from shapely.ops import substring
+    s0 = route.project(tie)
+    rest = substring(route, s0, route.length) if s0 < route.length - 1.0 else route
+    return LineString([(tie.x, tie.y)] + list(rest.coords))
+
+
+def _strip(out, keep=()):
+    """Leave a utility (or all of them) out of the design entirely."""
+    blank = {"sewer": dict(sewer_main=None, sewer_lat=[], sewer_pipes=[], smh=[], sewer_lat_rows=[], pump_station=None, road_sewer=None),
+             "water": dict(water_main=None, water_lat=[], hydrants=[], valves=[], road_water=None),
+             "elec": dict(elec=None, elec_lat=[], xfmr=[], pole=None),
+             "gas": dict(gas=None, gas_lat=[])}
+    for k_, v_ in blank.items():
+        if k_ not in keep:
+            out.update(v_)
+    return out
+
+
+def utilities(g, z_prop, ex_z, G, L, road_all, prog, fr, road_key=None, mode="municipal", has_sewer=None, has_water=None, has_gas=True, has_elec=True):
     """Service corridor from the selected main road, inside our own property only, then the tap into the road mains."""
     sp = G["spine"]
     if has_sewer is None:
@@ -173,10 +193,17 @@ def utilities(g, z_prop, ex_z, G, L, road_all, prog, fr, road_key=None, mode="mu
     out["corridor"] = R
     # --- dry utilities: electric and gas ride the same corridor, offset, and stay inside the parcel
     elec_c, gas_c = routes["elec"], routes["gas"]
-    pole = nearest_points(seg, Point(elec_c.coords[0]))[0]
-    out["elec"] = LineString([(pole.x, pole.y)] + list(elec_c.coords))
-    gtap = nearest_points(seg, Point(gas_c.coords[0]))[0]
-    out["gas"] = LineString([(gtap.x, gtap.y)] + list(gas_c.coords))
+    if L.get("electric_tie") is not None:            # picked on the EC plan (Redline): the service starts there
+        pole = L["electric_tie"]
+        out["elec"] = _from_tie(pole, elec_c)
+    else:
+        pole = nearest_points(seg, Point(elec_c.coords[0]))[0]
+        out["elec"] = LineString([(pole.x, pole.y)] + list(elec_c.coords))
+    if L.get("gas_tie") is not None:
+        out["gas"] = _from_tie(L["gas_tie"], gas_c)
+    else:
+        gtap = nearest_points(seg, Point(gas_c.coords[0]))[0]
+        out["gas"] = LineString([(gtap.x, gtap.y)] + list(gas_c.coords))
     out["pole"] = (pole.x, pole.y)
     out["xfmr"] = []
     out["elec_lat"], out["gas_lat"] = [], []

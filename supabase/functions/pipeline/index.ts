@@ -261,6 +261,8 @@ Deno.serve(async (req) => {
     }
 
     //   redline_site { location, parcels, frontage, frame, design, setbacks, program?, ratio?, contours, spots?, tagged?, sewer_tie?, water_tie?,
+    //                  gas_tie?, electric_tie?, gas?: false, electric?: false, utilities?: "none",
+    //                  ground?: { x0, y0, cell, nx, ny, z[] }  (a LandXML existing surface sampled in the sheet's coordinates),
     //                  aerial?: { jpg_b64, extent }, render?, file? } -> { job_id }
     //   A test fit sketched in Redline over an existing-conditions plan made OUTSIDE Drafted: everything is in the sheet's CAD
     //   coordinates (feet). The site comes from the sheet (contours -> existing ground), the concept from the sketch, then the
@@ -270,14 +272,18 @@ Deno.serve(async (req) => {
       delete p.action;
       if (!p.design || !Array.isArray(p.design.buildings) || !p.design.buildings.length) return json({ error: "The sketch has no buildings" }, 400);
       if (!Array.isArray(p.parcels) || !p.parcels.length) return json({ error: "The sketch has no property line" }, 400);
-      if (!Array.isArray(p.contours) || p.contours.length < 2) return json({ error: "No labelled contours were read from the EC plan" }, 400);
+      if ((!Array.isArray(p.contours) || p.contours.length < 2) && !(p.ground && Array.isArray(p.ground.z))) return json({ error: "No labelled contours were read from the EC plan" }, 400);
       if (JSON.stringify(p).length > 14_000_000) return json({ error: "Sketch too large" }, 413);
       const jpg = p.aerial?.jpg_b64 ? String(p.aerial.jpg_b64) : null;
       if (p.aerial) p.aerial = { extent: p.aerial.extent };
       const sb = p.setbacks ?? {}, pave = Number(sb.pave ?? 10);
+      // utilities: sewer / water tie-ins (none picked = septic / well), gas and electric tie-ins (none = left out), or none at all
+      const noUtil = p.utilities === "none";
       const zoning = { layout_mode: "manual", source: "redline", max_slope_pct: 0, design_sewer: !!p.sewer_tie, design_water: !!p.water_tie,
-        design_utilities: p.sewer_tie && p.water_tie ? "municipal" : (!p.sewer_tie && !p.water_tie ? "onsite" : "mixed"),
-        sewer_tie: p.sewer_tie ?? null, water_tie: p.water_tie ?? null, pavement_setbacks_ft: { front: pave, side: pave, rear: pave }, ...(p.limits ?? {}) };
+        design_utilities: noUtil ? "none" : p.sewer_tie && p.water_tie ? "municipal" : (!p.sewer_tie && !p.water_tie ? "onsite" : "mixed"),
+        design_gas: !noUtil && p.gas !== false, design_electric: !noUtil && p.electric !== false,
+        sewer_tie: p.sewer_tie ?? null, water_tie: p.water_tie ?? null, gas_tie: p.gas_tie ?? null, electric_tie: p.electric_tie ?? null,
+        pavement_setbacks_ft: { front: pave, side: pave, rear: pave }, ...(p.limits ?? {}) };
       const loc = String(p.location ?? "").slice(0, 200);
       const { data, error } = await db.from("pipeline_jobs").insert({
         source: "redline", status: "queued", step: "layout", progress: "Sketch received from Redline", created_by: who.uid,

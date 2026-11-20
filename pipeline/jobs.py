@@ -547,7 +547,7 @@ def step_redline_site(job_id):
     bld = ctx.get("bld") or []
     keep, demo = existing.split(bld, {b["id"]: "keep" for b in bld})
     from . import topo as topo_mod
-    summary = {"topo": {**topo_mod.summary(ctx["topo"], ctx["parcel_sp"], 0), "source": "EC plan contours"}, "warnings": ctx.get("warnings", []),
+    summary = {"topo": {**topo_mod.summary(ctx["topo"], ctx["parcel_sp"], 0), "source": ctx["topo"].get("source") or "EC plan contours"}, "warnings": ctx.get("warnings", []),
                "existing_buildings": [], "front_roads": []}
     I = dict(rules=rules, prog=prog, setbacks=setbacks, out=out, keep=keep, demo=demo, pave_keep=[], pave_rm=[], shared=0,
              dem=ctx["topo"], steep=[], summary=summary, psb=psb)

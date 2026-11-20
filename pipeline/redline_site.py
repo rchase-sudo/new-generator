@@ -52,8 +52,10 @@ def dem_from_contours(payload, P, pad=150.0):
         med = float(np.median(zz))
         mad = float(np.median(np.abs(zz - med))) or 1.0
         lines_ = [(z, ln) for z, ln in lines_ if abs(z - med) <= max(25.0, 6 * mad)]
+    gr = payload.get("ground") or {}
+    has_ground = bool(gr.get("z") and gr.get("nx") and gr.get("ny"))
     near = [(z, ln) for z, ln in lines_ if ln.distance(P) < 150.0]
-    if len(near) < 5 or len({z for z, _ in near}) < 3:
+    if not has_ground and (len(near) < 5 or len({z for z, _ in near}) < 3):
         raise ValueError(f"Couldn't read the existing contours on this sheet: only {len(near)} usable labelled contour line(s) near the property "
                          f"(Drafted needs the EC plan's contours with their elevation labels). Nothing was designed. Check that the contours on this PDF "
                          f"are vector linework with readable labels, or send a sheet that has them.")
@@ -63,13 +65,26 @@ def dem_from_contours(payload, P, pad=150.0):
             q = ln.interpolate(i / n, normalized=True)
             pts.append((q.x, q.y))
             zs.append(float(z))
-    zlo, zhi = min(z for z, _ in lines_) - 15.0, max(z for z, _ in lines_) + 15.0
+    zlo, zhi = (min(z for z, _ in lines_) - 15.0, max(z for z, _ in lines_) + 15.0) if lines_ else (-1e9, 1e9)
     for s in payload.get("spots") or []:
         if s.get("z") is not None and zlo <= float(s["z"]) <= zhi:
             pts.append((float(s["x"]), float(s["y"])))
             zs.append(float(s["z"]))
+    # a LandXML existing surface (sampled by Redline on a grid in the sheet's coordinates) takes over wherever it reaches;
+    # the sheet's contours only fill in past its edge
+    if has_ground:
+        gz = np.array([np.nan if v is None else float(v) for v in gr["z"]], float).reshape(int(gr["ny"]), int(gr["nx"]))
+        gx = float(gr["x0"]) + np.arange(int(gr["nx"])) * float(gr["cell"])
+        gy = float(gr["y0"]) + np.arange(int(gr["ny"])) * float(gr["cell"])
+        GX, GY = np.meshgrid(gx, gy)
+        ok = np.isfinite(gz)
+        if ok.sum() >= 20:
+            from shapely.geometry import MultiPoint
+            cov = MultiPoint(np.c_[GX[ok], GY[ok]][:: max(1, int(ok.sum() // 4000))]).convex_hull.buffer(float(gr["cell"]))
+            keep = [i for i, q in enumerate(pts) if not cov.contains(Point(q))]
+            pts, zs = [pts[i] for i in keep] + list(map(tuple, np.c_[GX[ok], GY[ok]])), [zs[i] for i in keep] + list(gz[ok])
     if len(pts) < 20 or len(set(zs)) < 2:
-        raise ValueError("No contours with elevations were read from the EC plan (the site needs labelled contours for the existing ground)")
+        raise ValueError("No contours with elevations were read from the EC plan (the site needs labelled contours or a LandXML surface for the existing ground)")
     pts, zs = np.array(pts), np.array(zs)
     x0, y0, x1, y1 = P.buffer(pad).bounds
     nx, ny = int(math.ceil((x1 - x0) / CELL_FT)), int(math.ceil((y1 - y0) / CELL_FT))
@@ -84,7 +99,8 @@ def dem_from_contours(payload, P, pad=150.0):
     hull = Polygon(LineString(pts).convex_hull.exterior.coords) if len(pts) > 3 else None
     cover = hull.intersection(P).area / P.area if hull is not None and P.area > 0 else 0.0
     from . import topo
-    dem = {"z": Z.astype("float32"), "x0": x0, "y1": y1, "cell": CELL_FT, "cell_ft": CELL_FT, "k": 1.0, "epsg": None, "source": "EC plan contours"}
+    src = f"LandXML surface ({gr.get('source') or 'existing'})" if has_ground else "EC plan contours"
+    dem = {"z": Z.astype("float32"), "x0": x0, "y1": y1, "cell": CELL_FT, "cell_ft": CELL_FT, "k": 1.0, "epsg": None, "source": src}
     topo.analyze(dem)
     return dem, cover
 

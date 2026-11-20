@@ -402,11 +402,13 @@ def design(g, z_ex, z_prop, G, L, rain, soils, stype, parcel_area_sf, pond_overr
         return {"inlets": inlets, "subcatchments": sc, "cells": cells, "area_ac": area_ac, "cn_post": cn_post, "cn_pre": cn_pre_area, "tc_pre": tc_pre, "tc_post": tc_post,
                 "pond": pond, "ponds": [pond], "impervious_sf": imp, "bypass_sf": area_g_bypass, "hsg": hsg, "warnings": warns, "rain": rain, "stype": stype,
                 "roof_of": roof_of, "area_p": area_p, "area_r": area_r}
-    # ---- detention ponds. Rules: 3:1 interior slopes always; as shallow as possible, never deeper than 6 ft; no closer than 5 ft to a
-    # property line. One pond at the concept location when that works; where the storm sewer would have to run so far that the pond
-    # ends up dug well below the ground around it (long sites), the site is split into several drainage systems, each with its own pond.
+    # ---- stormwater ponds. At this (preliminary) stage a pond is sized for the water quality volume only: WQV = 1" x Rv x A,
+    # Rv = 0.05 + 0.9 x impervious fraction, held below a 0.5 ft freeboard. Rules: 3:1 interior slopes always; 2 ft deep as the
+    # target, never deeper than 3 ft; no larger than it needs to be; no closer than 5 ft to a property line. One pond at the
+    # concept location when that works; where the storm sewer would have to run so far that the pond ends up dug well below the
+    # ground around it (long sites), the site is split into several drainage systems, each with its own pond.
     from shapely.ops import polylabel
-    SIDE, DMIN, DMAX, EDGE = 3.0, 3.0, 6.0, 5.0
+    SIDE, DMIN, DMAX, DTARGET, EDGE, FREEBOARD = 3.0, 1.5, 3.0, 2.0, 5.0, 0.5
     imp_sc = {s_["inlet"]: s_ for s_ in sc if s_["inlet"] is not None}
     imp_total = sum(s_["area_sf"] for s_ in imp_sc.values()) or 1.0
     keep = [x for x in [L.get("pave"), L.get("walk")] + list(L.get("bldgs") or []) if x is not None and not x.is_empty]
@@ -465,6 +467,9 @@ def design(g, z_ex, z_prop, G, L, rain, soils, stype, parcel_area_sf, pond_overr
             parts.append((area_g_to_pond * share, cn_lawn, 14.0))
         a_sf = sum(p_[0] for p_ in parts)
         a_ac = a_sf / 43560.0
+        imp_k = sum(imp_sc[k_]["pave_sf"] + imp_sc[k_]["roof_sf"] for k_ in group)
+        rv = 0.05 + 0.9 * min(1.0, imp_k / max(a_sf, 1.0))
+        wqv = 1.0 / 12.0 * rv * a_sf
         cn_k = hydro.composite_cn([(p_[0], p_[1]) for p_ in parts])
         tc_k = sum(p_[0] * p_[2] for p_ in parts) / a_sf
         d_tot = {st: hydro.hydrograph(a_ac, cn_k, tc_k, rain["d24"][st], stype) for st in hydro.STORMS}
@@ -479,7 +484,7 @@ def design(g, z_ex, z_prop, G, L, rain, soils, stype, parcel_area_sf, pond_overr
         cpp = seed.centroid
         # where the storm sewer will arrive: 2 ft cover + pipe at each inlet, then about 0.3 % along the run
         arrive = min(rim_of[k_] - 3.5 - 0.003 * 1.25 * math.hypot(inlets[k_][0] - cpp.x, inlets[k_][1] - cpp.y) for k_ in group) if fm is None else fm
-        top_el = round(min(top0, arrive - 0.5 + DMAX), 1)             # the floor (top - depth, depth <= 6) must reach under the pipe
+        top_el = round(min(top0, arrive - 0.5 + DMAX), 1)             # the floor (top - depth, depth <= 3) must reach under the pipe
         dmin = float(min(DMAX, max(DMIN, math.ceil((top_el - (arrive - 0.5)) * 2.0) / 2.0)))
         lowered = max(0.0, top0 - top_el)
         if os.environ.get("FD_DEBUG"):
@@ -488,6 +493,17 @@ def design(g, z_ex, z_prop, G, L, rain, soils, stype, parcel_area_sf, pond_overr
         region = free.difference(unary_union(taken)) if taken else free
         region = region.union(seed)
         cands = [seed]
+        # smaller than the concept footprint too: a pond is only as big as its water quality volume needs
+        shr = []
+        for k_ in range(1, 30):
+            c_ = seed.buffer(-3.0 * k_).buffer(1.0)
+            ps0 = polys(c_)
+            if not ps0:
+                break
+            c_ = max(ps0, key=lambda q_: q_.area)
+            if c_.area < 300:
+                break
+            shr.append(c_)
         for k_ in range(1, 20):
             cand = seed.buffer(8.0 * k_).intersection(region).buffer(-6.0).buffer(6.0)
             cps = [c_ for c_ in polys(cand) if c_.intersects(seed)]
@@ -497,6 +513,7 @@ def design(g, z_ex, z_prop, G, L, rain, soils, stype, parcel_area_sf, pond_overr
             if cand.area < cands[-1].area * 1.03:
                 break
             cands.append(cand)
+        cands = shr[::-1] + cands                                        # smallest first
 
         def route(poly, depth, dia):
             bottom = round(top_el - depth, 1)
@@ -515,24 +532,18 @@ def design(g, z_ex, z_prop, G, L, rain, soils, stype, parcel_area_sf, pond_overr
                 inr = 20.0
             if inr < depth * SIDE * 0.5:                  # the 3:1 banks would meet before reaching this depth over most of the basin
                 return None
-            if hydro.pond_geometry(poly, top_el, depth, SIDE)[2][-1] < 300:
+            stage, area, stor = hydro.pond_geometry(poly, top_el, depth, SIDE)
+            if float(np.interp(top_el - FREEBOARD, stage, stor)) < wqv:
                 return None
-            for dia in (0.17, 0.25, 0.33, 0.5, 0.67, 0.83, 1.0, 1.25, 1.5, 2.0):
-                stage, stor, out = route(poly, depth, dia)
-                if all(out[st][1] <= pre_k[st] + 0.005 for st in hydro.STORMS if st <= 50):
-                    if out[100][0] <= top_el - 1.0:
-                        return {"poly": poly, "stage": stage, "stor": stor, "orifice_ft": dia, "out": out, "depth": float(depth)}
-                    return None
-            return None
+            stage, stor, out = route(poly, depth, 0.25)   # outlet shown for reference only: the pond is sized on the WQV
+            return {"poly": poly, "stage": stage, "stor": stor, "orifice_ft": 0.25, "out": out, "depth": float(depth)}
 
         res = None
-        soft = max(seed.area * 1.05, 0.15 * a_sf)                   # first choice: ponds no larger than about 15 % of what drains to them
-        for pool in ([c_ for c_ in cands if c_.area <= soft], cands):
-            for depth in np.arange(dmin, DMAX + 0.01, 0.5):
-                for cand in pool:
-                    res = works(cand, float(depth))
-                    if res is not None:
-                        break
+        # 2 ft deep (or what the storm sewer needs, up to 3 ft) with the smallest footprint that holds the WQV; deeper only if no footprint will
+        depths = sorted({max(dmin, DTARGET)} | {float(d_) for d_ in np.arange(max(dmin, DTARGET) + 0.5, DMAX + 0.01, 0.5)})
+        for depth in depths:
+            for cand in cands:
+                res = works(cand, depth)
                 if res is not None:
                     break
             if res is not None:
@@ -540,13 +551,13 @@ def design(g, z_ex, z_prop, G, L, rain, soils, stype, parcel_area_sf, pond_overr
         ok = res is not None
         if res is None:
             poly = cands[-1]
-            stage, stor, out = route(poly, DMAX, 0.5)
-            res = {"poly": poly, "stage": stage, "stor": stor, "orifice_ft": 0.5, "out": out, "depth": DMAX}
+            stage, stor, out = route(poly, DMAX, 0.25)
+            res = {"poly": poly, "stage": stage, "stor": stor, "orifice_ft": 0.25, "out": out, "depth": DMAX}
         depth = res["depth"]
         return {"poly": res["poly"], "top_el": top_el, "bottom_el": round(top_el - depth, 1), "depth_ft": depth, "footprint_fixed": res["poly"].equals(concept), "side": SIDE,
                 "orifice_in": round(res["orifice_ft"] * 12, 1), "weir_crest": round(top_el - 1.5, 2), "weir_len_ft": 10.0, "top_area_sf": float(res["poly"].area),
-                "storage_cf": float(res["stor"][-1]), "inlets": list(group), "area_ac": a_ac, "cn_post": cn_k, "tc_post": tc_k, "ok": ok, "lowered": lowered,
-                "freeboard_ok": res["out"][100][0] <= top_el - 1.0,
+                "storage_cf": float(res["stor"][-1]), "wqv_cf": round(wqv), "inlets": list(group), "area_ac": a_ac, "cn_post": cn_k, "tc_post": tc_k, "ok": ok, "lowered": lowered,
+                "freeboard_ok": True,
                 "table": [{"storm": st, "pre_cfs": round(pre_k[st], 2), "post_cfs": round(res["out"][st][2], 2), "out_cfs": round(res["out"][st][1], 2),
                            "stage": round(res["out"][st][0], 2)} for st in hydro.STORMS]}
 
@@ -591,10 +602,10 @@ def design(g, z_ex, z_prop, G, L, rain, soils, stype, parcel_area_sf, pond_overr
     for i_, q in enumerate(ponds, 1):
         q["id"] = f"POND-{i_}" if len(ponds) > 1 else "POND"
         if not q["ok"]:
-            warns.append(f"{q['id'].title()}: the open land available ({q['top_area_sf']:,.0f} SF at 3:1, 6 ft deep) does not hold post-development peaks to pre-development; "
+            warns.append(f"{q['id'].title()}: the open land available ({q['top_area_sf']:,.0f} SF at 3:1, 3 ft deep) does not hold the water quality volume ({q['wqv_cf']:,} CF); "
                          "reduce impervious area or add underground storage")
         elif not q["footprint_fixed"] and len(ponds) == 1:
-            warns.append(f"Detention pond resized from the concept footprint ({concept.area:,.0f} SF) to {q['top_area_sf']:,.0f} SF: 3:1 slopes, {q['depth_ft']:.1f} ft deep")
+            warns.append(f"Pond sized for the water quality volume ({q['wqv_cf']:,} CF): {q['top_area_sf']:,.0f} SF at the top of bank, 3:1 slopes, {q['depth_ft']:.1f} ft deep")
         if not q["freeboard_ok"]:
             warns.append(f"{q['id'].title()}: the 100-yr stage is within 1 ft of the berm; add freeboard")
         if q["lowered"] > 1.5:
