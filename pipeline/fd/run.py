@@ -58,6 +58,9 @@ def build(ctx, lay, job, rules, prog, log=print):
     L["setback"] = F(envelope(P_sp, edges, sb, k))
     L["setbacks_ft"] = sb
     L["stripes"] = [F(s_) for s_ in (sp.get("stripes") or [])]
+    for key in ("sewer_tie", "water_tie"):        # tie-in points picked by the user (Redline): the mains connect there
+        if rules.get(key):
+            L[key] = F(Point(*rules[key]))
     dem = ctx.get("topo")
     if dem is None:
         raise RuntimeError("Elevation data is required for the full design (the 3DEP lookup did not run for this site)")
@@ -190,6 +193,8 @@ def build(ctx, lay, job, rules, prog, log=print):
 
 
 def _latlon(ctx, P_sp):
+    if ctx.get("source") == "redline" or ctx.get("epsg") is None:     # a sheet from outside Drafted: located by its town only
+        return tuple(ctx.get("latlon") or (43.0, -71.5))
     from ..geo import to_crs
     c = to_crs(P_sp.centroid, ctx["epsg"], 4326)
     return c.y, c.x

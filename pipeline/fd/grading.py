@@ -26,7 +26,7 @@ DAYLIGHT = 1.0 / 3.0   # 3:1 slopes
 K_CREST, K_SAG = 12.0, 12.0
 
 
-def spine(g, pave_mask, hard, entry_pt):
+def spine(g, pave_mask, hard, entry_pt, target=None):
     """Centerline of the paved circulation from the entrance to its far end: least-cost path through the pavement that
     prefers the middle of the pavement."""
     dist_edge = ndi.distance_transform_edt(pave_mask) * g.cell
@@ -56,6 +56,10 @@ def spine(g, pave_mask, hard, entry_pt):
                     heapq.heappush(pq, (nd, (jj, ii)))
     fin = np.where(np.isfinite(dist), dist, -1)
     far = np.unravel_index(np.argmax(fin), fin.shape)
+    if target is not None:
+        tj, ti = g.ij(*target)
+        if tj is not None and 0 <= tj < fin.shape[0] and 0 <= ti < fin.shape[1] and fin[tj, ti] >= 0:
+            far = (tj, ti)
     path = [tuple(far)]
     while path[-1] in prev:
         path.append(prev[path[-1]])
@@ -179,8 +183,11 @@ def run(L, ex_z, grid, road_local, spec=None):
     fp = np.array([[sp.interpolate(s).x, sp.interpolate(s).y] for s in fine])
     zf = eval_profile(pv, cv, fine)
     from scipy.spatial import cKDTree
-    tree = cKDTree(fp)
     jj, ii = np.nonzero(pave_mask)
+    # branches: pavement far from the drive's centreline (a parking field off to one side) gets its own graded centreline
+    # from the nearest point of the spine, so its cross slope never runs out into a flat
+    fp, zf, branches = _branches(g, pave_mask, hard, sp, fp, zf, ex_z, near_park)
+    tree = cKDTree(fp)
     dd, k = tree.query(np.c_[g.xs[ii], g.ys[jj]])
     z_new = np.full(g.X.shape, np.nan)
     # centreline elevation carried smoothly across the pavement (harmonic between the spine cells, so where the spine wraps
@@ -190,7 +197,7 @@ def run(L, ex_z, grid, road_local, spec=None):
     fixed = np.zeros(g.X.shape, bool)
     fixed[jj, ii] = dd <= g.cell * 0.75
     zc = _harmonic(zc, pave_mask, fixed)
-    z_new[jj, ii] = zc[jj, ii] - CROSS * np.minimum(dd, 220.0)
+    z_new[jj, ii] = zc[jj, ii] - CROSS * np.minimum(dd, 120.0)
     z_new = _cap_parking(g, z_new, pave_mask, fixed, L)
     z_new, ada_info = _ada_planes(g, z_new, pave_mask, L)
     z_pave = z_new.copy()                      # gutter (bottom of curb) elevations, before curbs / walks / pads
@@ -225,7 +232,48 @@ def run(L, ex_z, grid, road_local, spec=None):
     design = np.isfinite(z_new)
     return {"spine": sp, "stations": st, "profile": zprof, "ex_profile": zx, "pvi": pv, "curves": cv, "z_design": z_new, "design_mask": design,
             "ffe": ffe, "pave_mask": pave_mask, "bmask": allb, "walk_mask": walk_mask, "warnings": warns,
-            "z_pave": z_pave, "curb_mask": curb_mask, "ada": ada_info}
+            "z_pave": z_pave, "curb_mask": curb_mask, "ada": ada_info, "branches": branches}
+
+
+def _branches(g, pave_mask, hard, sp, fp, zf, ex_z, near_park, reach=110.0, max_n=6):
+    """Extra graded centrelines for pavement more than `reach` ft from every centreline so far: each starts on the nearest
+    centreline (at its elevation) and runs through the far pavement, profiled like the drive (1% min, 4.5% in parking)."""
+    from scipy.spatial import cKDTree
+    jj, ii = np.nonzero(pave_mask)
+    cells = np.c_[g.xs[ii], g.ys[jj]]
+    lines_ = []
+    for _ in range(max_n):
+        d, kk = cKDTree(fp).query(cells)
+        far = d > reach
+        if far.sum() * g.cell ** 2 < 1500:
+            break
+        # the far pavement cell nearest the existing centrelines, and the centreline point it hangs off
+        c1 = int(np.argmax(d))                                   # the pavement farthest from every centreline so far
+        j0 = int(kk[c1])                                         # ... and the centreline point nearest it
+        start = (float(fp[j0][0]), float(fp[j0][1]))
+        br = spine(g, pave_mask, hard, start, target=(float(cells[c1][0]), float(cells[c1][1])))
+        if br is None or br.length < reach * 0.5:
+            break
+        L_ = br.length
+        st = np.arange(0, L_ + 10.0, 10.0)
+        st = st[st <= L_] if len(st) and st[-1] > L_ else st
+        if st[-1] < L_:
+            st = np.append(st, L_)
+        pts = [br.interpolate(s_) for s_ in st]
+        zx = g.at(ex_z, [p_.x for p_ in pts], [p_.y for p_ in pts])
+        zx = np.asarray(zx, float)
+        zx = zx - zx[0] + float(zf[j0])                          # tied to the centreline it leaves
+        gm = [MAX_PARK_GRADE if near_park is not None and near_park.contains(p_) else MAX_DRIVE_GRADE for p_ in pts]
+        zd = design_profile(st, zx, gm) if len(st) > 3 else zx
+        zd[0] = float(zf[j0])
+        pv = _min_tangents(pvis(st, zd, tol=0.15), st, gm)
+        fine = np.arange(0, L_, 2.5)
+        bp = np.array([[br.interpolate(s_).x, br.interpolate(s_).y] for s_ in fine])
+        bz = np.interp(fine, [q[0] for q in pv], [q[1] for q in pv])
+        fp = np.vstack([fp, bp])
+        zf = np.concatenate([zf, bz])
+        lines_.append(br)
+    return fp, zf, lines_
 
 
 def _min_tangents(pv, st, gmax_at):
@@ -245,7 +293,7 @@ def _min_tangents(pv, st, gmax_at):
     return [tuple(p) for p in pv]
 
 
-def _cap_parking(g, z, pave_mask, fixed, L, cap=PARK_MAX - 0.002, iters=60):
+def _cap_parking(g, z, pave_mask, fixed, L, cap=PARK_MAX - 0.004, iters=250):
     """Where a stall would be steeper than 5% (two drive legs at different elevations close together), relax the pavement
     there toward its neighbours until it is within 5% or cannot get flatter."""
     if not L.get("stalls"):

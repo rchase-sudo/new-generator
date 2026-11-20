@@ -11,6 +11,7 @@
 //   package         { job_id }                                                    -> { ok }  (due diligence package, after the render)
 //   cad_template_*  (account) the firm's Civil 3D template; plugin_url -> the Civil 3D plugin download
 //   redline_import  { job_id, design, parcels, render? } -> { ok }  (Apollo Redline test fit -> concept -> CAD exports, optional render)
+//   redline_site    { ...sketch over an outside EC plan } -> { job_id }  (new project from Redline alone; see below)
 //   c3d_export      { job_id } -> { ok }  (rebuild only the Civil 3D package of a finished plan set with the current template)
 //   design          { job_id, sewer?: boolean, water?: boolean, utilities?: "municipal"|"onsite" } -> { ok }  (optional full design phase, after the layout is approved)
 //   start_batch     { text, lite? }  -> { job_id }  (many listings in one field: the worker splits them and runs each one unattended to its package)
@@ -92,7 +93,7 @@ Deno.serve(async (req) => {
     const action = body.action;
     const who = await caller(req);
     if (!who.admin && !who.uid) return json({ error: "Sign in required" }, 401);
-    const ACCOUNT = ["start", "start_batch", "list", "cad_template_get", "cad_template_upload", "cad_template_save", "cad_template_delete", "plugin_url"];
+    const ACCOUNT = ["start", "start_batch", "list", "redline_site", "cad_template_get", "cad_template_upload", "cad_template_save", "cad_template_delete", "plugin_url"];
     if (!ACCOUNT.includes(action) && !(await ownJob(who, body.job_id))) return json({ error: "Job not found" }, 404);
 
     // ---- the firm's Civil 3D template (account level): layers + layer mapping + styles used by the CAD exports --------------
@@ -257,6 +258,41 @@ Deno.serve(async (req) => {
       if (e2) throw e2;
       await kickWorker(body.job_id, "redline_import");
       return json({ ok: true });
+    }
+
+    //   redline_site { location, parcels, frontage, frame, design, setbacks, program?, ratio?, contours, spots?, tagged?, sewer_tie?, water_tie?,
+    //                  aerial?: { jpg_b64, extent }, render?, file? } -> { job_id }
+    //   A test fit sketched in Redline over an existing-conditions plan made OUTSIDE Drafted: everything is in the sheet's CAD
+    //   coordinates (feet). The site comes from the sheet (contours -> existing ground), the concept from the sketch, then the
+    //   full design runs to its CAD exports (no sheets); render: true also makes the rendering.
+    if (action === "redline_site") {
+      const p = { ...(body.payload ?? body) };
+      delete p.action;
+      if (!p.design || !Array.isArray(p.design.buildings) || !p.design.buildings.length) return json({ error: "The sketch has no buildings" }, 400);
+      if (!Array.isArray(p.parcels) || !p.parcels.length) return json({ error: "The sketch has no property line" }, 400);
+      if (!Array.isArray(p.contours) || p.contours.length < 2) return json({ error: "No labelled contours were read from the EC plan" }, 400);
+      if (JSON.stringify(p).length > 14_000_000) return json({ error: "Sketch too large" }, 413);
+      const jpg = p.aerial?.jpg_b64 ? String(p.aerial.jpg_b64) : null;
+      if (p.aerial) p.aerial = { extent: p.aerial.extent };
+      const sb = p.setbacks ?? {}, pave = Number(sb.pave ?? 10);
+      const zoning = { layout_mode: "manual", source: "redline", max_slope_pct: 0, design_sewer: !!p.sewer_tie, design_water: !!p.water_tie,
+        design_utilities: p.sewer_tie && p.water_tie ? "municipal" : (!p.sewer_tie && !p.water_tie ? "onsite" : "mixed"),
+        sewer_tie: p.sewer_tie ?? null, water_tie: p.water_tie ?? null, pavement_setbacks_ft: { front: pave, side: pave, rear: pave }, ...(p.limits ?? {}) };
+      const loc = String(p.location ?? "").slice(0, 200);
+      const { data, error } = await db.from("pipeline_jobs").insert({
+        source: "redline", status: "queued", step: "layout", progress: "Sketch received from Redline", created_by: who.uid,
+        listing_text: `Apollo Redline sketch: ${String(p.file ?? "").slice(0, 200)}`, listing: { street_address: loc || String(p.file ?? "Redline site").slice(0, 120), source: "redline" },
+        setbacks: { front: Number(sb.front ?? 25), side: Number(sb.side ?? 10), rear: Number(sb.rear ?? 10) }, zoning,
+        program: { use: p.use ?? "Development", buildings: Array.isArray(p.program) ? p.program : [], parking_ratio: Number(p.ratio ?? 4) },
+        options: { redline: true, design_sheets: false }, summary: { redline_site: p },
+      }).select("id").single();
+      if (error) throw error;
+      if (jpg) {
+        const bytes = Uint8Array.from(atob(jpg), (c) => c.charCodeAt(0));
+        await db.storage.from("pipeline").upload(`${data.id}/sheet.jpg`, bytes, { contentType: "image/jpeg", upsert: true });
+      }
+      await kickWorker(data.id, "redline_site");
+      return json({ job_id: data.id });
     }
 
     if (action === "approve_layout") {

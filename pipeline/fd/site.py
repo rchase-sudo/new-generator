@@ -144,13 +144,28 @@ def utilities(g, z_prop, ex_z, G, L, road_all, prog, fr, road_key=None, mode="mu
     bl = L["bldgs"]
     P = L["parcel"]
     road_sel = _sel_road(L, road_key)
+    st_, wt_ = L.get("sewer_tie") if has_sewer else None, L.get("water_tie") if has_water else None
+    if st_ is not None or wt_ is not None:
+        # the user picked where the mains tie in (Redline): the corridor leaves the property nearest those points
+        tie = st_ if st_ is not None else wt_
+        road_sel = tie.buffer(2.0).exterior
     rl, cp, routes, bi = _service_corridor(g, L, road_sel, road_all, None)
     R = routes["sewer"]
     out["road_key"] = road_key
     out["cp"] = (cp.x, cp.y)
-    seg, wroad = _road_mains(rl, cp, cp)
+    if st_ is not None or wt_ is not None:
+        def _stub(p_):
+            dx, dy = cp.x - p_.x, cp.y - p_.y
+            m_ = math.hypot(dx, dy) or 1.0
+            ux, uy = -dy / m_, dx / m_
+            return LineString([(p_.x - ux * 15, p_.y - uy * 15), (p_.x + ux * 15, p_.y + uy * 15)])
+        seg = _stub(st_ if st_ is not None else wt_)
+        wroad = _stub(wt_ if wt_ is not None else st_)
+        out["notes"].append("Sewer and water tie in at the points picked on the existing-conditions plan; the existing main inverts are assumed and must be confirmed.")
+    else:
+        seg, wroad = _road_mains(rl, cp, cp)
     out["road_water"], out["road_sewer"] = wroad, seg
-    ex_pt = nearest_points(seg, cp)[0]
+    ex_pt = st_ if st_ is not None else nearest_points(seg, cp)[0]
     z_road = float(g.at(ex_z, [ex_pt.x], [ex_pt.y])[0])
     gpd = design_flow(prog)
     out["sewer_gpd"] = round(gpd, -1)
@@ -203,7 +218,7 @@ def utilities(g, z_prop, ex_z, G, L, road_all, prog, fr, road_key=None, mode="mu
         if not has_sewer and not has_water:
             return out
     wc = routes["water"]
-    wtap = nearest_points(wroad, Point(wc.coords[0]))[0]
+    wtap = wt_ if wt_ is not None else nearest_points(wroad, Point(wc.coords[0]))[0]
     S = LineString([(ex_pt.x, ex_pt.y)] + list(R.coords)) if has_sewer else None
     W = LineString([(wtap.x, wtap.y)] + list(wc.coords)) if has_water else None
     out["sewer_main"], out["water_main"] = S, W

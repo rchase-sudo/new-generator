@@ -112,6 +112,8 @@ def _run(job_id, step):
             step_c3d_export(job_id)
         elif step == "redline_import":
             step_redline_import(job_id)
+        elif step == "redline_site":
+            step_redline_site(job_id)
         else:
             raise ValueError(f"unknown step {step}")
     except Exception as e:  # noqa: BLE001
@@ -515,6 +517,71 @@ def step_redline_import(job_id):
     supa.update_job(job_id, **patch)
     from .auto import kick
     kick(job_id, "design")          # the render follows the design (one writer at a time on the job's outputs)
+
+
+def step_redline_site(job_id):
+    """A test fit sketched in Apollo Redline over an existing-conditions plan made outside Drafted: the site (parcel, contours,
+    tagged constraints, the user's sewer / water tie-ins) comes from the sheet, the concept from the sketch, and the full design
+    runs straight to its CAD exports (no plan sheets), plus the rendering when asked. No AI is used."""
+    from . import existing, redline_site, testfit
+    job = supa.get_job(job_id)
+    pl = (job.get("summary") or {}).get("redline_site") or {}
+    if not pl.get("design"):
+        raise RuntimeError("No Redline test fit was sent")
+    supa.update_job(job_id, status="building_layout", step="layout", progress="Building the site from the EC plan", error=None)
+    jpg = None
+    try:
+        jpg = supa.download(job_id, "sheet.jpg")
+    except Exception:  # noqa: BLE001
+        pass
+    ctx = redline_site.context(pl, jpg)
+    out = tempfile.mkdtemp()
+    c2 = {k: v for k, v in ctx.items() if k != "aerial"}
+    c2["aerial"] = {k: v for k, v in ctx["aerial"].items() if k != "image"}
+    with open(os.path.join(out, "context.pkl"), "wb") as f:      # later steps (design, render, CAD rebuilds) load it like any job's
+        pickle.dump(c2, f)
+    supa.upload(job_id, os.path.join(out, "context.pkl"))
+    rules, prog, setbacks = job.get("zoning") or {}, job.get("program") or {}, job.get("setbacks") or {"front": 25, "side": 10, "rear": 10}
+    psb = {k: float(v) for k, v in (rules.get("pavement_setbacks_ft") or {}).items() if k in ("front", "side", "rear") and isinstance(v, (int, float))} \
+        or {"front": 10.0, "side": 5.0, "rear": 5.0}
+    bld = ctx.get("bld") or []
+    keep, demo = existing.split(bld, {b["id"]: "keep" for b in bld})
+    from . import topo as topo_mod
+    summary = {"topo": {**topo_mod.summary(ctx["topo"], ctx["parcel_sp"], 0), "source": "EC plan contours"}, "warnings": ctx.get("warnings", []),
+               "existing_buildings": [], "front_roads": []}
+    I = dict(rules=rules, prog=prog, setbacks=setbacks, out=out, keep=keep, demo=demo, pave_keep=[], pave_rm=[], shared=0,
+             dem=ctx["topo"], steep=[], summary=summary, psb=psb)
+    try:     # the existing-conditions drawing of the sheet's site (the concept DXF is written on top of it)
+        summary.update({k: v for k, v in (build_ec(out, ctx["parcel_sp"], None, 1.0, ctx["aerial"], ctx["wet"], ctx["fl"], ctx["rds"], setbacks_ft=setbacks,
+                                                   listing=job.get("listing"), bld=bld, actions={b["id"]: "keep" for b in bld}, topo=ctx["topo"],
+                                                   steep=[], thr=0) or {}).items() if k not in ("topo", "warnings")})
+    except Exception as e:  # noqa: BLE001
+        print("EC drawing for the Redline site failed, using a blank base:", repr(e))
+        import ezdxf
+        from PIL import Image
+        ezdxf.new("R2018").saveas(os.path.join(out, "existing_conditions.dxf"))
+        Image.new("RGB", (64, 64), "white").save(os.path.join(out, "existing_conditions.png"))
+        Image.new("RGB", (64, 64), "white").save(os.path.join(out, "existing_conditions.pdf"))
+    design = {**pl["design"], "frame": {**(pl.get("frame") or {}), "k": 1.0}, "source": "redline"}
+    j = supa.get_job(job_id)
+    supa.update_job(job_id, summary={**(j.get("summary") or {}), "testfit_design": design})
+    res = testfit.build(ctx, design, setbacks, psb, [], keep, [], prog, rules, shared_stalls=0)
+    try:
+        ew = topo_mod.earthwork(ctx["topo"], res["sp"]["dev"])
+        if ew:
+            res["metrics"]["earthwork"] = ew
+    except Exception as e:  # noqa: BLE001
+        print("earthwork skipped:", e)
+    _publish_layout(job_id, supa.get_job(job_id), ctx, I, res)
+    j = supa.get_job(job_id)
+    opts = {**(j.get("options") or {}), "design_sheets": False, "render_after_design": bool(pl.get("render"))}
+    patch = {"status": "layout_approved", "step": "deliverables", "progress": "Sketch placed; building the CAD exports",
+             "options": opts, "design_status": "queued", "design_error": None}
+    if pl.get("render"):
+        patch.update(render_status="queued", render_error=None)
+    supa.update_job(job_id, **patch)
+    from .auto import kick
+    kick(job_id, "design")
 
 
 def step_layout(job_id):
