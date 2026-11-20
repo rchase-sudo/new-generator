@@ -461,7 +461,7 @@ def step_testfit_base(job_id):
     supa.update_job(job_id, outputs={**(job.get("outputs") or {}), "testfit": tf}, summary={**(job.get("summary") or {}), "testfit_status": "ready"})
 
 
-def step_manual_layout(job_id):
+def step_manual_layout(job_id, sheet=True):
     """The site as laid out in the test-fit editor -> concept sheet, DXF and layout.pkl, exactly like an automatic layout."""
     job = supa.get_job(job_id)
     supa.update_job(job_id, status="building_layout", step="layout", progress="Drawing your test fit", error=None)
@@ -479,7 +479,7 @@ def step_manual_layout(job_id):
             res["metrics"]["earthwork"] = ew
     I["summary"]["drive_choice"] = {"auto": None, "used": res["metrics"].get("drive_road"), "fallback": None, "manual": True,
                                     "roads": [(r.get("key"), r.get("class"), r.get("frontage_ft")) for r in (I["summary"].get("front_roads") or [])]}
-    _publish_layout(job_id, job, ctx, I, res)
+    _publish_layout(job_id, job, ctx, I, res, sheet=sheet)
 
 
 def step_redline_import(job_id):
@@ -506,7 +506,7 @@ def step_redline_import(job_id):
                                                                    "rms_ft": round(T["rms_ft"], 2), "fit_pct": round(T["fit"] * 100, 1)}}
     zoning = {**(job.get("zoning") or {}), "layout_mode": "manual"}
     supa.update_job(job_id, summary=summary, zoning=zoning)
-    step_manual_layout(job_id)
+    step_manual_layout(job_id, sheet=False)
     # approved straight away: the CAD exports (no sheets), and the render when it was asked for
     j = supa.get_job(job_id)
     opts = {**(j.get("options") or {}), "design_sheets": False, "render_after_design": bool(imp.get("render"))}
@@ -551,17 +551,6 @@ def step_redline_site(job_id):
                "existing_buildings": [], "front_roads": []}
     I = dict(rules=rules, prog=prog, setbacks=setbacks, out=out, keep=keep, demo=demo, pave_keep=[], pave_rm=[], shared=0,
              dem=ctx["topo"], steep=[], summary=summary, psb=psb)
-    try:     # the existing-conditions drawing of the sheet's site (the concept DXF is written on top of it)
-        summary.update({k: v for k, v in (build_ec(out, ctx["parcel_sp"], None, 1.0, ctx["aerial"], ctx["wet"], ctx["fl"], ctx["rds"], setbacks_ft=setbacks,
-                                                   listing=job.get("listing"), bld=bld, actions={b["id"]: "keep" for b in bld}, topo=ctx["topo"],
-                                                   steep=[], thr=0) or {}).items() if k not in ("topo", "warnings")})
-    except Exception as e:  # noqa: BLE001
-        print("EC drawing for the Redline site failed, using a blank base:", repr(e))
-        import ezdxf
-        from PIL import Image
-        ezdxf.new("R2018").saveas(os.path.join(out, "existing_conditions.dxf"))
-        Image.new("RGB", (64, 64), "white").save(os.path.join(out, "existing_conditions.png"))
-        Image.new("RGB", (64, 64), "white").save(os.path.join(out, "existing_conditions.pdf"))
     design = {**pl["design"], "frame": {**(pl.get("frame") or {}), "k": 1.0}, "source": "redline"}
     j = supa.get_job(job_id)
     supa.update_job(job_id, summary={**(j.get("summary") or {}), "testfit_design": design})
@@ -572,7 +561,7 @@ def step_redline_site(job_id):
             res["metrics"]["earthwork"] = ew
     except Exception as e:  # noqa: BLE001
         print("earthwork skipped:", e)
-    _publish_layout(job_id, supa.get_job(job_id), ctx, I, res)
+    _publish_layout(job_id, supa.get_job(job_id), ctx, I, res, sheet=False)       # no concept sheet: straight to the design
     j = supa.get_job(job_id)
     opts = {**(j.get("options") or {}), "design_sheets": False, "render_after_design": bool(pl.get("render"))}
     patch = {"status": "layout_approved", "step": "deliverables", "progress": "Sketch placed; building the CAD exports",
@@ -716,12 +705,13 @@ def step_layout(job_id):
     _publish_layout(job_id, job, ctx, I, res)
 
 
-def _publish_layout(job_id, job, ctx, I, res):
-    """Concept sheet, DXFs, layout.pkl and the job row for a finished layout (automatic or test fit)."""
+def _publish_layout(job_id, job, ctx, I, res, sheet=True):
+    """Concept sheet, DXFs, layout.pkl and the job row for a finished layout (automatic or test fit).
+    sheet=False (Redline imports): only the layout geometry the design and the render need, no concept sheet / DXF / EC."""
     rules, prog, setbacks, out = I["rules"], I["prog"], I["setbacks"], I["out"]
     keep, demo, pave_keep, pave_rm = I["keep"], I["demo"], I["pave_keep"], I["pave_rm"]
     dem, steep, summary = I["dem"], I["steep"], I["summary"]
-    supa.update_job(job_id, progress="Drawing the concept plan")
+    supa.update_job(job_id, progress="Drawing the concept plan" if sheet else "Placing the layout")
     L = job.get("listing") or {}
     title = [x for x in [L.get("street_address") and f"{L.get('lot') + ', ' if L.get('lot') else ''}{L.get('street_address')}",
                          ", ".join(x for x in [L.get("city"), L.get("state")] if x),
@@ -738,6 +728,13 @@ def _publish_layout(job_id, job, ctx, I, res):
             (f" (about {p['est_stalls']} stalls)" if p.get("est_stalls") else ""), "kind": "pavement"} for p in pave_keep] + \
           [{"id": p["id"], "action": "demo", "geom": p["geom"], "sf": p["area_sf"], "label": "Parking" if p["kind"] == "parking" else "Drive", "kind": "pavement"} for p in pave_rm]
     res["metrics"]["existing"] = [{"id": e["id"], "action": e["action"], "sf": round(e["sf"], -1), "label": e["label"], **({"kind": "pavement"} if e.get("kind") == "pavement" else {})} for e in ex if e.get("action") != "demo"]
+    if not sheet:
+        with open(os.path.join(out, "layout.pkl"), "wb") as f:
+            pickle.dump({"sp": res["sp"], "metrics": res["metrics"], "labels": res["labels"], "frame_angle_deg": res["frame_angle_deg"], "existing": ex}, f)
+        supa.upload(job_id, os.path.join(out, "layout.pkl"))
+        supa.update_job(job_id, status="awaiting_layout", step="layout", progress="Layout placed",
+                        summary={**(job.get("summary") or {}), **summary}, layout=res["metrics"])
+        return
     write_concept_sheet(os.path.join(out, "concept_plan.pdf"), os.path.join(out, "concept_plan.png"), ctx["parcel_sp"], env, wet, fl, rds,
                         ctx["aerial"], ctx["k"], res["sp"], res["labels"], title, res["metrics"], prog, rules, project=project, existing=ex,
                         topo=dem, steep=steep)
