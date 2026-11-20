@@ -14,6 +14,11 @@ GPD_PER_SF = {"residential": 0.12, "apartment": 0.12, "hotel": 0.15, "medical": 
               "industrial": 0.04, "warehouse": 0.02, "storage": 0.01, "school": 0.1, "church": 0.05, "gas": 0.2, "car wash": 1.5}
 
 
+# sanitary sewer slope rules (all jobs): never steeper than 12 %; services at least 2 % (4 in) / 1 % (6 in); 8 in mains 0.4 %
+SEWER_MAX = 0.12
+LAT_MIN = {4: 0.02, 6: 0.01}
+LAT_DIA = 6
+
 def _off(line, d):
     try:
         o = line.offset_curve(d)
@@ -272,7 +277,7 @@ def utilities(g, z_prop, ex_z, G, L, road_all, prog, fr, road_key=None, mode="mu
         for b in bl:
             if all(h.distance(b) > 150 for h in hyd):
                 hyd.append(nearest_points(W, b)[0])
-        out["hydrants"] = [(h.x, h.y) for h in hyd]
+        out["hydrants"] = []          # standing rule: Drafted never proposes fire hydrants (fire protection is the fire marshal's call)
         out["valves"] = [(wtap.x, wtap.y)] + [(l.coords[0][0], l.coords[0][1]) for l in wl]
     if not has_sewer:
         out["notes"].append(f"Water service corridor enters the site from {road_key or 'the nearest road'} at the property line and stays inside the parcel; the water main taps the road main there.")
@@ -293,7 +298,7 @@ def utilities(g, z_prop, ex_z, G, L, road_all, prog, fr, road_key=None, mode="mu
     full[-1] = S.length
     inv_ex = z_road - 8.0                                      # assumed invert of the existing main (to be confirmed by test pit / record drawings)
     # ---- gravity design, upstream to downstream: under every building lateral, at least 4 ft of cover, never flatter than 0.40 % (8 in)
-    DIA, COVER, SMIN, SMAX, DROP, NMAN = 8, 4.0, 0.004, 0.08, 0.1, 0.013
+    DIA, COVER, SMIN, SMAX, DROP, NMAN = 8, 4.0, 0.004, SEWER_MAX, 0.1, 0.013
     n_mh = len(full)
     pts = [_along(S, p_) for p_ in full]
     rims = [float(g.at(z_prop if k else ex_z, [pt.x], [pt.y])[0]) for k, pt in enumerate(pts)]
@@ -382,10 +387,16 @@ def utilities(g, z_prop, ex_z, G, L, road_all, prog, fr, road_key=None, mode="mu
         inv_j = inv_out.get(max(j, first), inv_ex)
         inv_b = G["ffe"][k] - 4.5
         s_lat = (inv_b - (inv_j + DROP)) / L_ft
-        lat_rows.append({"bldg": k + 1, "len": round(L_ft), "inv_main": round(inv_j + DROP, 2), "inv_bldg": round(inv_b, 2), "ok": s_lat >= 0.0099,
-                         "bldg_out_inv": round(inv_b, 2), "slope": s_lat})
-        if s_lat < 0.0099:
-            out["warnings"].append(f"Building {k + 1}: the sewer lateral has only {s_lat * 100:.1f}% of fall to the main; raise the floor or use an ejector pump")
+        drop_conn = False
+        if s_lat > SEWER_MAX:                                   # never steeper than 12 %: run at 12 % and drop into the manhole / main
+            s_lat, drop_conn = SEWER_MAX, True
+        lmin = LAT_MIN.get(LAT_DIA, 0.01)
+        lat_rows.append({"bldg": k + 1, "len": round(L_ft), "inv_main": round(inv_b - s_lat * L_ft if drop_conn else inv_j + DROP, 2), "inv_bldg": round(inv_b, 2),
+                         "ok": s_lat >= lmin - 1e-4, "bldg_out_inv": round(inv_b, 2), "slope": s_lat, "dia": LAT_DIA, "drop": drop_conn})
+        if drop_conn:
+            out["notes"].append(f"Building {k + 1}: the sewer service is held to the 12% maximum and enters the main through a drop connection")
+        if s_lat < lmin - 1e-4:
+            out["warnings"].append(f"Building {k + 1}: the sewer lateral has only {s_lat * 100:.1f}% of fall to the main ({lmin * 100:.0f}% minimum for {LAT_DIA}\"); raise the floor or use an ejector pump")
     out["sewer_lat_rows"] = lat_rows
     out["notes"].append(f"Service corridor enters the site from {road_key or 'the nearest road'} at the property line and stays inside the parcel; " +
                         ("water and sewer tap the road mains there." if has_water else "the sewer taps the road main there."))
@@ -532,7 +543,7 @@ def onsite(g, z_prop, ex_z, G, L, gpd, R, septic=True):
     out["cistern_xy"] = (cp_.x, cp_.y)
     out["cistern_gal"] = 30000
     out["notes"].append("Private well and septic: soil loading rates are ASSUMED from the hydrologic soil group. A percolation test, test pits (seasonal high water table, restrictive layers), a licensed designer's septic plan and a well permit are required.")
-    out["hydrants"] = [out["cistern_xy"]]
+    out["hydrants"] = []          # no hydrants proposed (standing rule); the cistern stays
     return out
 
 

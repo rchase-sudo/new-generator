@@ -17,6 +17,8 @@ PIPE_SIZES = [12, 15, 18, 24, 30, 36, 42, 48]
 CN = {"pave": 98, "roof": 98, "lawn": {"A": 39, "B": 61, "C": 74, "D": 80}, "pre": {"A": 36, "B": 58, "C": 71, "D": 78}}
 
 
+STORM_SMIN = 0.004       # storm pipes: never flatter than 0.40 %, no maximum slope
+
 def boundary_samples(poly, step=8.0):
     out = []
     for p in polys(poly):
@@ -761,11 +763,11 @@ def storm_network(g, z_prop, D, L, rain, blocked_extra=None, pond=None, start=(0
             inv_up = up["rim"] - COVER - wall
             for c in ins:                                   # crowns match; at least a 0.1 ft drop through the structure
                 inv_up = min(inv_up, c["inv_dn"] + c["dia"] / 12.0 - wall, c["inv_dn"] - DROP)
-            if dn["kind"] == "FES":                       # the outfall run falls to the pond / chamber invert (up to 15 fps with an energy dissipator)
-                s_gr, s_cap_v = (inv_up - fes_target) / L_ft, s_for_v(d, 15.0)
+            if dn["kind"] == "FES":                       # the outfall run falls to the pond / chamber invert
+                s_gr = (inv_up - fes_target) / L_ft
             else:
-                s_gr, s_cap_v = (inv_up - (dn["rim"] - COVER - wall)) / L_ft, s_for_v(d, VMAX)
-            s_use = min(max(s_for_v(d, VMIN), s_gr, 0.002), s_cap_v)   # never flatter than self-cleansing (2.5 fps full) or 0.20 %
+                s_gr = (inv_up - (dn["rim"] - COVER - wall)) / L_ft
+            s_use = max(STORM_SMIN, s_gr)                  # storm rule (all jobs): 0.40 % minimum, no maximum — follows the ground at min cover
             s_use = math.ceil(s_use * 2000.0 - 1e-9) / 2000.0     # slopes called out to 0.05%
             if dn["kind"] == "FES" and inv_up - s_use * L_ft > fes_target + 0.5:
                 inv_up = fes_target + s_use * L_ft         # the rest of the fall is taken as a drop in the last structure

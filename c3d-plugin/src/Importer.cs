@@ -638,7 +638,7 @@ namespace Drafted.C3D
 
         void Features(Catalog cat)
         {
-            int n = 0, nc = 0;
+            int n = 0, nc = 0, nw = 0, nwl = 0;
             var brk = new ObjectIdCollection();
             var layer = Layer("C-GRAD-FEAT");
             using (var tr = db.TransactionManager.StartTransaction())
@@ -656,8 +656,10 @@ namespace Drafted.C3D
                     {
                         var fid = FeatureFrom3d(tr, new Polyline3d(Poly3dType.SimplePoly, pc, closed), U.S(f, "name"), site, layer, cat); n++;
                         var kind = U.S(f, "kind");
-                        if (kind == "curb_bc" || kind == "curb_tc" || kind == "ada" || kind == "building") brk.Add(fid);
+                        if (kind == "curb_bc" || kind == "curb_tc" || kind == "ada" || kind == "building" || kind == "walk" || kind == "wall_top" || kind == "wall_bot") brk.Add(fid);
                         if (kind == "curb_bc" || kind == "curb_tc") nc++;
+                        if (kind == "walk") nw++;
+                        if (kind == "wall_top") nwl++;
                     }
                     catch (System.Exception e) { warn.Add($"Feature line {U.S(f, "name")}: {e.Message}"); }
                 }
@@ -676,7 +678,7 @@ namespace Drafted.C3D
                     }
                 }
                 catch (System.Exception e) { warn.Add($"FG surface: the curb breaklines could not be added ({e.Message})"); }
-            report.Add($"Feature lines: {n} in site \"{O.Site}\" ({nc} granite curb TC / BC lines{(brk.Count > 0 && !fgId.IsNull ? ", added to FG as breaklines" : "")})");
+            report.Add($"Feature lines: {n} in site \"{O.Site}\" ({nc} granite curb TC / BC lines{(nw > 0 ? $", {nw} concrete sidewalk edges" : "")}{(nwl > 0 ? $", {nwl} retaining walls (top + bottom)" : "")}{(brk.Count > 0 && !fgId.IsNull ? ", added to FG as breaklines" : "")})");
         }
 
         // ------------------------------------------------------------------ drive alignment + EG and design profiles
@@ -684,44 +686,69 @@ namespace Drafted.C3D
         {
             foreach (var a in U.A(M, "alignments"))
             {
+                string step = "centreline polyline";
                 using (var tr = db.TransactionManager.StartTransaction())
                 {
-                    var pl = Poly2(a.GetProperty("pts"), 0, false);
-                    var ms = ModelSpace(tr);
-                    var plId = ms.AppendEntity(pl);
-                    tr.AddNewlyCreatedDBObject(pl, true);
-                    var opt = new PolylineOptions { PlineId = plId, AddCurvesBetweenTangents = false, EraseExistingEntities = true };
-                    var lay = LayerId(U.S(a, "layer", "C-ROAD-CNTR"));
-                    var aStyle = cat.Id("align_style", O); var aLab = cat.Id("align_labels", O);
-                    var name = U.S(a, "name", "Drive CL");
-                    var alId = Alignment.Create(civ, opt, name, ObjectId.Null, lay, aStyle, aLab);
-                    var player = LayerId("C-ROAD-PROF");
-                    var pLab = cat.Id("profile_labels", O);
-                    if (!egId.IsNull && a.TryGetProperty("eg_profile", out var egn) && egn.ValueKind == JsonValueKind.String)
-                        Profile.CreateFromSurface(egn.GetString(), alId, egId, player, cat.Id("profile_eg_style", O), pLab);
-                    if (a.TryGetProperty("profile", out var pr))
+                    try
                     {
-                        var pid = Profile.CreateByLayout(U.S(pr, "name", name + " - FG"), alId, player, cat.Id("profile_style", O), pLab);
-                        var prof = (Profile)tr.GetObject(pid, OpenMode.ForWrite);
-                        var curves = new List<(double, double, double)>();
-                        foreach (var v in U.A(pr, "pvis"))
+                        var pl = Poly2(a.GetProperty("pts"), 0, false);
+                        var ms = ModelSpace(tr);
+                        var plId = ms.AppendEntity(pl);
+                        tr.AddNewlyCreatedDBObject(pl, true);
+                        var opt = new PolylineOptions { PlineId = plId, AddCurvesBetweenTangents = false, EraseExistingEntities = true };
+                        var lay = LayerId(U.S(a, "layer", "C-ROAD-CNTR"));
+                        var aStyle = cat.Id("align_style", O); var aLab = cat.Id("align_labels", O);
+                        // a name already used in this drawing (an earlier import) makes Civil 3D refuse the alignment: number it
+                        var name0 = U.S(a, "name", "Drive CL"); var name = name0;
+                        var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        try { foreach (ObjectId id in civ.GetAlignmentIds()) used.Add(((Alignment)tr.GetObject(id, OpenMode.ForRead)).Name); } catch { }
+                        for (int k = 2; used.Contains(name); k++) name = $"{name0} ({k})";
+                        step = "alignment";
+                        var alId = Alignment.Create(civ, opt, name, ObjectId.Null, lay, aStyle, aLab);
+                        var al = (Alignment)tr.GetObject(alId, OpenMode.ForRead);
+                        double s0 = al.StartingStation, s1 = al.EndingStation;
+                        var player = LayerId("C-ROAD-PROF");
+                        var pLab = cat.Id("profile_labels", O);
+                        var parts = new List<string>();
+                        if (!egId.IsNull && a.TryGetProperty("eg_profile", out var egn) && egn.ValueKind == JsonValueKind.String)
                         {
-                            var q = U.XY(v);
-                            prof.PVIs.AddPVI(q[0], q[1]);
-                            if (q.Length > 2 && q[2] > 0) curves.Add((q[0], q[1], q[2]));
+                            step = "EG profile";
+                            try { Profile.CreateFromSurface(egn.GetString().Replace(name0, name), alId, egId, player, cat.Id("profile_eg_style", O), pLab); parts.Add("EG profile"); }
+                            catch (System.Exception e) { warn.Add($"Alignment {name}: EG profile not created ({e.Message})"); }
                         }
-                        foreach (var (s, z, L) in curves)
+                        if (a.TryGetProperty("profile", out var pr))
                         {
+                            step = "design profile";
                             try
                             {
-                                var pvi = prof.PVIs.GetPVIAt(s, z);
-                                U.TryCall(prof.Entities, "AddFreeSymmetricParabolaByPVIAndLength", pvi, L);
+                                var pid = Profile.CreateByLayout(U.S(pr, "name", name0 + " - FG").Replace(name0, name), alId, player, cat.Id("profile_style", O), pLab);
+                                var prof = (Profile)tr.GetObject(pid, OpenMode.ForWrite);
+                                var curves = new List<(double, double, double)>();
+                                double last = double.NegativeInfinity; int nv = 0, skipped = 0;
+                                foreach (var v in U.A(pr, "pvis"))
+                                {
+                                    var q = U.XY(v);
+                                    // stations rounded in the package can land a hair past the alignment's ends ("value does not fall
+                                    // within the expected range"): clamp them, and skip any that would repeat a station
+                                    double st = Math.Min(Math.Max(q[0], s0), s1);
+                                    if (st <= last + 0.01) { skipped++; continue; }
+                                    try { prof.PVIs.AddPVI(st, q[1]); last = st; nv++; } catch { skipped++; continue; }
+                                    if (q.Length > 2 && q[2] > 0 && st > s0 + 0.01 && st < s1 - 0.01) curves.Add((st, q[1], q[2]));
+                                }
+                                foreach (var (sv, z, L) in curves)
+                                {
+                                    try { var pvi = prof.PVIs.GetPVIAt(sv, z); U.TryCall(prof.Entities, "AddFreeSymmetricParabolaByPVIAndLength", pvi, L); }
+                                    catch { }
+                                }
+                                parts.Add($"design profile ({nv} PVIs{(curves.Count > 0 ? $", {curves.Count} vertical curves" : "")})");
+                                if (skipped > 0) warn.Add($"Alignment {name}: {skipped} profile PVI(s) skipped (outside the alignment or repeated)");
                             }
-                            catch { }
+                            catch (System.Exception e) { warn.Add($"Alignment {name}: design profile not created ({e.Message})"); }
                         }
+                        tr.Commit();
+                        report.Add($"Alignment {name}{(parts.Count > 0 ? " with " + string.Join(" and ", parts) : "")} (create a profile view with PROFILEVIEW... to show them)");
                     }
-                    tr.Commit();
-                    report.Add($"Alignment {name} with EG and design profiles (create a profile view with PROFILEVIEW... to show them)");
+                    catch (System.Exception e) { warn.Add($"Alignment {U.S(a, "name", "Drive CL")}: failed at the {step} ({e.GetType().Name}: {e.Message})"); }
                 }
             }
         }

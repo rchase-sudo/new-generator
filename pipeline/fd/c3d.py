@@ -20,7 +20,7 @@ import zipfile
 import ezdxf
 import numpy as np
 
-from . import export
+from . import export, grading
 from .base import polys
 
 # Drafted's standard layers: what each holds and the words a firm's layer name for it is likely to contain
@@ -61,6 +61,9 @@ ROLES = {
     "C-NGAS-UGND": ("Gas", ["NGAS", "GAS"], "proposed"),
     "C-EROS-LOD": ("Limit of disturbance", ["LOD", "LIMIT", "DIST", "EROS", "ESC"], "proposed"),
     "C-EROS-SILT": ("Silt fence", ["SILT", "SF", "EROS", "ESC", "FENC"], "proposed"),
+    "C-EROS-MATT": ("2:1 slopes - erosion control matting", ["MATT", "MAT", "BLANKET", "ECB", "EROS"], "proposed"),
+    "C-SITE-RIPR": ("1:1 slopes - riprap", ["RIPR", "RIP", "RIPRAP", "STONE"], "proposed"),
+    "C-SITE-WALL": ("Retaining walls", ["WALL", "RETN", "RTWL"], "proposed"),
     "C-TINN-PROP": ("Proposed surface 3D faces", ["TIN", "SURF", "FACE", "3D"], "proposed"),
 }
 # what becomes a native Civil 3D object (left out of linework.dxf so nothing is drawn twice)
@@ -267,6 +270,31 @@ def manifest(X, meta, job, mapping=None, firm=None):
         ffe = float(G["ffe"][k])
         feats.append({"name": f"Building {k + 1} pad (FFE {ffe:.2f})", "kind": "building", "layer": "C-GRAD-FEAT", "closed": True,
                       "pts": [en(c) + [_r(ffe, 2)] for c in b.exterior.coords]})
+    # concrete sidewalks: their outline at finished grade (2% cross slope up from the top of curb), held 0.2 ft inside the
+    # walk so the edge never lands on the curb's TC line in the TIN
+    wk = L.get("walk")
+    wmask = G.get("walk_mask")
+    if wk is not None and not wk.is_empty and wmask is not None and wmask.any():
+        zw = np.where(wmask, G["z_design"], np.nan)
+        _, ixw = ndi.distance_transform_edt(~np.isfinite(zw), return_indices=True)
+        zwf = zw[ixw[0], ixw[1]]
+
+        def zw_at(x, y):
+            return float(g.at(zwf, [x], [y])[0])
+        nw = 0
+        for q in polys(wk.buffer(-0.2, join_style=2)):
+            if q.area < 10:
+                continue
+            nw += 1
+            for ring in [q.exterior] + list(q.interiors):
+                feats.append({"name": f"Concrete sidewalk {nw}", "kind": "walk", "layer": "C-GRAD-FEAT", "closed": True, "pts": ring3(ring.simplify(0.1).coords, zw_at, step=5.0)})
+    # retaining walls (grading that would be steeper than 1:1): top and bottom of wall 0.1 ft apart so the FG surface
+    # carries a true vertical face
+    for k, w in enumerate((X.get("slopes") or {}).get("walls") or [], 1):
+        feats.append({"name": f"Retaining wall {k} top (max {w['h_max']:.1f} ft)", "kind": "wall_top", "layer": "C-GRAD-FEAT", "closed": False,
+                      "pts": [en(xy) + [_r(z, 2)] for xy, z in w["top"]]})
+        feats.append({"name": f"Retaining wall {k} bottom", "kind": "wall_bot", "layer": "C-GRAD-FEAT", "closed": False,
+                      "pts": [en(xy) + [_r(z, 2)] for xy, z in w["bot"]]})
     # ---- ponds: contours every foot from the top down at 3:1 (the pond object's own geometry)
     ponds = []
     if (D.get("pond") or {}).get("kind") != "chambers":
@@ -288,8 +316,15 @@ def manifest(X, meta, job, mapping=None, firm=None):
     sp = G.get("spine")
     if sp is not None and sp.length > 5:
         cv = {round(c["pvi_sta"], 2): c for c in (G.get("curves") or [])}
-        pvis = [[_r(s, 3), _r(z, 3), _r((cv.get(round(s, 2)) or {}).get("L") or 0, 2)] for s, z in (G.get("pvi") or [])]
-        aligns.append({"name": "Drive CL", "layer": "C-ROAD-CNTR", "pts": [en(c) for c in sp.coords], "profile": {"name": "Drive CL - FG", "pvis": pvis},
+        cl, remap = grading.clean_alignment(sp)          # straight tangents, not the stepped grid path
+        pvis, last = [], -1.0
+        for s, z in (G.get("pvi") or []):
+            s2 = remap(s)
+            if s2 <= last + 1.0:
+                continue
+            pvis.append([_r(s2, 3), _r(z, 3), _r((cv.get(round(s, 2)) or {}).get("L") or 0, 2)])
+            last = s2
+        aligns.append({"name": "Drive CL", "layer": "C-ROAD-CNTR", "pts": [en(c) for c in cl.coords], "profile": {"name": "Drive CL - FG", "pvis": pvis},
                        "eg_profile": "Drive CL - EG"})
     # ---- COGO points: building corners at FFE, structure rims
     pts = []

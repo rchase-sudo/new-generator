@@ -395,6 +395,19 @@ def c4(meta, X):
     for s in X["net"]["structs"]:
         if s["kind"] in ("CB", "DMH"):
             S.ax.plot([s["xy"][0]], [s["xy"][1]], marker="s" if s["kind"] == "CB" else "o", ms=5, mfc="white", mec=INK, zorder=32)
+    # slopes steeper than 3:1: 2:1 with erosion control matting, 1:1 with riprap, retaining walls
+    SLP = X.get("slopes") or {}
+    for q in SLP.get("matting") or []:
+        S.poly(q, fc="none", ec="#2f8f5b", lw=0.6, hatch="xxx", z=11)
+        c_ = q.representative_point(); S.txt(c_.x, c_.y, "2:1 SLOPE\nEROSION CONTROL MATTING", 4.8, halo=True, z=31)
+    for q in SLP.get("riprap") or []:
+        S.poly(q, fc="none", ec="#555555", lw=0.6, hatch="ooo", z=11)
+        c_ = q.representative_point(); S.txt(c_.x, c_.y, "1:1 SLOPE\nRIPRAP", 4.8, halo=True, z=31)
+    for w in SLP.get("walls") or []:
+        S.line(w["line"], color=INK, lw=2.6, z=14)
+        m_ = w["line"].interpolate(0.5, normalized=True)
+        tw = max(t[1] for t in w["top"]); bw = min(b[1] for b in w["bot"])
+        S.txt(m_.x + 6, m_.y + 6, f"RETAINING WALL\n{w['len']:.0f} LF, {w['h_max']:.1f}' MAX\nTW {tw:.1f} / BW {bw:.1f}", 5.0, ha="left", halo=True, z=31)
     S.north_arrow(); S.scale_bar()
     ew = X["earthwork"]
     X0, Y0 = corner(S, 0.015, 0.97)
@@ -403,7 +416,10 @@ def c4(meta, X):
                                     ["Disturbed", f"{ew['disturbed_ac']:.2f} ac"]], size=6, row_h=0.2)
     _legend(S, 0.015, 0.77, [("line", dict(color="#000", lw=2.0), "Proposed index contour (10 ft)"), ("line", dict(color="#000", lw=1.15), "Proposed contour (2 ft)"),
                               ("line", dict(color=GREY, lw=0.45, ls=(0, (4, 3))), "Existing contour"), ("line", dict(color=RED, lw=0.8, ls=(0, (10, 3, 2, 3))), "Limits of disturbance"),
-                              ("mark", dict(marker="+", color=INK, ms=5), "Spot elevation")])
+                              ("mark", dict(marker="+", color=INK, ms=5), "Spot elevation")]
+            + ([("line", dict(color="#2f8f5b", lw=3.0), "2:1 slope - erosion control matting")] if SLP.get("matting") else [])
+            + ([("line", dict(color="#555555", lw=3.0), "1:1 slope - riprap")] if SLP.get("riprap") else [])
+            + ([("line", dict(color=INK, lw=2.6), "Retaining wall")] if SLP.get("walls") else []))
     _apply_notes(S, N.c4(meta, X), 0.015, 0.57, title="NOTES", width=7.0)
     _prelim_note(S)
     return S

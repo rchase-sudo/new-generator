@@ -73,6 +73,10 @@ def build(ctx, lay, job, rules, prog, log=print):
 
     # ---- grading (wetlands and streams are never regraded)
     wm = g.mask(L["wet"].buffer(2.0)) if L.get("wet") is not None and not L["wet"].is_empty else None
+    # grading may not cross the property line or touch a wetland: slopes steepen (2:1 matting, 1:1 riprap) or become walls there
+    limit = ~g.mask(P.buffer(-0.5))
+    if wm is not None:
+        limit = limit | wm
     out["wet_warnings"] = []
     G = grading.run(L, ex_z, g, road_all)
     out["fire_notes"] = []
@@ -112,7 +116,8 @@ def build(ctx, lay, job, rules, prog, log=print):
                 pm |= pm_
                 rim |= rim_ & ~pm
         dmask = G["design_mask"] | pm | rim
-        z_prop = grading.surface(g, ex_z, zd, dmask, protect=wm)
+        G["slope_info"] = {}
+        z_prop = grading.surface(g, ex_z, zd, dmask, protect=wm, limit=limit, info=G["slope_info"])
         if not chambers:
             z_prop = grading.smooth_around(g, z_prop, dmask, g.mask(unary_union([q["poly"] for q in ponds]).buffer(80)))
             z_prop = grading.taper_protect(g, z_prop, ex_z, wm, dmask)
@@ -169,6 +174,18 @@ def build(ctx, lay, job, rules, prog, log=print):
             out["wet_warnings"].append(f"About {hit_d:,.0f} SF of proposed pavement, building or pond lies in a mapped wetland. Move it out or obtain a wetland permit before this layout is relied on.")
         if hit_s > 200:
             out["wet_warnings"].append(f"Cut and fill slopes would reach about {hit_s:,.0f} SF of mapped wetland. Grading is held at the wetland edge, so a retaining wall or steeper slope is needed there. No regrading of the wetland or stream is proposed.")
+    try:
+        out["slopes"] = grading.slope_features(g, z_prop, ex_z, G["z_design2"], G["design_mask2"], G.get("slope_info") or {})
+        sl_ = out["slopes"]
+        if sl_["matting"]:
+            G["warnings"].append(f"About {sum(q.area for q in sl_['matting']):,.0f} SF of 2:1 slope (3:1 does not fit before the property line or wetland): erosion control matting proposed")
+        if sl_["riprap"]:
+            G["warnings"].append(f"About {sum(q.area for q in sl_['riprap']):,.0f} SF of 1:1 slope: riprap slope protection proposed")
+        for k_, w_ in enumerate(sl_["walls"], 1):
+            G["warnings"].append(f"Retaining wall {k_}: about {w_['len']:.0f} LF, up to {w_['h_max']:.1f} ft high (the grade change does not fit even at 1:1)")
+    except Exception as e:  # noqa: BLE001
+        out["slopes"] = {"matting": [], "riprap": [], "walls": []}
+        log(f"slope treatment areas skipped: {type(e).__name__}: {e}")
     log(f"drainage {time.time() - t0:.1f}s")
     try:     # grading rules on the finished surface (pavement >= 1%, parking <= 5%, ADA <= 2.08%)
         out["grade_checks"], gw = grading.checks(g, z_prop, G, L, inlets=[s_["xy"] for s_ in net["structs"] if s_["kind"] == "CB"])

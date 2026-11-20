@@ -70,6 +70,31 @@ def spine(g, pave_mask, hard, entry_pt, target=None):
     return ln
 
 
+def clean_alignment(sp, tol=8.0, min_seg=20.0, min_defl=5.0):
+    """The drive centreline as straight tangents for the CAD alignment: the grid path the spine is traced on steps and
+    zigzags; this keeps only real bends (Douglas-Peucker at `tol` ft, then drops bends under `min_defl` degrees and
+    tangents shorter than `min_seg`). Returns (line, remap) where remap(s) moves a station on the spine onto it."""
+    ln = sp.simplify(tol)
+    cs = list(ln.coords)
+    changed = True
+    while changed and len(cs) > 2:
+        changed = False
+        for k in range(1, len(cs) - 1):
+            a, b, c = cs[k - 1], cs[k], cs[k + 1]
+            h1 = math.degrees(math.atan2(b[1] - a[1], b[0] - a[0])); h2 = math.degrees(math.atan2(c[1] - b[1], c[0] - b[0]))
+            d = abs((h2 - h1 + 180) % 360 - 180)
+            if d < min_defl or math.dist(a, b) < min_seg or math.dist(b, c) < min_seg:
+                del cs[k]
+                changed = True
+                break
+    new = LineString(cs)
+    s_max = new.length
+
+    def remap(s):
+        return min(max(new.project(sp.interpolate(s)), 0.0), s_max)
+    return new, remap
+
+
 def design_profile(stations, z_ex, gmax_at=None):
     """Vertical profile: smoothed existing ground, grade-limited (gmax_at: per-station limit, lower through parking), with a
     minimum grade; returns elevations at stations."""
@@ -407,21 +432,105 @@ def checks(g, z, G, L, inlets=None):
     return rows, warns
 
 
-def surface(g, ex_z, z_design, design_mask, pond=None, protect=None):
-    """Full proposed surface: design cells as set; everything else follows the existing ground clamped to 3:1 from the
-    nearest design cell (cut and fill slopes daylight into the existing grade)."""
+# Slope rules (all jobs): proposed slopes 3:1 or flatter. Only where 3:1 cannot daylight before a limit (property line,
+# wetland): 2:1 (slope shown, erosion control matting), then 1:1 (riprap), and steeper than that a retaining wall.
+SLOPE_MAT, SLOPE_RIP = 1.0 / 2.0, 1.0
+
+
+def surface(g, ex_z, z_design, design_mask, pond=None, protect=None, limit=None, info=None):
+    """Full proposed surface: design cells as set; everything else follows the existing ground clamped to the steepest
+    allowed slope from the nearest design cell (cut and fill slopes daylight into the existing grade). With `limit` (cells
+    that may not be regraded) each slope is the flattest standard one that still reaches existing ground before the limit:
+    3:1, else 2:1, else 1:1, else a retaining wall at the edge of the design. `info` (a dict) receives the 2:1 and 1:1 areas
+    and the walls."""
     z = ex_z.copy()
     dist, idx = ndi.distance_transform_edt(~design_mask, return_indices=True)
     zd = z_design[idx[0], idx[1]]
     dft = dist * g.cell
-    out = np.clip(ex_z, zd - DAYLIGHT * dft, zd + DAYLIGHT * dft)
+    s = np.full(z.shape, DAYLIGHT)
+    wall_src = np.zeros(z.shape, bool)
+    if limit is not None and limit.any():
+        dl = ndi.distance_transform_edt(~limit) * g.cell
+        band = (~design_mask) & (~limit) & (dft < 150.0)
+        H = np.abs(zd - ex_z)
+        s_req = np.where(band & (H > 0.25), H / np.maximum(dft + dl, 0.5), 0.0)       # a few inches of mismatch is not a slope
+        src = np.ravel_multi_index((idx[0], idx[1]), z.shape)
+        s_src = np.zeros(z.size)
+        np.maximum.at(s_src, src[band], s_req[band])
+        s_src = s_src.reshape(z.shape)
+        # standard slopes only: 3:1, 2:1, 1:1, wall
+        q = np.where(s_src <= DAYLIGHT + 1e-6, DAYLIGHT, np.where(s_src <= SLOPE_MAT + 1e-6, SLOPE_MAT, np.where(s_src <= SLOPE_RIP + 1e-6, SLOPE_RIP, np.inf)))
+        wall_src = design_mask & np.isinf(q)
+        s = q[idx[0], idx[1]]
+    sf = np.where(np.isinf(s), 0.0, s)
+    lo = np.where(np.isinf(s), -np.inf, zd - sf * dft)
+    hi = np.where(np.isinf(s), np.inf, zd + sf * dft)
+    out = np.clip(ex_z, lo, hi)
     out = np.where(design_mask, z_design, out)
-    # soften the clamped band so contours don't kink (design cells and far field stay)
+    # soften the clamped band so contours don't kink (design cells, walls and far field stay)
     soft = ndi.gaussian_filter(out, 1.0)
-    band = (~design_mask) & (dft < 80)
+    band = (~design_mask) & (dft < 80) & np.isfinite(s) & (s <= DAYLIGHT + 1e-6)
     out = np.where(band, soft, out)
     out = np.where(design_mask, z_design, out)
-    return taper_protect(g, out, ex_z, protect, design_mask)
+    if limit is not None:
+        out = np.where(limit & ~design_mask, ex_z, out)
+    out = taper_protect(g, out, ex_z, protect, design_mask)
+    if info is not None:
+        graded = (~design_mask) & (np.abs(out - ex_z) > 0.1)
+        info["matting"] = graded & np.isclose(s, SLOPE_MAT)
+        info["riprap"] = graded & np.isclose(s, SLOPE_RIP)
+        info["wall_src"] = wall_src
+        info["s"] = s
+    return out
+
+
+def slope_features(g, z_prop, ex_z, z_design, design_mask, info, min_sf=150.0):
+    """Polygons for the 2:1 (matting) and 1:1 (riprap) slopes and the retaining-wall lines with top / bottom elevations."""
+    from shapely.geometry import MultiLineString
+    from shapely.ops import linemerge
+    res = {"matting": [], "riprap": [], "walls": []}
+    for key in ("matting", "riprap"):
+        m = info.get(key)
+        if m is None or not m.any():
+            continue
+        for q in polys(g.cell_poly(m).buffer(1.5).buffer(-1.5).simplify(1.0)):
+            if q.area >= min_sf:
+                res[key].append(q)
+    ws = info.get("wall_src")
+    if ws is not None and ws.any():
+        dpoly = g.cell_poly(design_mask)
+        zone = g.cell_poly(ws).buffer(g.cell * 0.75)
+        edge = unary_union([LineString(r.coords) for q in polys(dpoly) for r in [q.exterior] + list(q.interiors)])
+        ln = edge.intersection(zone)
+        parts = [p for p in (ln.geoms if hasattr(ln, "geoms") else [ln]) if p.geom_type == "LineString" and p.length > 4.0]
+        if parts:
+            mm = linemerge(MultiLineString(parts)) if len(parts) > 1 else parts[0]
+            for w in (mm.geoms if hasattr(mm, "geoms") else [mm]):
+                if w.length < 8.0:
+                    continue
+                w = w.simplify(0.5)
+                n = max(2, int(w.length // 5.0) + 1)
+                top, bot, hs = [], [], []
+                for k in range(n):
+                    pt = w.interpolate(k * w.length / (n - 1))
+                    # elevations just inside the design and just outside it (the face is between)
+                    a = w.interpolate(max(0.0, k * w.length / (n - 1) - 0.5)); b = w.interpolate(min(w.length, k * w.length / (n - 1) + 0.5))
+                    tx, ty = b.x - a.x, b.y - a.y
+                    L_ = math.hypot(tx, ty) or 1.0
+                    nx_, ny_ = -ty / L_, tx / L_
+                    p1, p2 = (pt.x + nx_ * 3.0, pt.y + ny_ * 3.0), (pt.x - nx_ * 3.0, pt.y - ny_ * 3.0)
+                    inside = p1 if dpoly.contains(Point(p1)) else p2
+                    outside = p2 if inside is p1 else p1
+                    zin = float(g.at(z_prop, [inside[0]], [inside[1]])[0]); zout = float(g.at(ex_z, [outside[0]], [outside[1]])[0])
+                    o_xy = (pt.x + (outside[0] - pt.x) / 30.0, pt.y + (outside[1] - pt.y) / 30.0)     # 0.1 ft out
+                    if zin >= zout:          # fill wall: top at the design, bottom on the ground beyond
+                        top.append(((pt.x, pt.y), zin)); bot.append((o_xy, zout))
+                    else:                    # cut wall: top on the ground beyond, bottom at the design
+                        top.append((o_xy, zout)); bot.append(((pt.x, pt.y), zin))
+                    hs.append(abs(zin - zout))
+                if max(hs) >= 1.0:
+                    res["walls"].append({"line": w, "top": top, "bot": bot, "h_max": max(hs), "len": w.length})
+    return res
 
 
 def taper_protect(g, z, ex_z, protect, design_mask, ramp=20.0):

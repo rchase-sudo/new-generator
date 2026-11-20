@@ -20,6 +20,7 @@ LAYERS = {                      # name: (ACI colour, linetype)
     "C-SSWR-PIPE": (30, "CONTINUOUS"), "C-SSWR-FMAN": (30, "DASHED2"), "C-SSWR-STRC": (30, "CONTINUOUS"), "C-SSWR-TEXT": (30, "CONTINUOUS"), "C-SSWR-LATL": (30, "DASHED2"),
     "C-WATR-PIPE": (5, "CONTINUOUS"), "C-WATR-LATL": (5, "DASHED2"), "C-WATR-STRC": (5, "CONTINUOUS"), "C-POWR-UGND": (1, "DASHED2"), "C-NGAS-UGND": (40, "DASHED2"),
     "C-EROS-LOD": (1, "DASHDOT2"), "C-EROS-SILT": (30, "CONTINUOUS"),
+    "C-EROS-MATT": (94, "CONTINUOUS"), "C-SITE-RIPR": (8, "CONTINUOUS"), "C-SITE-WALL": (7, "CONTINUOUS"),
     "C-TINN-PROP": (4, "CONTINUOUS"),
 }
 
@@ -88,17 +89,23 @@ def landxml(X, path, name="Site"):
     o.append("</Surfaces>")
     # ---- drive centreline alignment + design profile
     G = X["G"]
-    sp = G.get("spine")
-    if sp is not None and sp.length > 5:
+    sp0 = G.get("spine")
+    if sp0 is not None and sp0.length > 5:
+        sp, remap = grading.clean_alignment(sp0)
         cs = W.coords(sp)
         o.append(f'<Alignments><Alignment name="Drive CL" length="{sp.length:.3f}" staStart="0.000"><CoordGeom>')
         for (e0, n0), (e1, n1) in zip(cs[:-1], cs[1:]):
             o.append(f'<Line length="{math.hypot(e1 - e0, n1 - n0):.3f}"><Start>{n0:.3f} {e0:.3f}</Start><End>{n1:.3f} {e1:.3f}</End></Line>')
         o.append('</CoordGeom><Profile name="Drive CL"><ProfSurf name="EG"><PntList2D>' +
-                 " ".join(f"{s:.2f} {z:.2f}" for s, z in zip(G["stations"], G["ex_profile"]) if np.isfinite(z)) + '</PntList2D></ProfSurf><ProfAlign name="FG">')
+                 " ".join(f"{s:.2f} {z:.2f}" for s, z in sorted({round(remap(s_), 2): z_ for s_, z_ in zip(G["stations"], G["ex_profile"]) if np.isfinite(z_)}.items())) + '</PntList2D></ProfSurf><ProfAlign name="FG">')
         cv = {round(c["pvi_sta"], 2): c for c in (G.get("curves") or [])}
-        for s, z in (G.get("pvi") or []):
-            c = cv.get(round(s, 2))
+        last = -1.0
+        for s0, z in (G.get("pvi") or []):
+            c = cv.get(round(s0, 2))
+            s = remap(s0)
+            if s <= last + 1.0:
+                continue
+            last = s
             o.append(f'<ParaCurve length="{c["L"]:.2f}">{s:.3f} {z:.3f}</ParaCurve>' if c and c.get("L") else f"<PVI>{s:.3f} {z:.3f}</PVI>")
         o.append("</ProfAlign></Profile></Alignment></Alignments>")
     # ---- pipe networks
@@ -198,10 +205,11 @@ def dxf(X, path):
     for s in (L.get("stripes") or L.get("stalls") or []):
         pl(s if s.geom_type != "Polygon" else s.exterior, "C-PKNG-STRP")
     if G.get("spine") is not None:
-        pl(G["spine"], "C-ROAD-CNTR")
+        cl_, _ = grading.clean_alignment(G["spine"])
+        pl(cl_, "C-ROAD-CNTR")
         st = 0.0
-        while st <= G["spine"].length:
-            p = G["spine"].interpolate(st)
+        while st <= cl_.length:
+            p = cl_.interpolate(st)
             tx((p.x, p.y), f"{int(st // 100)}+{st % 100:02.0f}", "C-ROAD-STAN", h=2.0)
             st += 50.0
     pond = D["pond"]
@@ -257,6 +265,29 @@ def dxf(X, path):
     for key in ("silt", "silt_fence"):
         if ER.get(key) is not None and hasattr(ER[key], "geom_type"):
             pl(ER[key], "C-EROS-SILT")
+    # slope treatment: 2:1 slopes with erosion control matting, 1:1 slopes with riprap, retaining walls (always shown)
+    SLP = X.get("slopes") or {}
+    for key, lyr, pat, sc, lab in (("matting", "C-EROS-MATT", "NET", 4.0, "2:1 SLOPE\\PEROSION CONTROL MATTING"), ("riprap", "C-SITE-RIPR", "GRAVEL", 6.0, "1:1 SLOPE\\PRIPRAP SLOPE PROTECTION")):
+        for q in SLP.get(key) or []:
+            pl(q, lyr)
+            try:
+                hz = ms.add_hatch(dxfattribs={"layer": lyr})
+                hz.set_pattern_fill(pat, scale=sc)
+                hz.paths.add_polyline_path(W.coords(q.exterior), is_closed=True)
+                for r_ in q.interiors:
+                    hz.paths.add_polyline_path(W.coords(r_), is_closed=True)
+            except Exception:  # noqa: BLE001
+                pass
+            c_ = q.representative_point()
+            tx((c_.x, c_.y), lab, lyr, h=2.0)
+    for k, w in enumerate(SLP.get("walls") or [], 1):
+        pl(w["line"], "C-SITE-WALL")
+        off = w["line"].parallel_offset(1.0, "left", join_style=2)
+        if not off.is_empty and off.geom_type == "LineString":
+            pl(off, "C-SITE-WALL")
+        m_ = w["line"].interpolate(0.5, normalized=True)
+        tw = max(t[1] for t in w["top"]); bw = min(b[1] for b in w["bot"])
+        tx((m_.x + 4, m_.y + 4), f"RETAINING WALL\\P{w['len']:.0f} LF, {w['h_max']:.1f}' MAX HT\\PTW {tw:.1f} / BW {bw:.1f}", "C-SITE-WALL", h=2.0)
     # spot grades at structures and building corners
     for k, b in enumerate(L["bldgs"]):
         for x, y in list(b.exterior.coords)[:-1][:8]:
