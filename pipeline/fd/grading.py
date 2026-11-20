@@ -190,7 +190,7 @@ def run(L, ex_z, grid, road_local, spec=None):
     fixed = np.zeros(g.X.shape, bool)
     fixed[jj, ii] = dd <= g.cell * 0.75
     zc = _harmonic(zc, pave_mask, fixed)
-    z_new[jj, ii] = zc[jj, ii] - CROSS * np.minimum(dd, 70.0)
+    z_new[jj, ii] = zc[jj, ii] - CROSS * np.minimum(dd, 220.0)
     z_new = _cap_parking(g, z_new, pave_mask, fixed, L)
     z_new, ada_info = _ada_planes(g, z_new, pave_mask, L)
     z_pave = z_new.copy()                      # gutter (bottom of curb) elevations, before curbs / walks / pads
