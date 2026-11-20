@@ -40,6 +40,12 @@ def build(ctx, lay, job, rules, prog, log=print):
          "stalls": [F(s) for s in (sp.get("stalls") or [])], "ada": [F(s) for s in (sp.get("ada") or [])],
          "grass": F(sp["grass"]) if sp.get("grass") is not None else None, "pad": F(sp["pad"]) if sp.get("pad") is not None else None,
          "dev": F(sp["dev"])}
+    if sp.get("camp_meta"):          # a campground from Sitecraft: sites, pads, pedestals, the drives' centrelines, the sewage choice
+        Fl = lambda v: [F(q) if q is not None else None for q in (v or [])]     # noqa: E731
+        L.update({"gravel": F(sp["gravel"]) if sp.get("gravel") is not None else None, "camp_lots": Fl(sp.get("camp_lots")), "camp_pads": Fl(sp.get("camp_pads")),
+                  "camp_units": Fl(sp.get("camp_units")), "camp_tables": Fl(sp.get("camp_tables")), "camp_rings": Fl(sp.get("camp_rings")),
+                  "camp_peds": Fl(sp.get("camp_peds")), "camp_svc": Fl(sp.get("camp_svc")), "camp_at": Fl(sp.get("camp_at")), "drive_cl": Fl(sp.get("drive_cl")),
+                  "camp_meta": sp["camp_meta"], "camp_gpd": sp.get("camp_gpd") or 0, "camp_sewage": sp.get("camp_sewage") or "septic"})
     wet_sp = [w["geom"] for w in (ctx["wet"] if isinstance(ctx["wet"], list) else [])]
     L["wet"] = F(unary_union(wet_sp)) if wet_sp else None
     L["flood"] = F(unary_union([f["geom"] for f in (ctx["fl"] if isinstance(ctx["fl"], list) else []) if f.get("sfha") == "T"])) if isinstance(ctx["fl"], list) and any(f.get("sfha") == "T" for f in ctx["fl"]) else None
@@ -221,9 +227,13 @@ def build(ctx, lay, job, rules, prog, log=print):
     no_util = mode0 == "none"                     # Redline: leave the utilities out of the design altogether
     has_gas = rules.get("design_gas", True) is not False and not no_util
     has_elec = rules.get("design_electric", True) is not False and not no_util
-    U = site.utilities(g, z_prop, ex_z, G, L, road_all, prog, fr, road_key=road_key, mode="municipal" if no_util else mode0,
-                       has_sewer=True if no_util else has_sewer, has_water=True if no_util else has_water, has_gas=has_gas, has_elec=has_elec)
-    keep = () if no_util else tuple(k_ for k_, on in (("sewer", True), ("water", True), ("elec", has_elec), ("gas", has_gas)) if on)
+    if L.get("camp_meta") and not no_util:
+        U = site.camp_utilities(g, z_prop, ex_z, G, L, rules)
+        keep = ("sewer", "water", "gas") + (("elec",) if has_elec else ())
+    else:
+        U = site.utilities(g, z_prop, ex_z, G, L, road_all, prog, fr, road_key=road_key, mode="municipal" if no_util else mode0,
+                           has_sewer=True if no_util else has_sewer, has_water=True if no_util else has_water, has_gas=has_gas, has_elec=has_elec)
+        keep = () if no_util else tuple(k_ for k_, on in (("sewer", True), ("water", True), ("elec", has_elec), ("gas", has_gas)) if on)
     if len(keep) < 4:
         site._strip(U, keep)
         if no_util:

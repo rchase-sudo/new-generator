@@ -136,6 +136,16 @@ def transform_design(design, T, frame):
     for key in ("ponds", "pavement"):
         for o in D.get(key) or []:
             o["pts"] = pts(o.get("pts"))
+    for row in D.get("campsites") or []:
+        if row.get("line"):
+            row["line"] = pts(row["line"])
+        for st in row.get("sites") or []:
+            for key in ("lot", "pad", "park", "unit", "table"):
+                if st.get(key):
+                    st[key] = pts(st[key])
+            for key in ("pedestal", "fire_ring", "at"):
+                if st.get(key):
+                    st[key] = P(st[key])
     return D
 
 

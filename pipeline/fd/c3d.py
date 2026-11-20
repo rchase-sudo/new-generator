@@ -67,6 +67,16 @@ ROLES = {
     "C-SITE-RIPR": ("1:1 slopes - riprap", ["RIPR", "RIP", "RIPRAP", "STONE"], "proposed"),
     "C-SITE-WALL": ("Retaining walls", ["WALL", "RETN", "RTWL"], "proposed"),
     "C-TINN-PROP": ("Proposed surface 3D faces", ["TIN", "SURF", "FACE", "3D"], "proposed"),
+    "C-PVMT-GRVL": ("Gravel drives and pads", ["GRVL", "GRAVEL", "GRAV", "PVMT"], "proposed"),
+    "C-CAMP-LOTS": ("Campsite lots", ["CAMP", "SITE", "LOT", "LOTS"], "proposed"),
+    "C-CAMP-PADS": ("Campsite pads", ["CAMP", "PAD", "PADS", "RV"], "proposed"),
+    "C-CAMP-CABN": ("Cabins", ["CABN", "CABIN", "BLDG"], "proposed"),
+    "C-CAMP-AMEN": ("Picnic tables and fire rings", ["AMEN", "SITE", "FURN", "CAMP"], "proposed"),
+    "C-CAMP-PEDS": ("Utility pedestals (W/E/S)", ["PEDS", "PED", "HOOK", "ELEC", "CAMP"], "proposed"),
+    "C-CAMP-TEXT": ("Campsite numbers", ["CAMP", "TEXT", "ANNO"], "proposed"),
+    "C-SSWR-TANK": ("Septic tank", ["TANK", "SEPT", "SSWR", "SAN"], "proposed"),
+    "C-SSWR-LEACH": ("Leach field", ["LEACH", "EDA", "FIELD", "SEPT", "SSWR"], "proposed"),
+    "C-SSWR-RSRV": ("Leach field reserve area", ["RSRV", "RESERVE", "EDA", "SEPT"], "proposed"),
 }
 # what becomes a native Civil 3D object (left out of linework.dxf so nothing is drawn twice)
 C3D_OWNED = {"V-TOPO-MINR", "V-TOPO-MAJR", "V-TOPO-TEXT", "C-TOPO-MINR", "C-TOPO-MAJR", "C-TOPO-TEXT", "C-TOPO-SPOT", "C-TINN-PROP",
@@ -212,7 +222,7 @@ def manifest(X, meta, job, mapping=None, firm=None):
     # ---- pressure lines: polylines (water, force main)
     press = []
     if U.get("water_main") is not None:
-        press.append({"name": "Water main", "kind": "water", "layer": "C-WATR-PIPE", "lines": [[en(c) for c in U["water_main"].coords]]})
+        press.append({"name": "Water main", "kind": "water", "layer": "C-WATR-PIPE", "lines": [[en(c) for c in q.coords] for q in getattr(U["water_main"], "geoms", [U["water_main"]])]})
         if U.get("water_lat"):
             press.append({"name": "Water services", "kind": "water", "layer": "C-WATR-LATL", "lines": [[en(c) for c in l.coords] for l in U["water_lat"]]})
     ps = U.get("pump_station") or {}

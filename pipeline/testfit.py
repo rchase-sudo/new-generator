@@ -514,10 +514,11 @@ def build(ctx, design, setbacks, psb, steep, keep, pave_keep, prog, rules, share
             warn.append(f"{rows[-1]['b']['name']} is outside the building setbacks")
         if not C.is_empty and g.intersects(C):
             warn.append(f"{rows[-1]['b']['name']} sits on a constraint (wetland, flood zone, steep ground or an existing building)")
-    if not rows:
-        raise RuntimeError("The test fit has no buildings")
+    camp = _camp(design)
+    if not rows and not camp["sites"]:
+        raise RuntimeError("The test fit has no buildings or campsites")
     bldgs = [r["rect"] for r in rows]
-    B = unary_union(bldgs)
+    B = unary_union(bldgs + camp["units"]) if bldgs or camp["units"] else Polygon()
     # The test fit is a sketch that locks intent: building footprints and positions, and each parking field's position,
     # size, orientation and modules. Everything else is drawn the way the automatic layout draws it.
     # parking: each field rebuilt from its parameters, stalls clear of buildings + their walks
@@ -539,7 +540,15 @@ def build(ctx, design, setbacks, psb, steep, keep, pave_keep, prog, rules, share
     arrows = [a for f in fields for a in f["arrows"]]
     lot = unary_union(aisles + stalls) if aisles or stalls else Polygon()
     # drives: rebuilt like the automatic driveway (rounded bends, curb returns at the road, joined to the parking)
-    drs = [d for d in (_drive_refined(dv, road_pave, P, unary_union(aisles) if aisles else lot, B) for dv in design.get("drives") or []) if d is not None]
+    drs = []
+    for dv in design.get("drives") or []:
+        d_ = _drive_refined(dv, road_pave, P, unary_union(aisles) if aisles else lot, B)
+        if d_ is None:
+            continue
+        d_["surface"] = dv.get("surface") or "paved"
+        if dv.get("oneway"):        # one-way loops: single arrows the way the sketch drew them
+            d_["arrows"] = [(tuple(map(float, a_["at"])), tuple(map(float, a_["dir"]))) for a_ in dv.get("arrows") or []]
+        drs.append(d_)
     if not drs and not lot.is_empty and road_pave is not None:
         # none drawn: straight in from the nearest point of the road, like the automatic layout
         from shapely.ops import nearest_points
@@ -573,6 +582,13 @@ def build(ctx, design, setbacks, psb, steep, keep, pave_keep, prog, rules, share
     pave = unary_union([pave, returns]).buffer(0) if not returns.is_empty else pave
     pave = pave.difference(B).buffer(0)
     drive = unary_union([drive_body, returns]).buffer(0) if drs else Polygon()
+    # campground: gravel drives and the site pads / car spots are graded and drained with the pavement but drawn as gravel
+    gdr = [d["body"] for d in drs if d.get("surface") == "gravel"]
+    gravel = unary_union(gdr + camp["gravel"]).buffer(0) if gdr or camp["gravel"] else Polygon()
+    if camp["paved"]:
+        pave = unary_union([pave] + camp["paved"]).buffer(0)
+    if not gravel.is_empty:
+        pave = unary_union([pave, gravel]).buffer(0).difference(B).buffer(0)
     keep_in = pz.union(drive.buffer(R_J + 2)) if not drive.is_empty else pz
     pave = pave.intersection(keep_in.union(unary_union(extra)) if extra else keep_in).buffer(0)
     if road_pave is not None:
@@ -595,7 +611,8 @@ def build(ctx, design, setbacks, psb, steep, keep, pave_keep, prog, rules, share
     elif road_pave is not None and not drive.buffer(3.0).intersects(road_pave):
         warn.append("The driveway does not reach the road")
     # walks: all round each building, rounded corners, as the automatic layout draws them
-    walks = unary_union([r["rect"].buffer(WALK, join_style=1).difference(r["rect"]) for r in rows]).difference(pave).intersection(P).buffer(0)
+    walks = unary_union([r["rect"].buffer(WALK, join_style=1).difference(r["rect"]) for r in rows]).difference(pave).intersection(P).buffer(0) if rows else Polygon()
+    bldgs = bldgs + camp["units"]                 # cabins are buildings for grading (floor pads), roofs and services
     dev = unary_union([pave, walks, *bldgs])
     grass = _fillet(dev.buffer(14, join_style=1), 6).intersection(P).difference(C).difference(dev)
     holes = unary_union([Polygon(h) for p in _polys(pave) for h in p.interiors]) if not pave.is_empty else Polygon()
@@ -673,10 +690,17 @@ def build(ctx, design, setbacks, psb, steep, keep, pave_keep, prog, rules, share
             c_ = min(28.0, 0.38 * min(w_, d_))
             blk = box(-w_ / 2, -d_ / 2, -w_ / 2 + c_, -d_ / 2 + c_)
         roof_blocks.append(affinity.translate(affinity.rotate(blk, r["rot"], origin=(0, 0)), r["cx"], r["cy"]))
+    roof_blocks += [None] * len(camp["units"])
     # numbers
     parcel_sf = P.area
     bsf = sum(r["fp"] for r in rows)
     gfa_sf = sum(r["fp"] * r["b"]["stories"] for r in rows)
+    if camp["sites"]:
+        for st in camp["sites"]:
+            if st["lot"] is not None and not P.buffer(1.0).contains(st["lot"]):
+                warn.append(f"Campsite {st['label']} runs past the property line")
+        if not C.is_empty and any(st["pad"] is not None and st["pad"].intersects(C) for st in camp["sites"]):
+            warn.append("A campsite pad sits on a constraint (wetland, flood zone, steep ground or an existing building)")
     ratio = design.get("parking_ratio")
     req0 = (prog.get("parking") or {}).get("required")
     if isinstance(ratio, (int, float)) and ratio >= 0:
@@ -702,9 +726,11 @@ def build(ctx, design, setbacks, psb, steep, keep, pave_keep, prog, rules, share
         "development_acres": round(dev.area / 43560, 2),
         "remaining_developable_acres": round(sum(g.area for g in _polys(bz_left) if g.area > 10000) / 43560, 2),
         "parking_setbacks_ft": psb, "setbacks_ft": setbacks, "manual": True,
+        **({"campground": {"sites": len(camp["sites"]), "by_kind": camp["by_kind"], "gpd": camp["gpd"], "sewage": camp["sewage"],
+                           "gravel_sf": round(gravel.area, -1)}} if camp["sites"] else {}),
         **({"reused_pavement_sf": round(RPf.area, -1), "shared_stalls": int(shared_stalls or 0)} if RPf is not None else {}),
     }
-    if n_st < req:
+    if n_st < req and rows:
         warn.append(f"Parking short: {n_st} provided vs {req} required")
     for key, val, lab in (("max_impervious_pct", metrics["impervious_pct"], "impervious"), ("max_lot_coverage_pct", metrics["lot_coverage_pct"], "lot coverage")):
         lim = rules.get(key)
@@ -722,14 +748,50 @@ def build(ctx, design, setbacks, psb, steep, keep, pave_keep, prog, rules, share
     pond = areal(pond) if pond is not None else None
     local = {"P": P, "bz": bz, "pz": pz, "C": C, "pave": pave, "walk": walks, "grass": grass, "pad": pad, "roof_blocks": roof_blocks, "bldgs": bldgs,
              "reuse": RPf, "stalls": stalls, "ada": ada, "stripes": stripes, "pond": pond, "drive": drive, "dev": dev, "arrows": [a for a in arrows if a.within(pave.buffer(1.0))],
-             "trees": [q.buffer(r, 24) for q, r in trees]}
+             "trees": [q.buffer(r, 24) for q, r in trees], "gravel": gravel if not gravel.is_empty else None,
+             "camp_lots": [st["lot"] for st in camp["sites"] if st["lot"] is not None], "camp_pads": [g for st in camp["sites"] for g in (st["pad"], st["park"]) if g is not None],
+             "camp_units": camp["units"], "camp_tables": [st["table"] for st in camp["sites"] if st["table"] is not None],
+             "camp_rings": [st["ring"] for st in camp["sites"] if st["ring"] is not None], "camp_peds": [st["ped"] for st in camp["sites"] if st["ped"] is not None],
+             "camp_svc": [st["svc"] for st in camp["sites"]], "camp_at": [st["at"] for st in camp["sites"]],
+             "drive_cl": [d["cl"] for d in drs] if camp["sites"] else []}
     sp = {k_: ([fr.inv(g) if g is not None else None for g in v] if isinstance(v, list) else (fr.inv(v) if v is not None else None)) for k_, v in local.items()}
     labels = []
     for r in rows:
         c = fr.inv(polylabel(r["rect"], 1.0) if r["irregular"] else r["rect"].centroid)
         labels.append({"at": (c.x, c.y), "rot": math.degrees(fr.a) + r["rot"], "w_ft": r["w"], "d_ft": r["d"],
                        "lines": [f"PROPOSED {_short(r['b'])}", f"{r['w']:.0f}' X {r['d']:.0f}'", f"{r['fp']:,.0f} SF"]})
+    for st in camp["sites"]:
+        c = fr.inv(st["at"])
+        labels.append({"at": (c.x, c.y), "rot": math.degrees(fr.a), "lines": [st["label"]], "small": True, "camp": True})
     if pond is not None and not pond.is_empty:
         c = fr.inv(polylabel(_largest(pond) or pond, 2))
         labels.append({"at": (c.x, c.y), "rot": math.degrees(fr.a), "lines": ["STORMWATER", "MANAGEMENT"], "small": True})
+    sp["camp_meta"] = [{"label": st["label"], "kind": st["kind"], "hook": st["hook"], "gpd": st["gpd"]} for st in camp["sites"]]
+    sp["camp_sewage"], sp["camp_gpd"] = camp["sewage"], camp["gpd"]
     return {"metrics": metrics, "sp": sp, "local": local, "labels": labels, "frame_angle_deg": math.degrees(fr.a)}
+
+
+def _camp(design):
+    """Campsite rows from Sitecraft: each site's lot, pad (+ car spot), cabin, table, fire ring, utility pedestal, and where its
+    services connect (the pedestal; a cabin's centre)."""
+    out = {"sites": [], "units": [], "gravel": [], "paved": [], "gpd": 0.0, "by_kind": {}, "sewage": (design.get("camp") or {}).get("sewage") or "septic"}
+    for row in design.get("campsites") or []:
+        hook = row.get("hookups", "wes") or ""
+        gpd = float(row.get("gpd_per_site") or 0)
+        kind = row.get("kind") or "backin"
+        for st in row.get("sites") or []:
+            pad, park, unit = _poly(st.get("pad") or []), _poly(st.get("park") or []) if st.get("park") else None, _poly(st.get("unit") or []) if st.get("unit") else None
+            ped = Point(*map(float, st["pedestal"])) if st.get("pedestal") else None
+            svc = ped if ped is not None and ("s" in hook or "w" in hook) else (unit.centroid if unit is not None else None)
+            o = {"label": st.get("label") or f"P{st.get('n')}", "kind": kind, "hook": hook, "gpd": gpd, "lot": _poly(st.get("lot") or []), "pad": pad, "park": park, "unit": unit,
+                 "table": _poly(st.get("table") or []) if st.get("table") else None, "ring": Point(*map(float, st["fire_ring"])).buffer(1.75, 12) if st.get("fire_ring") else None,
+                 "ped": ped.buffer(1.0, cap_style=3) if ped is not None else None, "svc": svc, "at": Point(*map(float, st.get("at") or (0, 0)))}
+            out["sites"].append(o)
+            if unit is not None:
+                out["units"].append(unit)
+            for g in (pad, park):
+                if g is not None:
+                    out["paved" if row.get("surface") == "paved" else "gravel"].append(g)
+            out["gpd"] += gpd
+            out["by_kind"][kind] = out["by_kind"].get(kind, 0) + 1
+    return out

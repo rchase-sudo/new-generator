@@ -23,6 +23,9 @@ LAYERS = {                      # name: (ACI colour, linetype)
     "C-ENVR-WSBK": (1, "DASHED"), "C-ENVR-NOBD": (1, "DASHDOT"),
     "C-EROS-MATT": (94, "CONTINUOUS"), "C-SITE-RIPR": (8, "CONTINUOUS"), "C-SITE-WALL": (7, "CONTINUOUS"),
     "C-TINN-PROP": (4, "CONTINUOUS"),
+    "C-PVMT-GRVL": (33, "CONTINUOUS"), "C-CAMP-LOTS": (2, "DASHED2"), "C-CAMP-PADS": (33, "CONTINUOUS"), "C-CAMP-CABN": (7, "CONTINUOUS"),
+    "C-CAMP-AMEN": (32, "CONTINUOUS"), "C-CAMP-PEDS": (5, "CONTINUOUS"), "C-CAMP-TEXT": (7, "CONTINUOUS"),
+    "C-SSWR-TANK": (30, "CONTINUOUS"), "C-SSWR-LEACH": (30, "CONTINUOUS"), "C-SSWR-RSRV": (30, "DASHED2"),
 }
 
 
@@ -200,11 +203,41 @@ def dxf(X, path):
             ms.add_lwpolyline(W.coords(ln), dxfattribs={"layer": lyr_mj if is_idx else lyr_mn, "elevation": lev})
             if is_idx and ln.length > 80:
                 tx(ln.interpolate(0.5, normalized=True).coords[0], f"{lev:.0f}", lyr_tx, h=2.5)
+    n_cab = len([q for q in (L.get("camp_units") or []) if q is not None])
     for k, b in enumerate(L["bldgs"]):
-        pl(b, "C-BLDG")
+        cab = k >= len(L["bldgs"]) - n_cab
+        pl(b, "C-CAMP-CABN" if cab else "C-BLDG")
         c = b.representative_point()
-        tx((c.x - 18, c.y), f"PROPOSED BUILDING\\P{b.area:,.0f} SF\\PFFE {G['ffe'][k]:.2f}", "C-BLDG", h=3.0)
-    pl(L["pave"], "C-PVMT-EDGE")
+        tx((c.x - (6 if cab else 18), c.y), f"CABIN\\PFFE {G['ffe'][k]:.2f}" if cab else f"PROPOSED BUILDING\\P{b.area:,.0f} SF\\PFFE {G['ffe'][k]:.2f}", "C-CAMP-CABN" if cab else "C-BLDG", h=2.0 if cab else 3.0)
+    grv = L.get("gravel")
+    if grv is not None and not grv.is_empty:      # campground: gravel drives and pads drawn apart from the paved edge
+        paved_ = L["pave"].difference(grv.buffer(0.5)).buffer(0)
+        if not paved_.is_empty and paved_.area > 50:
+            pl(paved_, "C-PVMT-EDGE")
+        pl(grv, "C-PVMT-GRVL")
+        try:
+            hz = ms.add_hatch(dxfattribs={"layer": "C-PVMT-GRVL"})
+            hz.set_pattern_fill("GRAVEL", scale=3.0)
+            for q in polys(grv):
+                hz.paths.add_polyline_path(W.coords(q.exterior), is_closed=True)
+                for r_ in q.interiors:
+                    hz.paths.add_polyline_path(W.coords(r_), is_closed=True)
+        except Exception:  # noqa: BLE001
+            pass
+    else:
+        pl(L["pave"], "C-PVMT-EDGE")
+    if L.get("camp_meta"):
+        for key, lyr in (("camp_lots", "C-CAMP-LOTS"), ("camp_pads", "C-CAMP-PADS"), ("camp_tables", "C-CAMP-AMEN"), ("camp_rings", "C-CAMP-AMEN"), ("camp_peds", "C-CAMP-PEDS")):
+            for q in L.get(key) or []:
+                if q is not None:
+                    pl(q, lyr)
+        for m_, at_ in zip(L["camp_meta"], L.get("camp_at") or []):
+            if at_ is not None:
+                tx((at_.x - 2, at_.y), m_["label"], "C-CAMP-TEXT", h=2.5)
+        for m_, q in zip(L["camp_meta"], L.get("camp_peds") or []):
+            if q is not None and m_.get("hook"):
+                c_ = q.centroid
+                tx((c_.x + 1.5, c_.y + 1.5), "/".join(x.upper() for x in m_["hook"]), "C-CAMP-PEDS", h=1.2)
     if L.get("walk") is not None and not L["walk"].is_empty:
         pl(L["walk"], "C-WALK")
     for s in (L.get("stripes") or L.get("stalls") or []):
@@ -246,12 +279,27 @@ def dxf(X, path):
             a, b = W.pt(byid[p["from"]]["xy"]), W.pt(byid[p["to"]]["xy"])
             ms.add_line((a[0], a[1], p["inv_up"]), (b[0], b[1], p["inv_dn"]), dxfattribs={"layer": "C-SSWR-PIPE"})
             mx, my = (byid[p["from"]]["xy"][0] + byid[p["to"]]["xy"][0]) / 2, (byid[p["from"]]["xy"][1] + byid[p["to"]]["xy"][1]) / 2
-            tx((mx, my), f"{p['len']:.0f} LF 8\" PVC SDR 35 @ {p['slope'] * 100:.2f}%", "C-SSWR-TEXT", h=1.8)
+            tx((mx, my), f"{p['len']:.0f} LF {p.get('dia', 8)}\" {p.get('mat') or 'PVC SDR 35'} @ {p['slope'] * 100:.2f}%", "C-SSWR-TEXT", h=1.8)
         for m in U.get("smh") or []:
             circ(m["xy"], 3.0 if m.get("kind") == "PS" else 2.0, "C-SSWR-STRC")
             tx((m["xy"][0] + 3, m["xy"][1] - 3), f"{m['id']}\\PRIM {m['rim']:.2f}\\PINV {m['inv']:.2f}", "C-SSWR-TEXT", h=1.8)
         for l in U.get("sewer_lat") or []:
             pl(l, "C-SSWR-LATL")
+    if U.get("camp") and U.get("tank") is not None:          # campground septic: tank, leach field, reserve
+        pl(U["tank"], "C-SSWR-TANK")
+        c_ = U["tank"].centroid
+        tx((c_.x + 6, c_.y), f"{U.get('tank_gal', 0):,} GAL SEPTIC TANK\\PINV IN {U.get('inv_tank_in', 0):.2f}\\PINV OUT {U.get('inv_tank_out', 0):.2f}", "C-SSWR-TANK", h=2.0)
+        if U.get("field") is not None:
+            pl(U["field"], "C-SSWR-LEACH")
+            pl(U["reserve"], "C-SSWR-RSRV")
+            for t_ in U.get("trenches") or []:
+                pl(t_, "C-SSWR-LEACH")
+            c_ = U["field"].centroid
+            tx((c_.x - 20, c_.y), f"PROPOSED LEACH FIELD\\P{U.get('flow_gpd', 0):,.0f} GPD\\P{U.get('field_sf', 0):,} SF", "C-SSWR-LEACH", h=2.5)
+            c_ = U["reserve"].centroid
+            tx((c_.x - 20, c_.y), "RESERVE AREA", "C-SSWR-RSRV", h=2.5)
+        if U.get("tank_to_field") is not None:
+            pl(U["tank_to_field"], "C-SSWR-FMAN" if U.get("pump") else "C-SSWR-PIPE")
     if U.get("water_main") is not None:
         pl(U["water_main"], "C-WATR-PIPE")
         for l in U.get("water_lat") or []:
@@ -319,7 +367,7 @@ def sanitary_network(X):
     for m in U.get("smh") or []:
         S.append({"id": m["id"], "kind": m.get("kind") or "SMH", "xy": tuple(m["xy"]), "rim": float(m["rim"]), "sump": float(m["rim"] - m["depth"]),
                   "dia_in": 72 if m.get("kind") == "PS" else 48, "existing": bool(m.get("existing")),
-                  "desc": {"PS": "Pump station wet well", "EX": "Existing sewer manhole"}.get(m.get("kind"), "Sewer manhole")})
+                  "desc": {"PS": "Pump station wet well", "EX": "Existing sewer manhole", "TANK": "Septic tank"}.get(m.get("kind"), "Sewer manhole")})
     for i, p in enumerate(U.get("sewer_pipes") or [], 1):
         P.append({"name": f"SS-P{i}", "from": p["from"], "to": p["to"], "dia": p["dia"], "mat": p.get("mat") or "PVC SDR 35", "inv_up": float(p["inv_up"]),
                   "inv_dn": float(p["inv_dn"]), "len": float(p["len"]), "slope": float(p["slope"])})
@@ -338,10 +386,10 @@ def sanitary_network(X):
         dn = min(S, key=lambda q: math.dist(q["xy"], cs[0]), default=None)
         if dn is None or math.dist(dn["xy"], cs[0]) > 6.0:
             z0 = float(g.at(zp, [cs[0][0]], [cs[0][1]])[0])
-            dn = {"id": f"TAP-{k + 1}", "kind": "TAP", "xy": tuple(cs[0]), "rim": z0, "sump": dn_inv, "dia_in": 6, "desc": f"Wye: building {k + 1} lateral"}
+            dn = {"id": f"TAP-{k + 1}", "kind": "TAP", "xy": tuple(cs[0]), "rim": z0, "sump": dn_inv, "dia_in": 6, "desc": f"Wye: {('site ' + r['site']) if r.get('site') else f'building {k + 1}'} lateral"}
             S.append(dn)
         z1 = float(g.at(zp, [cs[-1][0]], [cs[-1][1]])[0])
-        co = {"id": f"CO-{k + 1}", "kind": "CO", "xy": tuple(cs[-1]), "rim": max(z1, up_inv + 3.0), "sump": up_inv, "dia_in": 6, "desc": f"Cleanout: building {k + 1} sewer"}
+        co = {"id": f"CO-{k + 1}", "kind": "CO", "xy": tuple(cs[-1]), "rim": max(z1, up_inv + 3.0), "sump": up_inv, "dia_in": 6, "desc": f"Cleanout: {('site ' + r['site']) if r.get('site') else f'building {k + 1}'} sewer"}
         S.append(co)
         # one pipe per straight run; bends get a cleanout / bend structure
         Ltot = sum(math.dist(a, c) for a, c in zip(cs[:-1], cs[1:])) or 1.0
@@ -360,6 +408,6 @@ def sanitary_network(X):
             a_, c_ = acc[j], acc[j + 1]
             i_dn = dn_inv + (up_inv - dn_inv) * a_ / Ltot
             i_up = dn_inv + (up_inv - dn_inv) * c_ / Ltot
-            P.append({"name": f"SS-L{k + 1}{'-' + str(j + 1) if len(nodes) > 2 else ''}", "from": nodes[j + 1], "to": nodes[j], "dia": 6, "mat": "PVC SDR 35",
+            P.append({"name": f"SS-L{k + 1}{'-' + str(j + 1) if len(nodes) > 2 else ''}", "from": nodes[j + 1], "to": nodes[j], "dia": r.get("dia", 6), "mat": "PVC SDR 35",
                       "inv_up": round(i_up, 2), "inv_dn": round(i_dn, 2), "len": round(c_ - a_, 2), "slope": round((i_up - i_dn) / max(c_ - a_, 0.1), 5)})
     return {"structs": S, "pipes": P}
