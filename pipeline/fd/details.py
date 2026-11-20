@@ -88,11 +88,11 @@ def _curb(d):
     d.L([(0.5, 2.5), (2.0, 2.5)], lw=1.0)
     d.dim((1.8, 2.05), (1.8, 2.5), "6\" REVEAL")
     d.dim((2.0, 2.65), (2.6, 2.65), "6\"")
-    d.note((2.3, 1.6), (0.3, 1.6), "CONCRETE CURB\n4,000 PSI, AIR-ENTRAINED", ha="left")
+    d.note((2.3, 1.6), (0.3, 1.6), "VERTICAL GRANITE CURB\n6\" REVEAL, 5\"-6\" TOP, 18\" DEEP", ha="left")
     d.note((4.5, 1.95), (4.2, 2.6), "PAVEMENT (SEE SECTION)")
-    d.note((2.0, 1.05), (3.4, 0.75), "6\" COMPACTED GRAVEL BASE")
+    d.note((2.0, 1.05), (3.4, 0.75), "CONCRETE OR GRAVEL BACKING / BASE")
     d.T(0.5, 2.62, "LOAM & SEED / WALK", 5.0)
-    d.T(0.5, 0.3, "EXPANSION JOINTS AT 30 FT; CONTROL JOINTS AT 10 FT.", 5.0)
+    d.T(0.5, 0.3, "TC = BC + 0.50. RADIUS CURB AT ALL CURVES UNDER 160 FT.", 5.0)
 
 
 def _trench(d, dia, label, cover, mat):
@@ -209,7 +209,7 @@ def sheet(meta, X, no="C9"):
     def cell(c, r, title):
         return _D(S, 0.4 + c * cw, H - (r + 1) * ch - 0.2, cw - 0.4, ch, title)
     _pavement(cell(0, 0, "BITUMINOUS PAVEMENT SECTION"), {"wear": 1.5, "base": 2.5, "agg": 6, "sub": 12})
-    _curb(cell(1, 0, "CONCRETE CURB"))
+    _curb(cell(1, 0, "VERTICAL GRANITE CURB"))
     _structure(cell(2, 0, "CATCH BASIN"), "CB", True)
     _structure(cell(3, 0, "DRAIN / SEWER MANHOLE"), "SMH" if U.get("sewer_pipes") else "DMH", False)
     _trench(cell(0, 1, "STORM DRAIN TRENCH"), dmax, "STORM DRAIN", "2 FT", "HDPE (AASHTO M294) OR RCP CL. III")

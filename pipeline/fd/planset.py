@@ -143,4 +143,5 @@ def summary(X):
             "cut_cy": ew["cut_cy"], "fill_cy": ew["fill_cy"], "disturbed_ac": ew["disturbed_ac"], "npdes": bool(X["ER"]["npdes"]),
             "hsg": D["hsg"], "rain_source": X["rain"]["source"], "soils_source": X["soils"]["source"],
             "warnings": list(D["warnings"]) + list(X["net"]["warnings"]) + list(X["U"]["warnings"]) + list(X["FIRE"]["warnings"]) + list(X["G"]["warnings"]),
-            "sheets": X.get("sheet_list") or [n for n, _, _ in ALL], "notes": list(X.get("fire_notes") or [])}
+            "sheets": X.get("sheet_list") or [n for n, _, _ in ALL], "notes": list(X.get("fire_notes") or []),
+            "grade_checks": [list(r) for r in X.get("grade_checks") or []]}

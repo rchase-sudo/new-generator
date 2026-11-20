@@ -167,6 +167,12 @@ def build(ctx, lay, job, rules, prog, log=print):
         if hit_s > 200:
             out["wet_warnings"].append(f"Cut and fill slopes would reach about {hit_s:,.0f} SF of mapped wetland. Grading is held at the wetland edge, so a retaining wall or steeper slope is needed there. No regrading of the wetland or stream is proposed.")
     log(f"drainage {time.time() - t0:.1f}s")
+    try:     # grading rules on the finished surface (pavement >= 1%, parking <= 5%, ADA <= 2.08%)
+        out["grade_checks"], gw = grading.checks(g, z_prop, G, L, inlets=[s_["xy"] for s_ in net["structs"] if s_["kind"] == "CB"])
+        G["warnings"] += gw
+    except Exception as e:  # noqa: BLE001
+        log(f"grade checks skipped: {type(e).__name__}: {e}")
+        out["grade_checks"] = []
     L["hsg"] = soils.get("hsg") or "B"
     road_key = rules.get("drive_road") or (lay.get("metrics") or {}).get("drive_road")
     mode0 = rules.get("design_utilities") or "municipal"

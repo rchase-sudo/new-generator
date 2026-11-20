@@ -213,11 +213,56 @@ def manifest(X, meta, job, mapping=None, firm=None):
     ps = U.get("pump_station") or {}
     if ps.get("fm_line") is not None:
         press.append({"name": f"Force main {ps.get('fm_dia_in', '')}\"", "kind": "force_main", "layer": "C-SSWR-FMAN", "lines": [[en(c) for c in ps["fm_line"].coords]]})
-    # ---- feature lines
+    # ---- feature lines: 6" granite curb on every pavement edge as bottom (BC, the gutter) and top (TC = BC + 0.50) of curb
     feats = []
+    from scipy import ndimage as ndi
+    from shapely.geometry import LineString as _LS, MultiLineString as _MLS
+    from shapely.ops import linemerge, unary_union as _uu
+    zpv = G.get("z_pave")
+    if zpv is not None:
+        fin = np.isfinite(zpv)
+        _, ix = ndi.distance_transform_edt(~fin, return_indices=True)
+        zpf = zpv[ix[0], ix[1]]
+
+        def zbc(x, y):
+            return float(g.at(zpf, [x], [y])[0])
+    else:
+        zbc = zat
+    roads = [r[2] for r in (L.get("roads") or []) if r[2] is not None and not r[2].is_empty]
+    no_curb = _uu(roads).buffer(6.0) if roads else None
+
+    def runs(ring):
+        ln = _LS(ring.coords)
+        if no_curb is not None:
+            ln = ln.difference(no_curb)
+        if ln.is_empty:
+            return []
+        parts = list(ln.geoms) if isinstance(ln, _MLS) or hasattr(ln, "geoms") else [ln]
+        m = linemerge([p_ for p_ in parts if p_.length > 1.0]) if len(parts) > 1 else parts[0]
+        return [p_.simplify(0.05) for p_ in (m.geoms if hasattr(m, "geoms") else [m]) if p_.length > 2.0]
+
+    def outward(q, ln, d=0.1):
+        """The curb line moved d ft off the pavement (so TC never sits on top of BC in the TIN)."""
+        o = ln.parallel_offset(d, "left", join_style=2)
+        if o.is_empty or q.contains(o.interpolate(0.5, normalized=True)):
+            o = ln.parallel_offset(d, "right", join_style=2)
+        return o if not o.is_empty and o.geom_type == "LineString" else ln
+
+    n = 0
     for q in polys(L["pave"]):
-        for k, ring in enumerate([q.exterior] + list(q.interiors)):
-            feats.append({"name": f"Pavement edge {len(feats) + 1}", "kind": "pavement", "layer": "C-GRAD-FEAT", "closed": True, "pts": ring3(ring.coords, zat)})
+        for ring in [q.exterior] + list(q.interiors):
+            for ln in runs(ring):
+                n += 1
+                closed = ln.is_ring
+                bc = ring3(ln.coords, zbc)
+                feats.append({"name": f"Curb {n} BC", "kind": "curb_bc", "layer": "C-GRAD-FEAT", "closed": closed, "pts": bc})
+                tc = ring3(outward(q, ln).coords, lambda x, y: zbc(x, y) + 0.5)
+                feats.append({"name": f"Curb {n} TC", "kind": "curb_tc", "layer": "C-GRAD-FEAT", "closed": closed, "pts": tc})
+    # ADA spaces + aisles: their plane (1-1.5%, never over 2.08%)
+    for k, a in enumerate(G.get("ada") or [], 1):
+        pl = lambda x, y, a=a: a["c0"] + a["gx"] * (x - a["cx"]) + a["gy"] * (y - a["cy"])
+        feats.append({"name": f"ADA parking {k} ({a['slope_pct']:.1f}%)", "kind": "ada", "layer": "C-GRAD-FEAT", "closed": True,
+                      "pts": ring3(a["poly"].exterior.coords, pl, step=5.0)})
     for k, b in enumerate(L["bldgs"]):
         ffe = float(G["ffe"][k])
         feats.append({"name": f"Building {k + 1} pad (FFE {ffe:.2f})", "kind": "building", "layer": "C-GRAD-FEAT", "closed": True,

@@ -380,7 +380,9 @@ def c4(meta, X):
                 continue
             seen.append((pt.x, pt.y))
             S.ax.plot([pt.x], [pt.y], marker="+", ms=4, color=INK, zorder=30)
-            S.txt(pt.x + 4, pt.y + 4, f"{z[i, j]:.2f}", 5.2, ha="left", halo=True, z=31)
+            zb = X["G"].get("z_pave")
+            bc = float(zb[i, j]) if zb is not None and np.isfinite(zb[i, j]) else float(z[i, j])
+            S.txt(pt.x + 4, pt.y + 4, f"TC {bc + 0.5:.2f}\nBC {bc:.2f}", 5.0, ha="left", halo=True, z=31)
     # flow arrows from the pavement
     pond = X["D"]["pond"]
     if pond.get("kind") == "chambers":

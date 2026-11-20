@@ -93,7 +93,9 @@ def c3(meta, X):
 
 def c4(meta, X):
     return [purpose(meta, X, "depict the proposed grading"), STD_WORK, STD_811, STD_TBM, STD_EC, STD_RIMS,
-            "All spot grades are at bottom of curb unless otherwise specified.",
+            "All spot grades are at bottom of curb unless otherwise specified. TC = top of curb, BC = bottom of curb.",
+            "All pavement edges receive 6\" reveal vertical granite curb except where the drive meets the street.",
+            "Proposed grades: 1% minimum (2% preferred) on all surfaces except building pads and ADA spaces; parking areas 5% maximum; ADA parking spaces and access aisles 2.0% maximum in any direction.",
             f"Pavement: maximum {meta['facts_max_slope']}% along the drive; cross slope 1.5% off the crown; accessible stalls and routes 2% maximum in any direction.",
             "Slab finished floor is set 0.5 ft above the highest adjacent pavement. Verify with architectural plans.",
             "Cut and fill slopes shall be 3H:1V maximum. Stabilize with 4\" of loam and seed, or sod.",
