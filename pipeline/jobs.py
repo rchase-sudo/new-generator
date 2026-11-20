@@ -110,6 +110,8 @@ def _run(job_id, step):
             step_design(job_id)
         elif step == "c3d_export":
             step_c3d_export(job_id)
+        elif step == "redline_import":
+            step_redline_import(job_id)
         else:
             raise ValueError(f"unknown step {step}")
     except Exception as e:  # noqa: BLE001
@@ -476,6 +478,43 @@ def step_manual_layout(job_id):
     I["summary"]["drive_choice"] = {"auto": None, "used": res["metrics"].get("drive_road"), "fallback": None, "manual": True,
                                     "roads": [(r.get("key"), r.get("class"), r.get("frontage_ft")) for r in (I["summary"].get("front_roads") or [])]}
     _publish_layout(job_id, job, ctx, I, res)
+
+
+def step_redline_import(job_id):
+    """A test fit sketched in Apollo Redline over this job's existing-conditions plan: lined up with the parcel, drawn as the
+    concept (same as a Drafted test fit), approved, then the full design runs for its CAD exports (no plan sheets) and,
+    when asked, the render. No AI is used for the layout or the exports."""
+    from . import redline, testfit
+    job = supa.get_job(job_id)
+    imp = (job.get("summary") or {}).get("redline_import") or {}
+    if not imp.get("design"):
+        raise RuntimeError("No Redline test fit was sent for this job")
+    supa.update_job(job_id, status="building_layout", step="layout", progress="Lining the Redline sketch up with the parcel", error=None)
+    ctx = _load_ctx(job_id)
+    I = _layout_inputs(job_id, job, ctx)
+    rules = I["rules"]
+    fr = testfit._frame(ctx, I["setbacks"], drive_road=rules.get("drive_road"))[0]
+    P = fr.fwd(ctx["parcel_sp"])
+    P = max(getattr(P, "geoms", [P]), key=lambda q: q.area)
+    design, T = redline.place(imp["design"], imp.get("parcels") or imp["design"].get("parcels"), P,
+                              {"o": list(fr.o), "a": fr.a, "k": fr.k, "drive_road": rules.get("drive_road")})
+    summary = {**(supa.get_job(job_id).get("summary") or {})}
+    summary["testfit_design"] = {**design, "source": "redline"}
+    summary["redline_import"] = {**imp, "design": None, "placed": {"rotation_deg": round(math.degrees(T["theta"]), 2), "scale": round(T["s"], 4),
+                                                                   "rms_ft": round(T["rms_ft"], 2), "fit_pct": round(T["fit"] * 100, 1)}}
+    zoning = {**(job.get("zoning") or {}), "layout_mode": "manual"}
+    supa.update_job(job_id, summary=summary, zoning=zoning)
+    step_manual_layout(job_id)
+    # approved straight away: the CAD exports (no sheets), and the render when it was asked for
+    j = supa.get_job(job_id)
+    opts = {**(j.get("options") or {}), "design_sheets": False, "render_after_design": bool(imp.get("render"))}
+    patch = {"status": "layout_approved", "step": "deliverables", "progress": "Redline test fit placed; building the CAD exports",
+             "options": opts, "design_status": "queued", "design_error": None}
+    if imp.get("render"):
+        patch.update(render_status="queued", render_error=None)
+    supa.update_job(job_id, **patch)
+    from .auto import kick
+    kick(job_id, "design")          # the render follows the design (one writer at a time on the job's outputs)
 
 
 def step_layout(job_id):
@@ -872,8 +911,9 @@ def step_design(job_id):
     lay = pickle.loads(supa.download(job_id, "layout.pkl"))
     out = tempfile.mkdtemp()
     job["_cad_template"] = supa.cad_template(job.get("created_by"))   # the firm's layers / styles for the Civil 3D package
-    res = planset.build(ctx, lay, job, out, prog_cb=lambda m: supa.update_job(job_id, design_status="designing", progress=m))
-    files = {"plan_set.pdf": supa.upload(job_id, res["pdf"])}
+    sheets = (job.get("options") or {}).get("design_sheets", True) is not False
+    res = planset.build(ctx, lay, job, out, prog_cb=lambda m: supa.update_job(job_id, design_status="designing", progress=m), sheets=sheets)
+    files = {"plan_set.pdf": supa.upload(job_id, res["pdf"])} if res.get("pdf") else {}
     for p in res["pngs"]:
         files[os.path.basename(p)] = supa.upload(job_id, p)
     for name, p in (res.get("files") or {}).items():      # CAD exports: layered DXF + LandXML surfaces and pipe networks
@@ -890,7 +930,17 @@ def step_design(job_id):
     summ = planset.summary(res["X"])
     summ["c3d_status"] = "ready" if "drafted_c3d.zip" in files else "failed"
     summ["c3d_template"] = (job.get("_cad_template") or {}).get("file_name")
-    supa.update_job(job_id, outputs=outputs, design=summ, design_status="completed", design_error=None, progress="Plan set ready")
+    summ["sheets"] = summ["sheets"] if sheets else []
+    summ["exports_only"] = not sheets
+    supa.update_job(job_id, outputs=outputs, design=summ, design_status="completed", design_error=None,
+                    progress="Plan set ready" if sheets else "CAD exports ready")
+    if (job.get("options") or {}).get("render_after_design"):
+        from .auto import kick
+        supa.update_job(job_id, options={**(supa.get_job(job_id).get("options") or {}), "render_after_design": False})
+        try:
+            kick(job_id, "render")
+        except Exception as e:  # noqa: BLE001
+            print("render kick failed:", repr(e))
 
 
 def step_c3d_export(job_id):

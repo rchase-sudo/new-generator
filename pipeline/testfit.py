@@ -255,7 +255,7 @@ def _field(prm, pz, block):
     Returns stalls, aisles, cross aisles, islands and traffic arrows in local feet."""
     fwd, inv = _field_xf(prm)
     W, D = (float(prm["d"]), float(prm["w"])) if prm.get("flip") else (float(prm["w"]), float(prm["d"]))
-    A = AIS1 if prm.get("oneway") else AIS
+    A = float(prm["aisle"]) if prm.get("aisle") and float(prm["aisle"]) >= 18 else (AIS1 if prm.get("oneway") else AIS)
     isl = prm.get("islands")
     every = 10 ** 9 if isl == 0 else int(isl or ISL)
     pzl = affinity.affine_transform(pz, inv).buffer(0.5)

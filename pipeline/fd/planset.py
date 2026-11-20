@@ -87,7 +87,8 @@ def meta_for(job, ctx, X, prog):
             "year": today.year, "site_img": img, "site_poly": site_poly, "index": [(n, t) for n, t, _ in ALL], "facts_max_slope": 6}
 
 
-def build(ctx, lay, job, out_dir, prog_cb=None, log=print):
+def build(ctx, lay, job, out_dir, prog_cb=None, log=print, sheets=True):
+    """sheets=False: the design and its CAD exports only (DXF, LandXML, Civil 3D package), no plan sheets."""
     rules, prog = job.get("zoning") or {}, job.get("program") or {}
     def pr(s):
         log(s)
@@ -99,14 +100,15 @@ def build(ctx, lay, job, out_dir, prog_cb=None, log=print):
     X["facts"] = _facts(X, lay, ctx)
     meta = meta_for(job, ctx, X, prog)
     os.makedirs(out_dir, exist_ok=True)
-    pdf_path = os.path.join(out_dir, "plan_set.pdf")
+    pdf_path = os.path.join(out_dir, "plan_set.pdf") if sheets else None
     pngs = []
-    with PdfPages(pdf_path) as pdf:
+    from contextlib import nullcontext
+    with (PdfPages(pdf_path) if sheets else nullcontext()) as pdf:
         from . import sheets as _sh
         wins = _sh.windows(X)
         X["_wins"] = wins
         X["sheet_list"] = []
-        for n, title, fn in ALL:
+        for n, title, fn in (ALL if sheets else []):
             pr(f"Drawing {n} {title.title()}")
             for w in (wins if (wins and n in _sh.SPLIT) else [None]):
                 X["_win"] = w

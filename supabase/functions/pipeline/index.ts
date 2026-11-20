@@ -10,6 +10,7 @@
 //   render          { job_id }                                                    -> { ok }  (re-run the render)
 //   package         { job_id }                                                    -> { ok }  (due diligence package, after the render)
 //   cad_template_*  (account) the firm's Civil 3D template; plugin_url -> the Civil 3D plugin download
+//   redline_import  { job_id, design, parcels, render? } -> { ok }  (Apollo Redline test fit -> concept -> CAD exports, optional render)
 //   c3d_export      { job_id } -> { ok }  (rebuild only the Civil 3D package of a finished plan set with the current template)
 //   design          { job_id, sewer?: boolean, water?: boolean, utilities?: "municipal"|"onsite" } -> { ok }  (optional full design phase, after the layout is approved)
 //   start_batch     { text, lite? }  -> { job_id }  (many listings in one field: the worker splits them and runs each one unattended to its package)
@@ -238,6 +239,26 @@ Deno.serve(async (req) => {
       return json({ ok: true });
     }
 
+    // ---- Apollo Redline: a test fit sketched over this job's existing-conditions plan -----------------------------------------
+    //   redline_import { job_id, design, parcels, render? } -> { ok }
+    //   The sketch is lined up with the parcel, drawn as the concept, approved, and the full design runs for its CAD exports
+    //   (DXF, LandXML surfaces + pipe networks, Civil 3D package; no plan sheets). render: true also makes the rendering.
+    if (action === "redline_import") {
+      const { data: job, error } = await db.from("pipeline_jobs").select("status,summary,zoning,options,design_status").eq("id", body.job_id).single();
+      if (error) throw error;
+      if (!["awaiting_zoning", "awaiting_layout", "layout_approved", "error"].includes(job.status) || !job.zoning)
+        return json({ error: `This project is ${job.status}; send the sketch once its existing conditions and zoning are done` }, 409);
+      if (["queued", "designing"].includes(job.design_status)) return json({ error: "A design is already running for this project" }, 409);
+      if (!body.design || !Array.isArray(body.design.buildings) || !body.design.buildings.length) return json({ error: "The sketch has no buildings" }, 400);
+      if (!Array.isArray(body.parcels) || !body.parcels.length) return json({ error: "The sketch has no property line" }, 400);
+      if (JSON.stringify(body.design).length + JSON.stringify(body.parcels).length > 4_000_000) return json({ error: "Sketch too large" }, 413);
+      const summary = { ...(job.summary ?? {}), redline_import: { design: body.design, parcels: body.parcels, render: !!body.render, file: String(body.file ?? "").slice(0, 200), at: new Date().toISOString() } };
+      const { error: e2 } = await db.from("pipeline_jobs").update({ summary, status: "building_layout", step: "layout", progress: "Placing the Redline sketch", error: null }).eq("id", body.job_id);
+      if (e2) throw e2;
+      await kickWorker(body.job_id, "redline_import");
+      return json({ ok: true });
+    }
+
     if (action === "approve_layout") {
       const { data: job, error } = await db.from("pipeline_jobs").select("status").eq("id", body.job_id).single();
       if (error) throw error;
@@ -270,11 +291,12 @@ Deno.serve(async (req) => {
     }
 
     if (action === "design") {   // optional full design phase: preliminary civil plan set from the approved layout (independent of render / package)
-      const { data: job, error } = await db.from("pipeline_jobs").select("status,design_status,zoning").eq("id", body.job_id).single();
+      const { data: job, error } = await db.from("pipeline_jobs").select("status,design_status,zoning,options").eq("id", body.job_id).single();
       if (error) throw error;
       if (job.status !== "layout_approved") return json({ error: "Approve the layout first" }, 409);
       if (job.design_status === "queued" || job.design_status === "designing") return json({ error: "The plan set is already being built" }, 409);
-      const patch: Record<string, unknown> = { design_status: "queued", design_error: null };
+      // sheets: false = CAD exports only (what a Redline import builds); Drafted's own button always builds the plan sheets
+      const patch: Record<string, unknown> = { design_status: "queued", design_error: null, options: { ...(job.options ?? {}), design_sheets: body.sheets !== false } };
       const z: Record<string, unknown> = { ...(job.zoning ?? {}) };
       let touched = false;
       if (typeof body.sewer === "boolean" || typeof body.water === "boolean") {
