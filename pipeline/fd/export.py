@@ -16,6 +16,7 @@ LAYERS = {                      # name: (ACI colour, linetype)
     "C-TOPO-MINR": (7, "CONTINUOUS"), "C-TOPO-MAJR": (7, "CONTINUOUS"), "C-TOPO-TEXT": (7, "CONTINUOUS"), "C-TOPO-SPOT": (2, "CONTINUOUS"),
     "C-BLDG": (7, "CONTINUOUS"), "C-PVMT-EDGE": (7, "CONTINUOUS"), "C-PKNG-STRP": (9, "CONTINUOUS"), "C-WALK": (9, "CONTINUOUS"),
     "C-ROAD-CNTR": (1, "CENTER2"), "C-ROAD-STAN": (1, "CONTINUOUS"),
+    "C-ROAD-PROF": (1, "CONTINUOUS"), "C-ROAD-PROF-EXST": (8, "DASHED2"), "C-ROAD-PROF-GRID": (9, "CONTINUOUS"), "C-ROAD-PROF-TEXT": (7, "CONTINUOUS"),
     "C-STRM-PIPE": (3, "CONTINUOUS"), "C-STRM-STRC": (3, "CONTINUOUS"), "C-STRM-TEXT": (3, "CONTINUOUS"), "C-STRM-POND": (5, "CONTINUOUS"),
     "C-SSWR-PIPE": (30, "CONTINUOUS"), "C-SSWR-FMAN": (30, "DASHED2"), "C-SSWR-STRC": (30, "CONTINUOUS"), "C-SSWR-TEXT": (30, "CONTINUOUS"), "C-SSWR-LATL": (30, "DASHED2"),
     "C-WATR-PIPE": (5, "CONTINUOUS"), "C-WATR-LATL": (5, "DASHED2"), "C-WATR-STRC": (5, "CONTINUOUS"), "C-POWR-UGND": (1, "DASHED2"), "C-NGAS-UGND": (40, "DASHED2"),
@@ -250,6 +251,10 @@ def dxf(X, path):
             p = cl_.interpolate(st)
             tx((p.x, p.y), f"{int(st // 100)}+{st % 100:02.0f}", "C-ROAD-STAN", h=2.0)
             st += 50.0
+        try:
+            _road_profile(ms, W, L, G)
+        except Exception as e:  # noqa: BLE001 -- the plan must still come out
+            print("road profile skipped:", e)
     pond = D["pond"]
     if pond.get("kind") == "chambers":
         for b in pond.get("beds") or []:
@@ -411,3 +416,76 @@ def sanitary_network(X):
             P.append({"name": f"SS-L{k + 1}{'-' + str(j + 1) if len(nodes) > 2 else ''}", "from": nodes[j + 1], "to": nodes[j], "dia": r.get("dia", 6), "mat": "PVC SDR 35",
                       "inv_up": round(i_up, 2), "inv_dn": round(i_dn, 2), "len": round(c_ - a_, 2), "slope": round((i_up - i_dn) / max(c_ - a_, 0.1), 5)})
     return {"structs": S, "pipes": P}
+
+
+def _road_profile(ms, W, L, G, hs=1.0, vx=10.0):
+    """The drive's profile drawn beside the plan in model space: existing ground (dashed) and proposed grade along the
+    centreline, stations every 50 ft, elevations every 2 ft, PVIs with station / elevation, tangent grades and the
+    vertical curves. Horizontal 1:1 with the plan, vertical exaggerated 10x (e.g. 1" = 40' H, 1" = 4' V)."""
+    gv = lambda k: np.asarray(G[k] if G.get(k) is not None else [], float)     # noqa: E731
+    st, ex, pr = gv("stations"), gv("ex_profile"), gv("profile")
+    if len(st) < 2 or G.get("spine") is None:
+        return
+    _, remap = grading.clean_alignment(G["spine"])
+    S = np.array([remap(s_) for s_ in st])
+    ok = np.isfinite(ex) & np.isfinite(pr)
+    if ok.sum() < 2:
+        return
+    S, ex, pr = S[ok], ex[ok], pr[ok]
+    smin, smax = 0.0, float(S.max())
+    zlo = math.floor((min(np.nanmin(ex), np.nanmin(pr)) - 4.0) / 2.0) * 2.0
+    zhi = math.ceil((max(np.nanmax(ex), np.nanmax(pr)) + 4.0) / 2.0) * 2.0
+    # place it to the right of the site, bottom aligned with the site's south edge
+    xs, ys = zip(*W.coords(L["parcel"].exterior))
+    X0, Y0 = max(xs) + 120.0, min(ys) + 20.0
+    fx = lambda s_: X0 + (s_ - smin) * hs        # noqa: E731
+    fz = lambda z_: Y0 + (z_ - zlo) * vx         # noqa: E731
+    wid, hgt = (smax - smin) * hs, (zhi - zlo) * vx
+    lw = lambda pts, layer, closed=False: ms.add_lwpolyline(pts, close=closed, dxfattribs={"layer": layer})     # noqa: E731
+
+    def t(x, y, s_, h=2.0, al=7, layer="C-ROAD-PROF-TEXT"):
+        m = ms.add_mtext(s_, dxfattribs={"layer": layer, "char_height": h, "attachment_point": al})
+        m.set_location((x, y))
+    lw([(X0, Y0), (X0 + wid, Y0), (X0 + wid, Y0 + hgt), (X0, Y0 + hgt)], "C-ROAD-PROF-GRID", True)
+    for z_ in np.arange(zlo, zhi + 0.01, 2.0):
+        if zlo < z_ < zhi:
+            lw([(X0, fz(z_)), (X0 + wid, fz(z_))], "C-ROAD-PROF-GRID")
+        t(X0 - 3.0, fz(z_), f"{z_:.0f}", 2.0, 6)
+        t(X0 + wid + 3.0, fz(z_), f"{z_:.0f}", 2.0, 4)
+    for s_ in np.arange(0.0, smax + 0.01, 50.0):
+        lw([(fx(s_), Y0), (fx(s_), Y0 + hgt)], "C-ROAD-PROF-GRID")
+        t(fx(s_), Y0 - 3.0, f"{int(s_ // 100)}+{s_ % 100:02.0f}", 2.0, 2)
+        # existing / proposed elevations under each station
+        e_, p_ = float(np.interp(s_, S, ex)), float(np.interp(s_, S, pr))
+        t(fx(s_), Y0 - 7.5, f"{p_:.2f}", 1.6, 2, "C-ROAD-PROF")
+        t(fx(s_), Y0 - 10.5, f"{e_:.2f}", 1.6, 2, "C-ROAD-PROF-EXST")
+    t(X0 - 14.0, Y0 - 7.5, "PROP.", 1.6, 3, "C-ROAD-PROF")
+    t(X0 - 14.0, Y0 - 10.5, "EXIST.", 1.6, 3, "C-ROAD-PROF-EXST")
+    lw([(fx(a), fz(b)) for a, b in zip(S, ex)], "C-ROAD-PROF-EXST")
+    lw([(fx(a), fz(b)) for a, b in zip(S, pr)], "C-ROAD-PROF")
+    # PVIs, tangent grades, vertical curves
+    pv = []
+    for s0, z0 in (G["pvi"] if G.get("pvi") is not None else []):
+        s1 = remap(s0)
+        if not pv or s1 > pv[-1][0] + 1.0:
+            pv.append((s1, float(z0)))
+    cv = {round(remap(c["pvi_sta"]), 1): c for c in (G["curves"] if G.get("curves") is not None else [])}
+    for (sa, za), (sb, zb) in zip(pv, pv[1:]):
+        g_ = (zb - za) / max(sb - sa, 1e-6) * 100.0
+        zm = (za + zb) / 2.0
+        t(fx((sa + sb) / 2.0), fz(zm) + 4.0, f"{g_:+.2f}%", 2.0, 8, "C-ROAD-PROF")
+    for k, (s1, z1) in enumerate(pv):
+        ms.add_circle((fx(s1), fz(z1)), 1.2, dxfattribs={"layer": "C-ROAD-PROF"})
+        c = cv.get(round(s1, 1))
+        lab = f"PVI STA {int(s1 // 100)}+{s1 % 100:05.2f}\\PELEV {z1:.2f}"
+        if c and c.get("L"):
+            lab += f"\\PVC L = {c['L']:.0f}'  K = {c['K']:.1f}"
+            Lh = c["L"] / 2.0
+            for s_ in (s1 - Lh, s1 + Lh):
+                lw([(fx(s_), fz(float(np.interp(s_, S, pr))) - 3.0), (fx(s_), fz(float(np.interp(s_, S, pr))) + 3.0)], "C-ROAD-PROF")
+        if 0 < k < len(pv) - 1 or c:
+            lw([(fx(s1), fz(z1) + 1.2), (fx(s1), fz(z1) + 16.0)], "C-ROAD-PROF")
+            t(fx(s1) + 1.0, fz(z1) + 16.0, lab, 1.6, 7, "C-ROAD-PROF")
+    t(X0, Y0 + hgt + 10.0, "DRIVE CENTERLINE PROFILE", 4.0, 7)
+    t(X0, Y0 + hgt + 4.0, f"HORIZ 1\" = 40'   VERT 1\" = {40.0 / vx:g}'   EXISTING GROUND (DASHED) / PROPOSED GRADE (SOLID)", 2.0, 7)
+
