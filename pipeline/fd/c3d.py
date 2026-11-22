@@ -84,7 +84,8 @@ ROLES = {
 }
 # what becomes a native Civil 3D object (left out of linework.dxf so nothing is drawn twice)
 C3D_OWNED = {"V-TOPO-MINR", "V-TOPO-MAJR", "V-TOPO-TEXT", "C-TOPO-MINR", "C-TOPO-MAJR", "C-TOPO-TEXT", "C-TOPO-SPOT", "C-TINN-PROP",
-             "C-STRM-PIPE", "C-STRM-STRC", "C-STRM-TEXT", "C-STRM-POND", "C-SSWR-PIPE", "C-SSWR-STRC", "C-SSWR-TEXT", "C-SSWR-LATL", "C-ROAD-CNTR", "C-ROAD-STAN"}
+             "C-STRM-PIPE", "C-STRM-STRC", "C-STRM-TEXT", "C-STRM-POND", "C-SSWR-PIPE", "C-SSWR-STRC", "C-SSWR-TEXT", "C-SSWR-LATL", "C-ROAD-CNTR", "C-ROAD-STAN",
+             "C-ROAD-PROF", "C-ROAD-PROF-EXST", "C-ROAD-PROF-GRID", "C-ROAD-PROF-TEXT"}     # the profile: a Civil 3D profile view instead
 GENERIC = {"PIPE", "TEXT", "LABL", "ANNO", "STRC", "STRUCT", "EDGE", "LAT", "LATL", "SERV", "SVC", "CONC", "ELEV", "POINT", "MH", "SD", "SS", "SF", "CL", "PL", "FM", "UE", "FH"}
 EXISTING_HINT = ("EX", "EXIST", "EXST", "V-", "EXT")
 
@@ -340,8 +341,9 @@ def manifest(X, meta, job, mapping=None, firm=None):
                 continue
             pvis.append([_r(s2, 3), _r(z, 3), _r((cv.get(round(s, 2)) or {}).get("L") or 0, 2)])
             last = s2
+        bx = L["parcel"].bounds
         aligns.append({"name": "Drive CL", "layer": "C-ROAD-CNTR", "pts": [en(c) for c in cl.coords], "profile": {"name": "Drive CL - FG", "pvis": pvis},
-                       "eg_profile": "Drive CL - EG"})
+                       "eg_profile": "Drive CL - EG", "view": {"name": "Drive CL", "at": en((bx[2] + 150.0, bx[1] + 20.0)), "layer": "C-ROAD-PROF-VIEW"}})
     # ---- COGO points: building corners at FFE, structure rims
     pts = []
     for k, b in enumerate(L["bldgs"]):

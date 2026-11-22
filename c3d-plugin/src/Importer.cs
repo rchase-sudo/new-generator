@@ -52,6 +52,8 @@ namespace Drafted.C3D
             ("profile_style", "Design profile style", "Styles.ProfileStyles", new[] { "Design", "Proposed", "Finish", "Standard" }),
             ("profile_eg_style", "EG profile style", "Styles.ProfileStyles", new[] { "Exist", "EG", "Standard" }),
             ("profile_labels", "Profile label set", "Styles.LabelSetStyles.ProfileLabelSetStyles", new[] { "Complete", "Standard" }),
+            ("pview_style", "Profile view style", "Styles.ProfileViewStyles", new[] { "Major Grids", "Full Grid", "Standard" }),
+            ("pview_bands", "Profile view bands", "Styles.ProfileViewBandSetStyles", new[] { "EG-FG", "Elevations and Stations", "Standard" }),
             ("feature_style", "Feature line style", "Styles.FeatureLineStyles", new[] { "Grading", "Standard" }),
             ("point_style", "Point style", "Styles.PointStyles", new[] { "Spot", "Elev", "Standard" }),
             ("point_label", "Point label style", "Styles.LabelStyles.PointLabelStyles.LabelStyles", new[] { "Elevation", "Elev", "Standard" }),
@@ -710,10 +712,11 @@ namespace Drafted.C3D
                         var player = LayerId("C-ROAD-PROF");
                         var pLab = cat.Id("profile_labels", O);
                         var parts = new List<string>();
+                        ObjectId egPid = ObjectId.Null, fgPid = ObjectId.Null;
                         if (!egId.IsNull && a.TryGetProperty("eg_profile", out var egn) && egn.ValueKind == JsonValueKind.String)
                         {
                             step = "EG profile";
-                            try { Profile.CreateFromSurface(egn.GetString().Replace(name0, name), alId, egId, player, cat.Id("profile_eg_style", O), pLab); parts.Add("EG profile"); }
+                            try { egPid = Profile.CreateFromSurface(egn.GetString().Replace(name0, name), alId, egId, player, cat.Id("profile_eg_style", O), pLab); parts.Add("EG profile"); }
                             catch (System.Exception e) { warn.Add($"Alignment {name}: EG profile not created ({e.Message})"); }
                         }
                         if (a.TryGetProperty("profile", out var pr))
@@ -722,6 +725,7 @@ namespace Drafted.C3D
                             try
                             {
                                 var pid = Profile.CreateByLayout(U.S(pr, "name", name0 + " - FG").Replace(name0, name), alId, player, cat.Id("profile_style", O), pLab);
+                                fgPid = pid;
                                 var prof = (Profile)tr.GetObject(pid, OpenMode.ForWrite);
                                 var curves = new List<(double, double, double)>();
                                 double last = double.NegativeInfinity; int nv = 0, skipped = 0;
@@ -745,8 +749,44 @@ namespace Drafted.C3D
                             }
                             catch (System.Exception e) { warn.Add($"Alignment {name}: design profile not created ({e.Message})"); }
                         }
+                        // the profile view: EG and FG drawn beside the plan, with the station / elevation bands fed both profiles
+                        bool viewMade = false;
+                        if (a.TryGetProperty("view", out var pv) && (!egPid.IsNull || !fgPid.IsNull))
+                        {
+                            step = "profile view";
+                            try
+                            {
+                                var at = U.XY(pv.GetProperty("at"));
+                                var vname = U.S(pv, "name", name0).Replace(name0, name);
+                                ObjectId vId;
+                                try { vId = ProfileView.Create(alId, new Point3d(at[0], at[1], 0), vname, cat.Id("pview_bands", O), cat.Id("pview_style", O)); }
+                                catch { vId = ProfileView.Create(civ, vname, cat.Id("pview_bands", O), alId, new Point3d(at[0], at[1], 0)); }
+                                var view = (ProfileView)tr.GetObject(vId, OpenMode.ForWrite);
+                                try { view.LayerId = LayerId(U.S(pv, "layer", "C-ROAD-PROF-VIEW")); } catch { }
+                                try { view.StyleId = cat.Id("pview_style", O); } catch { }
+                                // bands (elevations, cut/fill) read their profiles from Profile1 / Profile2
+                                foreach (var getter in new[] { "GetBottomBandItems", "GetTopBandItems" })
+                                {
+                                    try
+                                    {
+                                        var items = view.Bands.GetType().GetMethod(getter)?.Invoke(view.Bands, null);
+                                        if (items == null) continue;
+                                        foreach (var it in (System.Collections.IEnumerable)items)
+                                        {
+                                            if (!egPid.IsNull) U.TrySet(it, "Profile1Id", egPid);
+                                            if (!fgPid.IsNull) U.TrySet(it, "Profile2Id", fgPid);
+                                        }
+                                        var set = view.Bands.GetType().GetMethod(getter.Replace("Get", "Set"));
+                                        set?.Invoke(view.Bands, new[] { items });
+                                    }
+                                    catch { }
+                                }
+                                viewMade = true; parts.Add("a profile view");
+                            }
+                            catch (System.Exception e) { warn.Add($"Alignment {name}: profile view not created ({e.Message}); PROFILEVIEW... draws one"); }
+                        }
                         tr.Commit();
-                        report.Add($"Alignment {name}{(parts.Count > 0 ? " with " + string.Join(" and ", parts) : "")} (create a profile view with PROFILEVIEW... to show them)");
+                        report.Add($"Alignment {name}{(parts.Count > 0 ? " with " + string.Join(" and ", parts) : "")}{(viewMade ? "" : " (create a profile view with PROFILEVIEW... to show them)")}");
                     }
                     catch (System.Exception e) { warn.Add($"Alignment {U.S(a, "name", "Drive CL")}: failed at the {step} ({e.GetType().Name}: {e.Message})"); }
                 }

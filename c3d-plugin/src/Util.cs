@@ -120,6 +120,7 @@ namespace Drafted.C3D
             ("C-GRAD-FEAT", "Grading feature lines", new[] { "FEAT", "FTLN", "GRAD", "BRKL", "BREAK" }, false),
             ("C-ROAD-CNTR", "Drive alignment", new[] { "CNTR", "CL", "CENTER", "ALIGN", "ALGN" }, false),
             ("C-ROAD-PROF", "Drive profiles", new[] { "PROF", "PROFILE", "PRFL" }, false),
+            ("C-ROAD-PROF-VIEW", "Profile view", new[] { "PVIEW", "PROF", "PROFILE", "VIEW" }, false),
             ("C-TOPO-SPOT", "COGO points", new[] { "SPOT", "ELEV", "POINT", "PNTS", "COGO" }, false),
             ("V-PROP-LINE", "Property line", new[] { "PROP", "BNDY", "BOUNDARY", "PL", "LOT", "PARCEL" }, true),
             ("V-PROP-SBCK", "Setback lines", new[] { "SBCK", "SETBACK", "SETB", "BSL", "ESMT" }, true),
