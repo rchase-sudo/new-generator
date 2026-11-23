@@ -476,15 +476,24 @@ def surface(g, ex_z, z_design, design_mask, pond=None, protect=None, limit=None,
         out = np.where(limit & ~design_mask, ex_z, out)
     out = taper_protect(g, out, ex_z, protect, design_mask)
     if info is not None:
+        # what was actually built, not only what was planned: any graded ground steeper than 3:1 gets its treatment
+        # (2:1 matting, 1:1 riprap) and anything steeper than 1:1 is a retaining wall at the edge of the design beside it
         graded = (~design_mask) & (np.abs(out - ex_z) > 0.1)
-        info["matting"] = graded & np.isclose(s, SLOPE_MAT)
-        info["riprap"] = graded & np.isclose(s, SLOPE_RIP)
+        sl = np.nan_to_num(np.hypot(*np.gradient(out, g.cell)), nan=0.0)
+        tol = 0.01
+        steep = graded & (sl > SLOPE_RIP + tol)
+        info["matting"] = graded & (np.isclose(s, SLOPE_MAT) | ((sl > DAYLIGHT + tol) & (sl <= SLOPE_MAT + tol)))
+        info["riprap"] = graded & ~info["matting"] & (np.isclose(s, SLOPE_RIP) | ((sl > SLOPE_MAT + tol) & (sl <= SLOPE_RIP + tol)))
+        info["matting"] &= ~info["riprap"] | np.isclose(s, SLOPE_MAT)
+        if steep.any():
+            wall_src = wall_src | (design_mask & ndi.binary_dilation(steep, iterations=2))
         info["wall_src"] = wall_src
+        info["steep_sf"] = float(steep.sum() * g.cell * g.cell)
         info["s"] = s
     return out
 
 
-def slope_features(g, z_prop, ex_z, z_design, design_mask, info, min_sf=150.0):
+def slope_features(g, z_prop, ex_z, z_design, design_mask, info, min_sf=25.0):
     """Polygons for the 2:1 (matting) and 1:1 (riprap) slopes and the retaining-wall lines with top / bottom elevations."""
     from shapely.geometry import MultiLineString
     from shapely.ops import linemerge
