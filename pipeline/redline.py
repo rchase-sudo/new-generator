@@ -136,6 +136,12 @@ def transform_design(design, T, frame):
     for key in ("ponds", "pavement", "grading"):
         for o in D.get(key) or []:
             o["pts"] = pts(o.get("pts"))
+    if D.get("zones"):
+        D["zones"] = {k: [pts(r) for r in v or []] for k, v in D["zones"].items()}
+    for e in D.get("parcel_edges") or []:
+        e["pts"] = pts(e.get("pts"))
+        if e.get("arc"):
+            e["arc"] = [round(float(a or 0) * s, 2) for a in e["arc"]]
     for row in D.get("campsites") or []:
         if row.get("line"):
             row["line"] = pts(row["line"])

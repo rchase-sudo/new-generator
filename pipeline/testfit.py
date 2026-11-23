@@ -14,6 +14,7 @@ Design (local feet), as the editor sends it:
   drives:    [{id, pts: [[x, y], ...], width}]
   pavement:  [{pts: [[x, y], ...]}]           extra paved areas (loading, plazas)
   ponds:     [{pts: [[x, y], ...]}]           none drawn + auto_pond -> one is placed like the automatic layout does
+  zones:     {bz: [[[x, y], ...]], pz: [...]}   Redline only: the building / pavement setback lines as drawn (per-edge setbacks)
   grading:   [{pts: [[x, y], ...], min_pct, max_pct}]   areas graded as one plane within a slope range (flat pads etc.)
   auto_pond: bool, parking_ratio: stalls per 1,000 SF of GFA (for the required count)
 """
@@ -495,6 +496,15 @@ def _drive_refined(dv, road_pave, P, circ_hint, B=None):
 def build(ctx, design, setbacks, psb, steep, keep, pave_keep, prog, rules, shared_stalls=0):
     fr, edges, rds, named, keys = _frame(ctx, setbacks, frame=design.get("frame"))
     P, C, bz, pz, RPf = _site(ctx, fr, edges, setbacks, psb, steep, [b["geom"] for b in keep], [p["geom"] for p in pave_keep])
+    zones = design.get("zones") or {}
+    for key in ("bz", "pz"):            # Redline Sitecraft: setback lines set edge by edge (and along curved property lines)
+        zs = [p for p in (_poly(r) for r in zones.get(key) or [] if r and len(r) >= 3) if p is not None and not p.is_empty]
+        if zs:
+            z_ = unary_union(zs).intersection(P).difference(C).buffer(0)
+            if key == "bz":
+                bz = z_
+            else:
+                pz = z_
     road_pave = unary_union([make_valid(fr.fwd(r["pavement"])).buffer(0) for r in rds if r.get("pavement") is not None]) if rds else None
     if road_pave is not None:
         road_pave = road_pave.intersection(P.buffer(400)).buffer(0)
