@@ -65,6 +65,28 @@ def _site(ctx, fr, edges, setbacks, psb, steep, keep_geoms, reuse_geoms):
     return P, C, bz, pz, (fr.fwd(RP) if RP is not None else None)
 
 
+def _pond_small(P, dev, C, target_sf):
+    """A pond where the standard clearances leave no room: 5 ft inside the property line, 8 ft off buildings / paving,
+    5 ft off constraints, at least about 16 ft across; the piece nearest the development, cut down to the target size."""
+    avail = P.buffer(-5).difference(dev.buffer(8)).difference(C.buffer(5) if not C.is_empty else Polygon())
+    pieces = [g for g in _polys(avail.buffer(-8).buffer(8)) if g.area >= min(target_sf, 400.0)]
+    if not pieces:
+        return None
+    g = max(pieces, key=lambda x: min(x.area, target_sf * 1.5) - 2.0 * x.distance(dev))
+    if g.area > target_sf * 1.4:
+        near = g.exterior.interpolate(g.exterior.project(dev.centroid))
+        r = math.sqrt(target_sf / math.pi)
+        for _ in range(24):
+            cand = g.intersection(near.buffer(r, 64))
+            if cand.area >= target_sf:
+                break
+            r *= 1.08
+        g = cand
+    g = g.buffer(4, join_style=1).buffer(-7, join_style=1).buffer(3, join_style=1)
+    g = _largest(g)
+    return g if g is not None and g.area >= 300 else None
+
+
 # ---------------------------------------------------------------- base for the editor
 def _rings(g, tol=0.5, nd=1):
     out = []
@@ -639,7 +661,12 @@ def build(ctx, design, setbacks, psb, steep, keep, pave_keep, prog, rules, share
             pond = _largest(unary_union(ponds).intersection(P).buffer(6, join_style=1).buffer(-6, join_style=1)) or unary_union(ponds).intersection(P)
     elif design.get("auto_pond", True) and not prog.get("no_pond"):
         land = [g for g in _polys(P.difference(C)) if g.intersects(dev)]
-        pond = _pond(unary_union(land) if land else P, dev.union(grass), C, max(3000.0, imperv_sf * 0.08))
+        site = unary_union(land) if land else P
+        pond = _pond(site, dev.union(grass), C, max(3000.0, imperv_sf * 0.08))
+        if pond is None:      # a small lot: the pond sized to the site (water quality volume) and closer in: 5 ft off the line, 8 ft off the work
+            pond = _pond_small(site, dev, C, max(600.0, imperv_sf * 0.08))
+            if pond is not None:
+                warn.append(f"Small lot: the stormwater pond was fitted into the space left ({pond.area:,.0f} SF); check it against the drainage design")
     if pond is not None and not pond.is_empty:
         grass = grass.difference(pond)
         if pond.intersects(dev):
