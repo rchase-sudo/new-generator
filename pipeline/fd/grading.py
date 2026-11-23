@@ -437,7 +437,7 @@ def checks(g, z, G, L, inlets=None):
 SLOPE_MAT, SLOPE_RIP = 1.0 / 2.0, 1.0
 
 
-def surface(g, ex_z, z_design, design_mask, pond=None, protect=None, limit=None, info=None):
+def surface(g, ex_z, z_design, design_mask, pond=None, protect=None, limit=None, info=None, soften_ft=None):
     """Full proposed surface: design cells as set; everything else follows the existing ground clamped to the steepest
     allowed slope from the nearest design cell (cut and fill slopes daylight into the existing grade). With `limit` (cells
     that may not be regraded) each slope is the flattest standard one that still reaches existing ground before the limit:
@@ -468,7 +468,7 @@ def surface(g, ex_z, z_design, design_mask, pond=None, protect=None, limit=None,
     out = np.clip(ex_z, lo, hi)
     out = np.where(design_mask, z_design, out)
     # soften the clamped band so contours don't kink (design cells, walls and far field stay)
-    soft = ndi.gaussian_filter(out, 1.0)
+    soft = ndi.gaussian_filter(out, (soften_ft / g.cell) if soften_ft else 1.0)
     band = (~design_mask) & (dft < 80) & np.isfinite(s) & (s <= DAYLIGHT + 1e-6)
     out = np.where(band, soft, out)
     out = np.where(design_mask, z_design, out)
@@ -476,21 +476,30 @@ def surface(g, ex_z, z_design, design_mask, pond=None, protect=None, limit=None,
         out = np.where(limit & ~design_mask, ex_z, out)
     out = taper_protect(g, out, ex_z, protect, design_mask)
     if info is not None:
+        info["s"] = s
+        classify_slopes(g, out, ex_z, design_mask, s, wall_src, info)
+    return out
+
+
+def classify_slopes(g, out, ex_z, design_mask, s, wall_src, info):
+    if True:
         # what was actually built, not only what was planned: any graded ground steeper than 3:1 gets its treatment
-        # (2:1 matting, 1:1 riprap) and anything steeper than 1:1 is a retaining wall at the edge of the design beside it
+        # (to 2:1 matting, to 1:1 riprap) and anything steeper than 1:1 is a retaining wall at the edge of the design beside it
         graded = (~design_mask) & (np.abs(out - ex_z) > 0.1)
         sl = np.nan_to_num(np.hypot(*np.gradient(out, g.cell)), nan=0.0)
         tol = 0.01
         steep = graded & (sl > SLOPE_RIP + tol)
-        info["matting"] = graded & (np.isclose(s, SLOPE_MAT) | ((sl > DAYLIGHT + tol) & (sl <= SLOPE_MAT + tol)))
-        info["riprap"] = graded & ~info["matting"] & (np.isclose(s, SLOPE_RIP) | ((sl > SLOPE_MAT + tol) & (sl <= SLOPE_RIP + tol)))
-        info["matting"] &= ~info["riprap"] | np.isclose(s, SLOPE_MAT)
+        rip = graded & (sl > SLOPE_MAT + tol) & ~steep
+        mat = graded & (sl > DAYLIGHT + tol) & ~rip & ~steep
+        # the planned 2:1 / 1:1 bands keep their treatment where they ease off at the toe
+        mat |= graded & np.isclose(s, SLOPE_MAT) & (sl > DAYLIGHT * 0.8) & ~rip & ~steep
+        rip |= graded & np.isclose(s, SLOPE_RIP) & (sl > SLOPE_MAT * 0.8) & ~steep
+        mat &= ~rip
+        info["matting"], info["riprap"] = mat, rip
         if steep.any():
             wall_src = wall_src | (design_mask & ndi.binary_dilation(steep, iterations=2))
         info["wall_src"] = wall_src
         info["steep_sf"] = float(steep.sum() * g.cell * g.cell)
-        info["s"] = s
-    return out
 
 
 def slope_features(g, z_prop, ex_z, z_design, design_mask, info, min_sf=25.0):
@@ -502,12 +511,14 @@ def slope_features(g, z_prop, ex_z, z_design, design_mask, info, min_sf=25.0):
         m = info.get(key)
         if m is None or not m.any():
             continue
-        for q in polys(g.cell_poly(m).buffer(1.5).buffer(-1.5).simplify(1.0)):
+        r_ = max(1.5, g.cell * 1.2)           # cell steps rounded off: the areas read as drawn, not as pixels
+        for q in polys(g.cell_poly(m).buffer(r_, join_style=1).buffer(-r_, join_style=1).simplify(max(0.75, g.cell * 0.6))):
             if q.area >= min_sf:
                 res[key].append(q)
     ws = info.get("wall_src")
     if ws is not None and ws.any():
         dpoly = g.cell_poly(design_mask)
+        dpoly = dpoly.buffer(g.cell, join_style=1).buffer(-g.cell, join_style=1).simplify(g.cell * 0.75)
         zone = g.cell_poly(ws).buffer(g.cell * 0.75)
         edge = unary_union([LineString(r.coords) for q in polys(dpoly) for r in [q.exterior] + list(q.interiors)])
         ln = edge.intersection(zone)
@@ -517,7 +528,7 @@ def slope_features(g, z_prop, ex_z, z_design, design_mask, info, min_sf=25.0):
             for w in (mm.geoms if hasattr(mm, "geoms") else [mm]):
                 if w.length < 8.0:
                     continue
-                w = w.simplify(0.5)
+                w = w.simplify(max(0.5, g.cell * 0.75))
                 n = max(2, int(w.length // 5.0) + 1)
                 top, bot, hs = [], [], []
                 for k in range(n):
@@ -573,6 +584,86 @@ def pond_surface(g, zd, poly, top_el, bottom_el, side, berm=6.0):
     zz[sel] = np.where(inside, np.maximum(bottom_el, top_el - dist / max(side, 0.1)), top_el)
     zd[pm] = zz[pm]
     return zd, pm, rim, zz
+
+
+def refine(g, ex_z, z_design, design_mask, bldgs=(), ffe=(), protect=None, limit=None, lod=None, pave=None, walk=None, ponds=(), max_pts=300_000):
+    """The construction surface: the design re-graded on a fine grid (1.5-3 ft) so its edges follow the real outlines
+    rather than 5 ft cells, the existing ground resampled smoothly, the cut / fill slopes rebuilt with the same 3:1 / 2:1 /
+    1:1 / wall rules and blended so no cell steps or ridges are left. The coarse grid stays for the analysis; exports
+    (TIN, contours, Civil 3D surfaces, slope areas) use this one."""
+    from .base import Grid
+    W_, H_ = g.nx * g.cell, g.ny * g.cell
+    cell = max(1.5, math.ceil(math.sqrt(W_ * H_ / max_pts) * 2) / 2)
+    cell = min(cell, g.cell / 2)
+    gf = Grid((g.x0, g.y0, g.x0 + W_, g.y0 + H_), cell)
+    fi = (gf.X - g.x0) / g.cell - 0.5
+    fj = (gf.Y - g.y0) / g.cell - 0.5
+
+    def fill(a, ok):
+        if ok.all():
+            return a
+        _, (ii, jj) = ndi.distance_transform_edt(~ok, return_indices=True)
+        return a[ii, jj]
+
+    def samp(a, order):
+        return ndi.map_coordinates(a, [fj, fi], order=order, mode="nearest")
+
+    def near(m):
+        return samp(m.astype(float), 0) > 0.5
+    ok = np.isfinite(ex_z)
+    exf = samp(fill(ex_z, ok), 3)
+    exf = ndi.gaussian_filter(exf, 2.5 / cell)                   # no spline ringing / interpolation ripple between the 5 ft samples
+    dm = design_mask & np.isfinite(z_design)
+    zd_f = samp(fill(np.where(dm, z_design, 0.0), dm), 1)
+    # the design's extent from the real outlines (buildings, pavement + curb, walks); only what has no outline here (the
+    # pond banks) comes from the 5 ft cells
+    cb = np.zeros(dm.shape, bool)
+    for b in bldgs or []:
+        cb |= g.mask(b)
+    vec = []
+    if pave is not None and not pave.is_empty:
+        vec.append(pave.buffer(2.0 + 0.5))
+        cb |= g.mask(pave.buffer(2.0 + g.cell))
+    if walk is not None and not walk.is_empty:
+        vec.append(walk)
+        cb |= g.mask(walk)
+    for q in ponds or []:
+        cb |= g.mask(q["poly"].buffer(6.0 + g.cell))
+    dmf = samp((dm & ~cb).astype(float), 1) >= 0.5
+    for v in vec:
+        dmf |= gf.mask(v)
+    # pavement / pond planes: relax the 5 ft facets inside the design (not across buildings) so they read as smooth planes
+    bm = np.zeros(gf.X.shape, bool)
+    for b in bldgs or []:
+        bm |= gf.mask(b)
+    inner = dmf & ~ndi.binary_dilation(bm, iterations=1)
+    w = ndi.gaussian_filter(inner.astype(float), 1.2)
+    sm = ndi.gaussian_filter(np.where(inner, zd_f, 0.0), 1.2)
+    zd_f = np.where(inner & (w > 0.2), sm / np.maximum(w, 1e-6), zd_f)
+    for q in ponds or []:                                        # basins rewritten from their exact outlines on the fine grid
+        zd_f, pm, rim, _ = pond_surface(gf, zd_f, q["poly"], q["top_el"], q["bottom_el"], q.get("side", 3.0))
+        zd_f[rim & ~dmf] = q["top_el"]
+        dmf |= pm | rim
+    for k, b in enumerate(bldgs or []):                          # floor pads exactly at the FFE, edges on the real outline
+        m = gf.mask(b)
+        if k < len(ffe) and m.any():
+            zd_f[m] = float(ffe[k])
+            dmf |= m
+    info = {}
+    zf = surface(gf, exf, zd_f, dmf, protect=near(protect) if protect is not None else None,
+                 limit=near(limit) if limit is not None else None, info=info, soften_ft=4.0)
+    # one more pass across the grading band only (never inside the design or past the disturbed area)
+    band = (~dmf) & (np.abs(zf - exf) > 0.05)
+    band = ndi.binary_dilation(band, iterations=2) & ~dmf
+    for _ in range(2):
+        sm = ndi.gaussian_filter(zf, 2.0 / cell * 1.5)
+        zf = np.where(band, sm, zf)
+    if limit is not None:
+        lf = near(limit)
+        zf = np.where(lf & ~dmf, exf, zf)
+    classify_slopes(gf, zf, exf, dmf, info["s"], info["wall_src"], info)       # treatments from the final surface
+    return {"grid": gf, "z_prop": zf, "ex_z": exf, "design_mask": dmf, "z_design": zd_f, "info": info,
+            "lod": near(lod) if lod is not None else None}
 
 
 def smooth_around(g, z, keep, zone, sigma=1.6, passes=2):

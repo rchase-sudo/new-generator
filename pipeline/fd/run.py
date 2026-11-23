@@ -200,7 +200,17 @@ def build(ctx, lay, job, rules, prog, log=print):
         if hit_s > 200:
             out["wet_warnings"].append(f"Cut and fill slopes would reach about {hit_s:,.0f} SF of mapped wetland. Grading is held at the wetland edge, so a retaining wall or steeper slope is needed there. No regrading of the wetland or stream is proposed.")
     try:
-        out["slopes"] = grading.slope_features(g, z_prop, ex_z, G["z_design2"], G["design_mask2"], G.get("slope_info") or {})
+        try:            # the construction surface: fine grid, real outlines, smooth slopes (exports use it)
+            t_f = time.time()
+            out["fine"] = grading.refine(g, ex_z, G["z_design2"], G["design_mask2"], bldgs=L["bldgs"], ffe=G["ffe"], protect=wm, limit=limit, lod=G.get("lod_mask"),
+                                          pave=L["pave"], walk=L.get("walk"),
+                                          ponds=[q for q in (D.get("ponds") or []) if (D.get("pond") or {}).get("kind") != "chambers"])
+            log(f"construction surface {out['fine']['grid'].cell:g} ft grid {time.time() - t_f:.1f}s")
+        except Exception as e:  # noqa: BLE001
+            log(f"construction surface skipped: {type(e).__name__}: {e}")
+        F = out.get("fine")
+        out["slopes"] = grading.slope_features(F["grid"], F["z_prop"], F["ex_z"], F["z_design"], F["design_mask"], F["info"]) if F else \
+            grading.slope_features(g, z_prop, ex_z, G["z_design2"], G["design_mask2"], G.get("slope_info") or {})
         sl_ = out["slopes"]
         if sl_["matting"]:
             G["warnings"].append(f"About {sum(q.area for q in sl_['matting']):,.0f} SF of 2:1 slope (3:1 does not fit before the property line or wetland): erosion control matting proposed")

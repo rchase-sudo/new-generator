@@ -67,11 +67,17 @@ class _W:
         return list(zip(X.tolist(), Y.tolist()))
 
 
+def surf(X):
+    """(grid, existing, proposed) for drawing and export: the fine construction surface when the design made one."""
+    F = X.get("fine")
+    return (F["grid"], F["ex_z"], F["z_prop"]) if F else (X["grid"], X["ex_z"], X["z_prop"])
+
+
 def surfaces(X):
-    g = X["grid"]
+    g, ex, zp = surf(X)
     L = X["L"]
-    eg = _tin(g, X["ex_z"])
-    fg = _tin(g, X["z_prop"], mask=g.mask(L["parcel"].buffer(15)))
+    eg = _tin(g, ex)
+    fg = _tin(g, zp, mask=g.mask(L["parcel"].buffer(15)))
     return {"EG": eg, "FG": fg}
 
 
@@ -196,11 +202,12 @@ def dxf(X, path):
     for b in L.get("nbld") or []:
         pl(b, "V-BLDG")
     view = L["parcel"].buffer(60)
-    for z, lyr_mn, lyr_mj, lyr_tx in ((X["ex_z"], "V-TOPO-MINR", "V-TOPO-MAJR", "V-TOPO-TEXT"), (X["z_prop"], "C-TOPO-MINR", "C-TOPO-MAJR", "C-TOPO-TEXT")):
+    gs_, exs_, zps_ = surf(X)
+    for z, lyr_mn, lyr_mj, lyr_tx in ((exs_, "V-TOPO-MINR", "V-TOPO-MAJR", "V-TOPO-TEXT"), (zps_, "C-TOPO-MINR", "C-TOPO-MAJR", "C-TOPO-TEXT")):
         clip = view if lyr_mn.startswith("V") else g.cell_poly(G["lod_mask"]).buffer(2) if G.get("lod_mask") is not None and G["lod_mask"].any() else L["dev"].buffer(20)
         rel = float(np.nanmax(z) - np.nanmin(z))
         iv = 1.0 if rel < 12 else 2.0
-        for lev, ln, is_idx in grading.contour_lines(g, z, interval=iv, index=iv * 5, clip=clip, fine=2):
+        for lev, ln, is_idx in grading.contour_lines(gs_, z, interval=iv, index=iv * 5, clip=clip, fine=1 if gs_ is not g else 2):
             ms.add_lwpolyline(W.coords(ln), dxfattribs={"layer": lyr_mj if is_idx else lyr_mn, "elevation": lev})
             if is_idx and ln.length > 80:
                 tx(ln.interpolate(0.5, normalized=True).coords[0], f"{lev:.0f}", lyr_tx, h=2.5)
@@ -349,12 +356,14 @@ def dxf(X, path):
     # spot grades at structures and building corners
     for k, b in enumerate(L["bldgs"]):
         for x, y in list(b.exterior.coords)[:-1][:8]:
-            z = float(g.at(X["z_prop"], [x], [y])[0])
+            z = float(gs_.at(zps_, [x], [y])[0])
             ms.add_point((*W.pt((x, y)), z), dxfattribs={"layer": "C-TOPO-SPOT"})
     # proposed surface as 3D faces inside the limit of disturbance (layer off by default); the full surfaces are in the LandXML
     if G.get("lod_mask") is not None and G["lod_mask"].any():
         from scipy import ndimage as ndi
-        pts, faces = _tin(g, X["z_prop"], mask=ndi.binary_dilation(G["lod_mask"], iterations=2))
+        F_ = X.get("fine")
+        pts, faces = _tin(F_["grid"], F_["z_prop"], mask=ndi.binary_dilation(F_["lod"], iterations=3)) if F_ and F_.get("lod") is not None else \
+            _tin(g, X["z_prop"], mask=ndi.binary_dilation(G["lod_mask"], iterations=2))
         E, N = W.xy(pts[:, 0], pts[:, 1])
         P3 = np.column_stack([E, N, pts[:, 2]])
         for a_, b_, c_ in faces:

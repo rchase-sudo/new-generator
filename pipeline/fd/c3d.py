@@ -189,9 +189,10 @@ def manifest(X, meta, job, mapping=None, firm=None):
 
     # ---- surfaces (grid points, boundary = the TIN's extent)
     surfs = []
-    for name, desc, z, mask in (("EG", "Existing ground (USGS 3DEP)", X["ex_z"], None),
-                                ("FG", "Proposed finished grade", zp, g.mask(L["parcel"].buffer(15)))):
-        pts, _ = export._tin(g, z, mask=mask)
+    gs_, exs_, zps_ = export.surf(X)
+    for name, desc, z, mask in (("EG", "Existing ground (USGS 3DEP)", exs_, None),
+                                ("FG", "Proposed finished grade", zps_, gs_.mask(L["parcel"].buffer(15)))):
+        pts, _ = export._tin(gs_, z, mask=mask)
         E, N = W.xy(pts[:, 0], pts[:, 1])
         arr = np.round(np.column_stack([E, N, pts[:, 2]]), 3)
         bnd = L["parcel"].buffer(15) if name == "FG" else None
