@@ -14,6 +14,7 @@ Design (local feet), as the editor sends it:
   drives:    [{id, pts: [[x, y], ...], width}]
   pavement:  [{pts: [[x, y], ...]}]           extra paved areas (loading, plazas)
   ponds:     [{pts: [[x, y], ...]}]           none drawn + auto_pond -> one is placed like the automatic layout does
+  grading:   [{pts: [[x, y], ...], min_pct, max_pct}]   areas graded as one plane within a slope range (flat pads etc.)
   auto_pond: bool, parking_ratio: stalls per 1,000 SF of GFA (for the required count)
 """
 import math
@@ -766,6 +767,16 @@ def build(ctx, design, setbacks, psb, steep, keep, pave_keep, prog, rules, share
     if pond is not None and not pond.is_empty:
         c = fr.inv(polylabel(_largest(pond) or pond, 2))
         labels.append({"at": (c.x, c.y), "rot": math.degrees(fr.a), "lines": ["STORMWATER", "MANAGEMENT"], "small": True})
+    grades = []
+    for x in design.get("grading") or []:
+        gp = _poly(x.get("pts") or [])
+        gp = areal(gp.intersection(P)) if gp is not None else None
+        if gp is not None and not gp.is_empty and gp.area > 25:
+            lo, hi = sorted((max(0.0, float(x.get("min_pct") or 0)), max(0.0, float(x.get("max_pct") or 0))))
+            grades.append({"poly": gp, "min": lo / 100.0, "max": hi / 100.0})
+    local["grade_polys"] = [q["poly"] for q in grades]
+    sp["grade_polys"] = [fr.inv(q["poly"]) for q in grades]
+    sp["grade_meta"] = [[q["min"], q["max"]] for q in grades]
     sp["camp_meta"] = [{"label": st["label"], "kind": st["kind"], "hook": st["hook"], "gpd": st["gpd"]} for st in camp["sites"]]
     sp["camp_sewage"], sp["camp_gpd"] = camp["sewage"], camp["gpd"]
     return {"metrics": metrics, "sp": sp, "local": local, "labels": labels, "frame_angle_deg": math.degrees(fr.a)}

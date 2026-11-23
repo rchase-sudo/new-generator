@@ -253,11 +253,46 @@ def run(L, ex_z, grid, road_local, spec=None):
         ffe.append(e)
         z_new[m] = e
 
+    # grading areas (Sitecraft): the rest of each area (not pavement, walk or building) is one plane at a slope between its
+    # min and max, through the area's mean existing grade so cut and fill balance; the slopes beyond tie out like the rest
+    for a in L.get("grade_areas") or []:
+        m = g.mask(a["poly"]) & ~np.isfinite(z_new) & np.isfinite(ex_z)
+        pl = grade_plane(g, ex_z, a["poly"], a["min"], a["max"])
+        a["plane"] = pl
+        if pl is not None and m.any():
+            z_new[m] = np.round(plane_z(pl, g.X[m], g.Y[m]), 3)
     # pond (elevations are set by the hydrology step; a placeholder floor lets the daylighting see the basin)
     design = np.isfinite(z_new)
     return {"spine": sp, "stations": st, "profile": zprof, "ex_profile": zx, "pvi": pv, "curves": cv, "z_design": z_new, "design_mask": design,
             "ffe": ffe, "pave_mask": pave_mask, "bmask": allb, "walk_mask": walk_mask, "warnings": warns,
             "z_pave": z_pave, "curb_mask": curb_mask, "ada": ada_info, "branches": branches}
+
+
+def grade_plane(g, ex_z, poly, s_min, s_max):
+    """Best-fit plane of the existing ground over `poly`, its slope held between s_min and s_max (ft/ft) in the same
+    downhill direction (dead level when both are 0), passing through the area's mean existing grade."""
+    m = g.mask(poly) & np.isfinite(ex_z)
+    if m.sum() < 3:
+        c = poly.centroid
+        zc = float(np.nanmean(g.at(ex_z, [c.x], [c.y])))
+        return None if not np.isfinite(zc) else (c.x, c.y, zc, 0.0, 0.0)
+    x, y, z = g.X[m], g.Y[m], ex_z[m]
+    xm, ym, zm = float(x.mean()), float(y.mean()), float(z.mean())
+    A = np.c_[x - xm, y - ym]
+    (a, b), *_ = np.linalg.lstsq(A, z - zm, rcond=None)
+    s = math.hypot(a, b)
+    lo, hi = sorted((max(0.0, s_min), max(0.0, s_max)))
+    t = min(max(s, lo), hi)
+    if s > 1e-9:
+        a, b = a * t / s, b * t / s
+    else:
+        a, b = t, 0.0
+    return (xm, ym, zm, float(a), float(b))
+
+
+def plane_z(pl, X, Y):
+    xm, ym, zm, a, b = pl
+    return zm + a * (X - xm) + b * (Y - ym)
 
 
 def _branches(g, pave_mask, hard, sp, fp, zf, ex_z, near_park, reach=110.0, max_n=6):
@@ -586,7 +621,7 @@ def pond_surface(g, zd, poly, top_el, bottom_el, side, berm=6.0):
     return zd, pm, rim, zz
 
 
-def refine(g, ex_z, z_design, design_mask, bldgs=(), ffe=(), protect=None, limit=None, lod=None, pave=None, walk=None, ponds=(), max_pts=300_000):
+def refine(g, ex_z, z_design, design_mask, bldgs=(), ffe=(), protect=None, limit=None, lod=None, pave=None, walk=None, ponds=(), grades=None, max_pts=300_000):
     """The construction surface: the design re-graded on a fine grid (1.5-3 ft) so its edges follow the real outlines
     rather than 5 ft cells, the existing ground resampled smoothly, the cut / fill slopes rebuilt with the same 3:1 / 2:1 /
     1:1 / wall rules and blended so no cell steps or ridges are left. The coarse grid stays for the analysis; exports
@@ -640,6 +675,17 @@ def refine(g, ex_z, z_design, design_mask, bldgs=(), ffe=(), protect=None, limit
     w = ndi.gaussian_filter(inner.astype(float), 1.2)
     sm = ndi.gaussian_filter(np.where(inner, zd_f, 0.0), 1.2)
     zd_f = np.where(inner & (w > 0.2), sm / np.maximum(w, 1e-6), zd_f)
+    for a in grades or []:                                       # grading areas: their exact planes on the real outline
+        if a.get("plane") is None:
+            continue
+        m = gf.mask(a["poly"]) & ~bm
+        own = m
+        if pave is not None and not pave.is_empty:
+            own = own & ~gf.mask(pave.buffer(2.5))
+        if walk is not None and not walk.is_empty:
+            own = own & ~gf.mask(walk)
+        zd_f[own] = plane_z(a["plane"], gf.X[own], gf.Y[own])
+        dmf |= own
     for q in ponds or []:                                        # basins rewritten from their exact outlines on the fine grid
         zd_f, pm, rim, _ = pond_surface(gf, zd_f, q["poly"], q["top_el"], q["bottom_el"], q.get("side", 3.0))
         zd_f[rim & ~dmf] = q["top_el"]

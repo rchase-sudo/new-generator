@@ -133,7 +133,7 @@ def transform_design(design, T, frame):
         if d.get("full"):
             d["full"] = pts(d["full"])
         d["arrows"] = [{**a, "at": P(a["at"]), "dir": V(a["dir"])} for a in d.get("arrows") or []]
-    for key in ("ponds", "pavement"):
+    for key in ("ponds", "pavement", "grading"):
         for o in D.get(key) or []:
             o["pts"] = pts(o.get("pts"))
     for row in D.get("campsites") or []:

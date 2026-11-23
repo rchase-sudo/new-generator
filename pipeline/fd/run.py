@@ -46,6 +46,8 @@ def build(ctx, lay, job, rules, prog, log=print):
                   "camp_units": Fl(sp.get("camp_units")), "camp_tables": Fl(sp.get("camp_tables")), "camp_rings": Fl(sp.get("camp_rings")),
                   "camp_peds": Fl(sp.get("camp_peds")), "camp_svc": Fl(sp.get("camp_svc")), "camp_at": Fl(sp.get("camp_at")), "drive_cl": Fl(sp.get("drive_cl")),
                   "camp_meta": sp["camp_meta"], "camp_gpd": sp.get("camp_gpd") or 0, "camp_sewage": sp.get("camp_sewage") or "septic"})
+    if sp.get("grade_polys"):        # Sitecraft grading areas: one plane each, slope held between min and max
+        L["grade_areas"] = [{"poly": F(q), "min": float(m[0]), "max": float(m[1])} for q, m in zip(sp["grade_polys"], sp.get("grade_meta") or []) if q is not None]
     wet_sp = [w["geom"] for w in (ctx["wet"] if isinstance(ctx["wet"], list) else [])]
     L["wet"] = F(unary_union(wet_sp)) if wet_sp else None
     L["flood"] = F(unary_union([f["geom"] for f in (ctx["fl"] if isinstance(ctx["fl"], list) else []) if f.get("sfha") == "T"])) if isinstance(ctx["fl"], list) and any(f.get("sfha") == "T" for f in ctx["fl"]) else None
@@ -203,7 +205,7 @@ def build(ctx, lay, job, rules, prog, log=print):
         try:            # the construction surface: fine grid, real outlines, smooth slopes (exports use it)
             t_f = time.time()
             out["fine"] = grading.refine(g, ex_z, G["z_design2"], G["design_mask2"], bldgs=L["bldgs"], ffe=G["ffe"], protect=wm, limit=limit, lod=G.get("lod_mask"),
-                                          pave=L["pave"], walk=L.get("walk"),
+                                          pave=L["pave"], walk=L.get("walk"), grades=L.get("grade_areas"),
                                           ponds=[q for q in (D.get("ponds") or []) if (D.get("pond") or {}).get("kind") != "chambers"])
             log(f"construction surface {out['fine']['grid'].cell:g} ft grid {time.time() - t_f:.1f}s")
         except Exception as e:  # noqa: BLE001
