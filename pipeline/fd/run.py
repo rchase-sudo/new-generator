@@ -258,6 +258,33 @@ def build(ctx, lay, job, rules, prog, log=print):
     ER = site.erosion(g, G, L, U, D, net, G["spine"])
     log(f"site {time.time() - t0:.1f}s")
     out.update({"U": U, "FIRE": FIRE, "LS": LS, "LT": LT, "ER": ER, "no_esc": ctx.get("source") == "redline"})
+    F = out.get("fine")
+    if F:       # structure rims on the construction surface the Civil 3D model is built from (inverts stay; covers follow)
+        gf_, zf_ = F["grid"], F["z_prop"]
+        zat = lambda xy: float(gf_.at(zf_, [xy[0]], [xy[1]])[0])        # noqa: E731
+        moved = {}
+        for st_ in net.get("structs") or []:
+            if st_.get("kind") in ("CB", "DMH") and st_.get("xy") is not None:
+                z_ = zat(st_["xy"])
+                if np.isfinite(z_):
+                    moved[st_["id"]] = round(z_, 2) - st_["rim"]
+                    st_["rim"] = round(z_, 2)
+                    if st_.get("cover") is not None:
+                        st_["cover"] = round(st_["cover"] + moved[st_["id"]], 1)
+        for p_ in net.get("pipes") or []:
+            if p_.get("cover_up") is not None and p_.get("from") in moved:
+                p_["cover_up"] = round(p_["cover_up"] + moved[p_["from"]], 1)
+            if p_.get("cover_dn") is not None and p_.get("to") in moved:
+                p_["cover_dn"] = round(p_["cover_dn"] + moved[p_["to"]], 1)
+        for m_ in U.get("smh") or []:
+            if not m_.get("existing") and m_.get("xy") is not None and m_.get("kind") in ("SMH", "TANK", "PS"):
+                z_ = zat(m_["xy"])
+                if np.isfinite(z_):
+                    m_["rim"] = round(z_, 2)
+                    if m_.get("inv") is not None:
+                        m_["depth"] = round(z_ - m_["inv"], 1)
+        if moved:
+            log(f"rims on the construction surface: largest change {max(abs(v) for v in moved.values()):.2f} ft")
     out.update({"G": G, "D": D, "net": net, "z_prop": z_prop, "earthwork": ew, "soils": soils, "rain": rain, "stype": stype, "road": road_all})
     return out
 
